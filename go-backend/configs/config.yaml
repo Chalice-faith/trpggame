@@ -1,0 +1,35 @@
+# TRPG Game - Go Backend Configuration
+# 开发环境配置
+
+server:
+  port: "8080"
+  mode: debug
+
+database:
+  host: localhost
+  port: "5432"
+  user: trpg
+  password: trpg123
+  dbname: trpggame
+  sslmode: disable
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+
+jwt:
+  secret: "dev-secret-change-in-production-please"
+  accesstokenttl: 15
+  refreshtokenttl: 168
+
+ai:
+  baseurl: http://localhost:8000
+  timeout: 60
+
+minio:
+  endpoint: localhost:9000
+  accesskey: minioadmin
+  secretkey: minioadmin
+  bucket: trpg-scripts
+  usessl: false

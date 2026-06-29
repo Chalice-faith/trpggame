@@ -1,0 +1,224 @@
+version: "3.8"
+
+# TRPG Game — 本地开发环境
+# 启动方式：docker compose up -d
+# 仅启动基础设施：docker compose up -d postgres redis milvus etcd minio
+
+services:
+  # ============================================================
+  # Nginx — 反向代理 + HTTPS/WSS 终止
+  # ============================================================
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: trpg-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - go-backend
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # Go Backend — 业务逻辑 + WebSocket Hub
+  # ============================================================
+  go-backend:
+    build:
+      context: ./go-backend
+      dockerfile: Dockerfile
+    container_name: trpg-go-backend
+    ports:
+      - "8080:8080"
+    environment:
+      - TRPG_SERVER_PORT=8080
+      - TRPG_SERVER_MODE=debug
+      - TRPG_DATABASE_HOST=postgres
+      - TRPG_DATABASE_PORT=5432
+      - TRPG_DATABASE_USER=trpg
+      - TRPG_DATABASE_PASSWORD=trpg123
+      - TRPG_DATABASE_DBNAME=trpggame
+      - TRPG_DATABASE_SSLMODE=disable
+      - TRPG_REDIS_ADDR=redis:6379
+      - TRPG_REDIS_PASSWORD=
+      - TRPG_REDIS_DB=0
+      - TRPG_JWT_SECRET=dev-secret-change-in-production
+      - TRPG_JWT_ACCESSTOKENTTL=15
+      - TRPG_JWT_REFRESHTOKENTTL=168
+      - TRPG_AI_BASEURL=http://python-ai:8000
+      - TRPG_AI_TIMEOUT=60
+      - TRPG_MINIO_ENDPOINT=minio:9000
+      - TRPG_MINIO_ACCESSKEY=minioadmin
+      - TRPG_MINIO_SECRETKEY=minioadmin
+      - TRPG_MINIO_BUCKET=trpg-scripts
+      - TRPG_MINIO_USESSL=false
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # Python AI — PDF 解析 + RAG 检索 + LLM 推理
+  # ============================================================
+  python-ai:
+    build:
+      context: ./python-ai
+      dockerfile: Dockerfile
+    container_name: trpg-python-ai
+    ports:
+      - "8000:8000"
+    environment:
+      - TRPG_AI_DEBUG=true
+      - TRPG_AI_MILVUS_HOST=milvus
+      - TRPG_AI_MILVUS_PORT=19530
+      - TRPG_AI_REDIS_URL=redis://redis:6379/0
+      - TRPG_AI_GLM_API_KEY=${GLM_API_KEY:-}
+      - TRPG_AI_MINIO_ENDPOINT=minio:9000
+      - TRPG_AI_MINIO_ACCESS_KEY=minioadmin
+      - TRPG_AI_MINIO_SECRET_KEY=minioadmin
+    depends_on:
+      - milvus
+      - redis
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # PostgreSQL 16 — 持久化数据库
+  # ============================================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: trpg-postgres
+    environment:
+      POSTGRES_USER: trpg
+      POSTGRES_PASSWORD: trpg123
+      POSTGRES_DB: trpggame
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./go-backend/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trpg -d trpggame"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # Redis 7 — 缓存/会话状态/实时状态
+  # ============================================================
+  redis:
+    image: redis:7-alpine
+    container_name: trpg-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # Milvus 2.4 — 向量数据库（依赖 etcd + MinIO）
+  # ============================================================
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    container_name: trpg-etcd
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    volumes:
+      - etcd_data:/etcd
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    container_name: trpg-milvus
+    depends_on:
+      - etcd
+      - minio
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: minioadmin
+      MINIO_SECRET_ACCESS_KEY: minioadmin
+    ports:
+      - "19530:19530"
+      - "9091:9091"
+    volumes:
+      - milvus_data:/var/lib/milvus
+    command: milvus run standalone
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # MinIO — 对象存储（PDF 文件 + Milvus 索引依赖）
+  # ============================================================
+  minio:
+    image: minio/minio:latest
+    container_name: trpg-minio
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+  # ============================================================
+  # Vue Frontend — 开发模式（热重载）
+  # ============================================================
+  vue-frontend:
+    build:
+      context: ./vue-frontend
+      dockerfile: Dockerfile.dev
+    container_name: trpg-vue-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./vue-frontend/src:/app/src:ro
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8080
+      - VITE_WS_URL=ws://localhost:8080/ws
+    depends_on:
+      - go-backend
+    restart: unless-stopped
+    networks:
+      - trpg-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  etcd_data:
+  milvus_data:
+  minio_data:
+
+networks:
+  trpg-network:
+    driver: bridge
