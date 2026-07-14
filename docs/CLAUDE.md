@@ -65,32 +65,32 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.1 项目初始化与基础设施
 
-- [ ] 创建 Go 后端项目骨架 (`go-backend/cmd/server/main.go` + `internal/` 目录树)
-- [ ] 创建 Python AI 服务骨架 (`python-ai/app/main.py` + `routers/` + `services/`)
-- [ ] 创建 Vue 前端项目骨架 (`Vite + Vue 3 + TypeScript + Pinia`)
-- [ ] 编写 `docker-compose.yml`（含 Nginx、PostgreSQL、Redis、Milvus、MinIO、etcd）
-- [ ] 配置管理实现：Go 端 Viper、Python 端 config.py、前端 .env
+- [x] 创建 Go 后端项目骨架 (`go-backend/cmd/server/main.go` + `internal/` 目录树)
+- [x] 创建 Python AI 服务骨架 (`python-ai/app/main.py` + `routers/` + `services/`)
+- [x] 创建 Vue 前端项目骨架 (`Vite + Vue 3 + TypeScript + Pinia`)
+- [x] 编写 `docker-compose.yml`（含 Nginx、PostgreSQL、Redis、Milvus、MinIO、etcd）
+- [x] 配置管理实现：Go 端 Viper、Python 端 config.py、前端 Vite 环境变量
 - [ ] CI/CD：Dockerfile 三份（Go/Python/Nginx）、基础 lint 配置
 
 #### M1.2 用户系统
 
-- [ ] PostgreSQL 迁移脚本：`users` 表 + 索引
-- [ ] Go: `user_repo.go` — 用户 CRUD（GORM）
-- [ ] Go: `user_service.go` — 注册/登录/个人信息 业务逻辑
-- [ ] Go: `jwt.go` — JWT 生成/校验/刷新（Access 15min + Refresh 7d）
-- [ ] Go: `user_handler.go` — `/api/v1/auth/*` + `/api/v1/users/*` REST 端点
-- [ ] Go: `auth.go` 中间件 — JWT 鉴权
-- [ ] Vue: `stores/auth.ts` — 认证状态管理
-- [ ] Vue: `LoginView.vue` + `RegisterView.vue`
-- [ ] Vue: Axios 请求拦截器（自动附带 Token）
+- [x] PostgreSQL 迁移脚本：`users` 表 + 索引
+- [x] Go: `user_repo.go` — 用户 CRUD（GORM）
+- [x] Go: `user_service.go` — 注册/登录/个人信息 业务逻辑
+- [x] Go: `jwt.go` — JWT 生成/校验/刷新（Access 15min + Refresh 7d）
+- [x] Go: `user_handler.go` — `/api/v1/auth/*` + `/api/v1/users/*` REST 端点
+- [x] Go: `auth.go` 中间件 — JWT 鉴权
+- [x] Vue: `stores/auth.ts` — 认证状态管理
+- [x] Vue: `LoginView.vue` + `RegisterView.vue`
+- [x] Vue: Axios 请求拦截器（自动附带 Token）
 
 #### M1.3 剧本系统
 
 - [ ] PostgreSQL 迁移脚本：`scripts` 表 + `script_characters` 表
-- [ ] Go: `script_repo.go` — 剧本 CRUD
+- [x] Go: `script_repo.go` — 剧本 CRUD 骨架
 - [ ] Go: `script_service.go` — 上传流程（存 MinIO → 写 DB → 触发 AI 解析）
 - [ ] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
-- [ ] Go: `ai_client/client.go` — 调用 Python AI `POST /api/v1/ai/parse-script`
+- [x] Go: `ai_client/client.go` — 调用 Python AI `POST /api/v1/ai/parse-script`
 - [ ] Python: `pdf_parser.py` — PyMuPDF 提取文本
 - [ ] Python: `text_cleaner.py` — 去页眉页脚/页码/空行压缩/特殊字符过滤
 - [ ] Python: `chunker.py` — 按章节标题分片（500-2000 字符，100 字符重叠）
@@ -361,6 +361,7 @@ docker compose logs -f go-backend python-ai
 ## 当前项目状态
 
 - **当前阶段**：Phase 1 — MVP 开发
-- **文档状态**：需求文档 V1.1 ✅ ｜ 技术设计文档 V1.0 ✅
-- **代码状态**：尚未开始编码（项目初始化阶段）
-- **下一步**：M1.1 — 创建项目骨架 + Docker Compose 环境
+- **文档状态**：需求文档 V1.1 ✅ ｜ 技术设计文档 V1.1 ✅ ｜ M1.3 开发计划已补充
+- **代码状态**：M1.1 项目骨架与基础设施基本完成；M1.2 用户系统完成；M1.3 已有模型、Repository 和 AI Client 骨架
+- **验证状态**：Go `go test ./...` 通过（暂无测试用例）；Vue `npm run build` 通过；Python 运行验证待环境恢复
+- **下一步**：M1.3 — 按 [M1.3开发计划.md](./M1.3开发计划.md) 完成剧本上传、解析、向量化和前端管理闭环
