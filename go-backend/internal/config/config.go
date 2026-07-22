@@ -39,9 +39,9 @@ type RedisConfig struct {
 
 // JWTConfig JWT 配置
 type JWTConfig struct {
-	Secret           string
-	AccessTokenTTL   int // 分钟
-	RefreshTokenTTL  int // 小时
+	Secret          string
+	AccessTokenTTL  int // 分钟
+	RefreshTokenTTL int // 小时
 }
 
 // AIConfig Python AI 服务配置
@@ -52,11 +52,12 @@ type AIConfig struct {
 
 // MinIOConfig MinIO 对象存储配置
 type MinIOConfig struct {
-	Endpoint  string
-	AccessKey string
-	SecretKey string
-	Bucket    string
-	UseSSL    bool
+	Endpoint      string
+	AccessKey     string
+	SecretKey     string
+	Bucket        string
+	UseSSL        bool
+	MaxUploadSize int64 // 字节
 }
 
 // Load 加载配置，优先级：环境变量 > config.yaml > 默认值
@@ -120,6 +121,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("minio.secretkey", "minioadmin")
 	v.SetDefault("minio.bucket", "trpg-scripts")
 	v.SetDefault("minio.usessl", false)
+	v.SetDefault("minio.maxuploadsize", int64(50<<20)) // 50 MiB
 }
 
 // DSN 返回 PostgreSQL 连接字符串

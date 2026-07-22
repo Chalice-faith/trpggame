@@ -55,6 +55,7 @@ services:
       - TRPG_MINIO_SECRETKEY=minioadmin
       - TRPG_MINIO_BUCKET=trpg-scripts
       - TRPG_MINIO_USESSL=false
+      - TRPG_MINIO_MAXUPLOADSIZE=52428800
     depends_on:
       postgres:
         condition: service_healthy
