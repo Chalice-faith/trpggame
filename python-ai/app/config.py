@@ -26,6 +26,8 @@ class Settings(BaseSettings):
 
     # Embedding 模型
     embedding_model: str = "BAAI/bge-large-zh-v1.5"
+    embedding_dimension: int = 1024
+    embedding_batch_size: int = 32
 
     # MinIO (对象存储)
     minio_endpoint: str = "localhost:9000"
