@@ -1,6 +1,8 @@
 package config
 
 import (
+	"strings"
+
 	"github.com/spf13/viper"
 )
 
@@ -12,6 +14,7 @@ type Config struct {
 	JWT      JWTConfig
 	AI       AIConfig
 	MinIO    MinIOConfig
+	Internal InternalConfig `mapstructure:"internal"`
 }
 
 // ServerConfig HTTP 服务配置
@@ -60,6 +63,11 @@ type MinIOConfig struct {
 	MaxUploadSize int64 // 字节
 }
 
+// InternalConfig 服务间内部接口配置。
+type InternalConfig struct {
+	SharedSecret string `mapstructure:"shared_secret"`
+}
+
 // Load 加载配置，优先级：环境变量 > config.yaml > 默认值
 func Load() (*Config, error) {
 	v := viper.New()
@@ -72,6 +80,7 @@ func Load() (*Config, error) {
 
 	// 环境变量映射
 	v.SetEnvPrefix("TRPG")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
 	// 设置默认值
@@ -122,6 +131,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("minio.bucket", "trpg-scripts")
 	v.SetDefault("minio.usessl", false)
 	v.SetDefault("minio.maxuploadsize", int64(50<<20)) // 50 MiB
+
+	// Internal API
+	v.SetDefault("internal.shared_secret", "dev-internal-secret-change-in-production")
 }
 
 // DSN 返回 PostgreSQL 连接字符串

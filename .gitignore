@@ -4,7 +4,6 @@ dist/
 
 # Go
 go-backend/server
-go-backend/go.sum
 
 # Python
 __pycache__/
@@ -24,6 +23,7 @@ Thumbs.db
 data/
 
 # Environment
+.env
 .env.local
 .env.production
 

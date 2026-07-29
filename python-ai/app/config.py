@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     minio_bucket: str = "trpg-scripts"
     minio_secure: bool = False
 
+    # Go 内部回调
+    go_callback_base_url: str = "http://localhost:8080/api/v1/internal"
+    internal_shared_secret: str = "dev-internal-secret-change-in-production"
+    parse_task_timeout: int = 600
+
     # LLM 参数
     llm_temperature: float = 0.7
     llm_max_tokens: int = 4096
