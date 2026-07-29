@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/Go-1.22-blue?logo=go" alt="Go" />
   <img src="https://img.shields.io/badge/Vue-3.5-brightgreen?logo=vue.js" alt="Vue" />
   <img src="https://img.shields.io/badge/Python-3.11-yellow?logo=python" alt="Python" />
-  <img src="https://img.shields.io/badge/PostgreSQL-16-blue?logo=postgresql" alt="PostgreSQL" />
+  <img src="https://img.shields.io/badge/MySQL-8.4-blue?logo=mysql" alt="MySQL" />
   <img src="https://img.shields.io/badge/Status-Development-orange" alt="Status" />
 </p>
 
@@ -38,7 +38,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 ### Phase 1 — MVP（单人 AI 跑团闭环）🚧 *开发中*
 
 - ✅ **用户系统**：注册、登录、JWT 鉴权、个人信息管理
-- ✅ **基础设施**：Docker Compose 一键启动（PostgreSQL、Redis、Milvus、MinIO、Nginx）
+- ✅ **基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
 - 🚧 **剧本系统**：PDF 剧本上传 → 解析清洗 → 结构化切片 → 向量化存储 → RAG 检索
 - 🚧 **AI 叙事核心**：GLM-4-Long 推理、RAG 检索（含 MMR 去重）、Function Calling、摘要记忆
 - 🚧 **单人游戏**：快速开始、自由文本交互、骰子检定、角色状态管理、存档读档
@@ -91,7 +91,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
        │   │   │                   │  │ 摘要记忆/骰子服务  │
        ▼   ▼   ▼                   │  └───────────────────┘
 ┌────────┐ ┌──────┐ ┌──────────┐  └──────────┬────────────┘
-│PostgreSQL│ │Redis │ │  MinIO   │            │
+│  MySQL   │ │Redis │ │  MinIO   │            │
 │ (持久化) │ │(缓存)│ │(PDF存储) │            ▼
 └────────┘ └──────┘ └──────────┘   ┌───────────────────┐
                                    │     Milvus        │
@@ -108,7 +108,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 | **业务后端** | Go 1.22 + Gin + GORM + gorilla/websocket | 高并发、低延迟，天然适合 IM 场景 |
 | **AI 服务** | Python 3.11 + FastAPI | 生态丰富，LLM/向量/PDF 库齐全 |
 | **AI 模型** | GLM-4-Long（1M 上下文窗口） | 成本低、上下文长，适合长剧本场景 |
-| **关系数据库** | PostgreSQL 16 | 成熟稳定，支持 JSON 字段 |
+| **关系数据库** | MySQL 8.4 | 成熟稳定，支持 JSON 字段 |
 | **缓存/状态** | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
 | **向量数据库** | Milvus 2.4 | 高性能向量检索，支持 MMR 去重 |
 | **对象存储** | MinIO | 自部署 S3 兼容文件存储 |
@@ -203,7 +203,7 @@ cd trpggame
 docker compose up -d
 
 # 仅启动基础设施（本地开发时使用）
-docker compose up -d postgres redis milvus etcd minio
+docker compose up -d mysql redis milvus etcd minio
 
 # 查看日志
 docker compose logs -f go-backend python-ai
@@ -222,7 +222,7 @@ docker compose logs -f go-backend python-ai
 ```bash
 cd go-backend
 
-# 确保基础设施已启动（PostgreSQL + Redis）
+# 确保基础设施已启动（MySQL + Redis）
 go mod download
 go run cmd/server/main.go
 ```
@@ -392,7 +392,7 @@ AI 可调用的 Function Calling 函数：
 | `GLM_API_KEY` | GLM-4-Long API Key | - |
 | `TRPG_SERVER_PORT` | Go 服务端口 | `8080` |
 | `TRPG_SERVER_MODE` | Go 运行模式 | `debug` |
-| `TRPG_DATABASE_*` | PostgreSQL 连接配置 | 见 docker-compose.yml |
+| `TRPG_DATABASE_*` | MySQL 连接配置 | 见 docker-compose.yml |
 | `TRPG_REDIS_*` | Redis 连接配置 | 见 docker-compose.yml |
 | `TRPG_JWT_SECRET` | JWT 签名密钥 | `dev-secret-change-in-production` |
 | `TRPG_MINIO_*` | MinIO 连接配置 | 见 docker-compose.yml |

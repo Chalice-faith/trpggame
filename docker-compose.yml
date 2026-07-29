@@ -2,7 +2,7 @@ version: "3.8"
 
 # TRPG Game — 本地开发环境
 # 启动方式：docker compose up -d
-# 仅启动基础设施：docker compose up -d postgres redis milvus etcd minio
+# 仅启动基础设施：docker compose up -d mysql redis milvus etcd minio
 
 services:
   # ============================================================
@@ -36,12 +36,13 @@ services:
     environment:
       - TRPG_SERVER_PORT=8080
       - TRPG_SERVER_MODE=debug
-      - TRPG_DATABASE_HOST=postgres
-      - TRPG_DATABASE_PORT=5432
-      - TRPG_DATABASE_USER=trpg
-      - TRPG_DATABASE_PASSWORD=trpg123
-      - TRPG_DATABASE_DBNAME=trpggame
-      - TRPG_DATABASE_SSLMODE=disable
+      - TRPG_DATABASE_HOST=mysql
+      - TRPG_DATABASE_PORT=3306
+      - TRPG_DATABASE_USER=${MYSQL_USER:-trpg}
+      - TRPG_DATABASE_PASSWORD=${MYSQL_PASSWORD:-trpg123}
+      - TRPG_DATABASE_DBNAME=${MYSQL_DATABASE:-trpggame}
+      - TRPG_DATABASE_CHARSET=utf8mb4
+      - TRPG_DATABASE_LOC=Local
       - TRPG_REDIS_ADDR=redis:6379
       - TRPG_REDIS_PASSWORD=
       - TRPG_REDIS_DB=0
@@ -58,10 +59,12 @@ services:
       - TRPG_MINIO_MAXUPLOADSIZE=52428800
       - TRPG_INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET:-dev-internal-secret-change-in-production}
     depends_on:
-      postgres:
+      mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
+      minio:
+        condition: service_started
     restart: unless-stopped
     networks:
       - trpg-network
@@ -96,25 +99,27 @@ services:
       - trpg-network
 
   # ============================================================
-  # PostgreSQL 16 — 持久化数据库
+  # MySQL 8.4 — 持久化数据库
   # ============================================================
-  postgres:
-    image: postgres:16-alpine
-    container_name: trpg-postgres
+  mysql:
+    image: mysql:8.4
+    container_name: trpg-mysql
     environment:
-      POSTGRES_USER: trpg
-      POSTGRES_PASSWORD: trpg123
-      POSTGRES_DB: trpggame
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-trpggame}
+      MYSQL_USER: ${MYSQL_USER:-trpg}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-trpg123}
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - mysql_data:/var/lib/mysql
       - ./go-backend/migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U trpg -d trpggame"]
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
     networks:
       - trpg-network
@@ -218,7 +223,7 @@ services:
       - trpg-network
 
 volumes:
-  postgres_data:
+  mysql_data:
   redis_data:
   etcd_data:
   milvus_data:

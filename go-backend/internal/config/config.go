@@ -23,14 +23,15 @@ type ServerConfig struct {
 	Mode string // debug | release | test
 }
 
-// DatabaseConfig PostgreSQL 配置
+// DatabaseConfig MySQL 配置
 type DatabaseConfig struct {
 	Host     string
 	Port     string
 	User     string
 	Password string
 	DBName   string
-	SSLMode  string
+	Charset  string
+	Loc      string
 }
 
 // RedisConfig Redis 配置
@@ -104,11 +105,12 @@ func setDefaults(v *viper.Viper) {
 
 	// Database
 	v.SetDefault("database.host", "localhost")
-	v.SetDefault("database.port", "5432")
+	v.SetDefault("database.port", "3306")
 	v.SetDefault("database.user", "trpg")
 	v.SetDefault("database.password", "trpg123")
 	v.SetDefault("database.dbname", "trpggame")
-	v.SetDefault("database.sslmode", "disable")
+	v.SetDefault("database.charset", "utf8mb4")
+	v.SetDefault("database.loc", "Local")
 
 	// Redis
 	v.SetDefault("redis.addr", "localhost:6379")
@@ -136,12 +138,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("internal.shared_secret", "dev-internal-secret-change-in-production")
 }
 
-// DSN 返回 PostgreSQL 连接字符串
+// DSN 返回 MySQL 连接字符串
 func (d *DatabaseConfig) DSN() string {
-	return "host=" + d.Host +
-		" user=" + d.User +
-		" password=" + d.Password +
-		" dbname=" + d.DBName +
-		" port=" + d.Port +
-		" sslmode=" + d.SSLMode
+	return d.User + ":" + d.Password +
+		"@tcp(" + d.Host + ":" + d.Port + ")/" + d.DBName +
+		"?charset=" + d.Charset +
+		"&parseTime=True&loc=" + d.Loc
 }

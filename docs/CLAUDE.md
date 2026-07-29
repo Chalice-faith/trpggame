@@ -23,7 +23,7 @@
 | 后端-业务 | Go 1.22+ (Gin + gorilla/websocket + GORM) | 用户/房间/剧本管理 + WebSocket Hub |
 | 后端-AI | Python 3.11+ (FastAPI) | PDF 解析、RAG 检索、LLM 推理、Function Calling |
 | AI 模型 | GLM-4-Long (1M 上下文窗口) | 叙事生成 + 规则裁定 |
-| 关系数据库 | PostgreSQL 16 | 持久化存储 |
+| 关系数据库 | MySQL 8.4 | 持久化存储 |
 | 缓存/状态 | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
 | 向量数据库 | Milvus 2.4 | 剧本片段向量检索 |
 | 对象存储 | MinIO | PDF 文件存储 |
@@ -37,7 +37,7 @@
 ```
 Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub)
                                       │
-                                      ├──► PostgreSQL (持久化)
+                                      ├──► MySQL (持久化)
                                       ├──► Redis (实时状态/会话)
                                       ├──► MinIO (PDF 存储)
                                       │
@@ -53,7 +53,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - 服务分离：Go（业务+实时通信）+ Python（AI+向量检索）
 - 同步调用：MVP 阶段 Go↔Python 走 HTTP，不引入消息队列
 - 流式优先：AI 推理结果通过 WebSocket 流式推送到前端
-- 无状态 Go：Go 服务不持有会话状态，状态全部外存到 Redis/PostgreSQL
+- 无状态 Go：Go 服务不持有会话状态，状态全部外存到 Redis/MySQL
 
 ---
 
@@ -68,13 +68,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] 创建 Go 后端项目骨架 (`go-backend/cmd/server/main.go` + `internal/` 目录树)
 - [x] 创建 Python AI 服务骨架 (`python-ai/app/main.py` + `routers/` + `services/`)
 - [x] 创建 Vue 前端项目骨架 (`Vite + Vue 3 + TypeScript + Pinia`)
-- [x] 编写 `docker-compose.yml`（含 Nginx、PostgreSQL、Redis、Milvus、MinIO、etcd）
+- [x] 编写 `docker-compose.yml`（含 Nginx、MySQL、Redis、Milvus、MinIO、etcd）
 - [x] 配置管理实现：Go 端 Viper、Python 端 config.py、前端 Vite 环境变量
 - [ ] CI/CD：Dockerfile 三份（Go/Python/Nginx）、基础 lint 配置
 
 #### M1.2 用户系统
 
-- [x] PostgreSQL 迁移脚本：`users` 表 + 索引
+- [x] MySQL 迁移脚本：`users` 表 + 索引
 - [x] Go: `user_repo.go` — 用户 CRUD（GORM）
 - [x] Go: `user_service.go` — 注册/登录/个人信息 业务逻辑
 - [x] Go: `jwt.go` — JWT 生成/校验/刷新（Access 15min + Refresh 7d）
@@ -86,7 +86,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.3 剧本系统
 
-- [ ] PostgreSQL 迁移脚本：`scripts` 表 + `script_characters` 表
+- [ ] MySQL 迁移脚本：`scripts` 表 + `script_characters` 表
 - [x] Go: `script_repo.go` — 剧本 CRUD 骨架
 - [ ] Go: `script_service.go` — 上传流程（存 MinIO → 写 DB → 触发 AI 解析）
 - [ ] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
@@ -113,12 +113,12 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.5 游戏系统（单人）
 
-- [ ] PostgreSQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
+- [ ] MySQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
 - [ ] Go: `game_repo.go` — 房间/存档 CRUD
 - [ ] Go: `game_service.go` — 单人游戏核心逻辑
   - [ ] 快速开始（创建房间 → 调 AI 生成开场叙事）
   - [ ] 处理行动（收消息 → 转 Python AI → 流式推送结果）
-  - [ ] 存档/读档（Redis 快照 → PostgreSQL 持久化）
+  - [ ] 存档/读档（Redis 快照 → MySQL 持久化）
   - [ ] 自动存档（每 10 轮）
 - [ ] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
 - [ ] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理
@@ -159,7 +159,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.1 好友系统
 
-- [ ] PostgreSQL 迁移：`friendships` 表
+- [ ] MySQL 迁移：`friendships` 表
 - [ ] Go: `friend_repo.go` + `friend_service.go` + `friend_handler.go`
 - [ ] REST 端点：好友申请/接受/拒绝/列表/删除
 - [ ] Vue: `FriendListView.vue`
@@ -176,7 +176,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.3 群组系统
 
-- [ ] PostgreSQL 迁移：`groups` 表 + `group_members` 表
+- [ ] MySQL 迁移：`groups` 表 + `group_members` 表
 - [ ] Go: Group CRUD + 成员管理 Service/Handler
 - [ ] Vue: 群聊列表 + 群管理界面
 - [ ] AI 拉群功能（AI 主持人账号加入群聊）
@@ -204,7 +204,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M3.1 记忆增强
 
-- [ ] PostgreSQL 迁移：`key_events` 表
+- [ ] MySQL 迁移：`key_events` 表
 - [ ] Python: 关键事件自动标记（角色死亡、重大抉择、剧情分支点）
 - [ ] Python: 语义记忆检索（基于语义相似度检索更早期的历史记忆）
 
@@ -337,8 +337,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 # 启动全栈（开发环境）
 docker compose up -d
 
-# 仅启动基础设施（PostgreSQL + Redis + Milvus + MinIO）
-docker compose up -d postgres redis milvus etcd minio
+# 仅启动基础设施（MySQL + Redis + Milvus + MinIO）
+docker compose up -d mysql redis milvus etcd minio
 
 # Go 后端开发
 cd go-backend && go run cmd/server/main.go

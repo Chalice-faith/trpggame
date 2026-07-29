@@ -43,5 +43,5 @@ type ScriptCharacter struct {
 	ScriptID    uint   `gorm:"index;not null" json:"script_id"`
 	Name        string `gorm:"size:100;not null" json:"name"`
 	Description string `gorm:"type:text" json:"description"`
-	Attributes  string `gorm:"type:jsonb" json:"attributes"` // JSON 格式存储属性值
+	Attributes  string `gorm:"type:json" json:"attributes"` // JSON 格式存储属性值
 }

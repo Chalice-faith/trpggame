@@ -7,11 +7,12 @@ server:
 
 database:
   host: localhost
-  port: "5432"
+  port: "3306"
   user: trpg
   password: trpg123
   dbname: trpggame
-  sslmode: disable
+  charset: utf8mb4
+  loc: Local
 
 redis:
   addr: localhost:6379

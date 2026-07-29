@@ -3,14 +3,14 @@ package config
 import (
 	"log"
 
-	"gorm.io/driver/postgres"
+	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
 // InitDB 初始化数据库连接
 func InitDB(cfg *DatabaseConfig) (*gorm.DB, error) {
-	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
+	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Info),
 	})
 	if err != nil {
@@ -26,6 +26,6 @@ func InitDB(cfg *DatabaseConfig) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(10)
 	sqlDB.SetMaxOpenConns(100)
 
-	log.Println("[DB] PostgreSQL connected successfully")
+	log.Println("[DB] MySQL connected successfully")
 	return db, nil
 }

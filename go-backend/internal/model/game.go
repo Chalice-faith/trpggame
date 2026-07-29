@@ -59,7 +59,7 @@ type GameSave struct {
 	UserID    uint      `gorm:"index;not null" json:"user_id"`
 	Name      string    `gorm:"size:100" json:"name"`
 	RoundNum  int       `json:"round_num"`
-	SaveData  string    `gorm:"type:jsonb" json:"save_data"` // JSON 格式完整快照
+	SaveData  string    `gorm:"type:json" json:"save_data"` // JSON 格式完整快照
 	CreatedAt time.Time `json:"created_at"`
 }
 

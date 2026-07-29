@@ -22,3 +22,21 @@ func TestLoadUsesUnderscoreEnvironmentVariables(t *testing.T) {
 		t.Fatalf("Internal.SharedSecret = %q, want %q", cfg.Internal.SharedSecret, "test-internal-secret")
 	}
 }
+
+func TestDatabaseDSNUsesMySQLFormat(t *testing.T) {
+	cfg := DatabaseConfig{
+		Host:     "mysql",
+		Port:     "3306",
+		User:     "trpg",
+		Password: "secret",
+		DBName:   "trpggame",
+		Charset:  "utf8mb4",
+		Loc:      "Local",
+	}
+
+	got := cfg.DSN()
+	want := "trpg:secret@tcp(mysql:3306)/trpggame?charset=utf8mb4&parseTime=True&loc=Local"
+	if got != want {
+		t.Fatalf("DSN() = %q, want %q", got, want)
+	}
+}
