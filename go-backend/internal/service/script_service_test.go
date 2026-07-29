@@ -36,6 +36,8 @@ type fakeScriptRepository struct {
 	detailUserID  uint
 	characters    []model.ScriptCharacter
 	charactersErr error
+	deleteErr     error
+	deletedID     uint
 }
 
 func (r *fakeScriptRepository) Create(script *model.Script) error {
@@ -84,8 +86,14 @@ func (r *fakeScriptRepository) UpdateStatus(_ uint, status model.ScriptStatus, e
 	return r.statusErr
 }
 
+func (r *fakeScriptRepository) Delete(id uint) error {
+	r.deletedID = id
+	return r.deleteErr
+}
+
 type fakeScriptStorage struct {
 	putErr        error
+	removeErr     error
 	objectName    string
 	content       []byte
 	contentType   string
@@ -114,7 +122,7 @@ func (s *fakeScriptStorage) PutObject(
 
 func (s *fakeScriptStorage) RemoveObject(_ context.Context, objectName string) error {
 	s.removedObject = objectName
-	return nil
+	return s.removeErr
 }
 
 type fakeScriptParser struct {
@@ -374,6 +382,81 @@ func TestScriptServiceGetDetailReturnsEmptyCharacterArray(t *testing.T) {
 	}
 	if result.Characters == nil {
 		t.Fatal("characters must be an empty slice")
+	}
+}
+
+func TestScriptServiceDelete(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:       42,
+			UserID:   7,
+			FilePath: "scripts/7/42/file.pdf",
+		},
+	}
+	objectStorage := &fakeScriptStorage{}
+	svc := newScriptServiceForTest(repository, objectStorage, &fakeScriptParser{})
+
+	err := svc.Delete(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if repository.detailUserID != 7 || repository.detailID != 42 {
+		t.Fatalf("detail query = (user=%d, script=%d)", repository.detailUserID, repository.detailID)
+	}
+	if objectStorage.removedObject != "scripts/7/42/file.pdf" {
+		t.Fatalf("removed object = %q", objectStorage.removedObject)
+	}
+	if repository.deletedID != 42 {
+		t.Fatalf("deleted ID = %d, want 42", repository.deletedID)
+	}
+}
+
+func TestScriptServiceDeleteWithoutStoredObject(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{ID: 42, UserID: 7},
+	}
+	objectStorage := &fakeScriptStorage{}
+	svc := newScriptServiceForTest(repository, objectStorage, &fakeScriptParser{})
+
+	err := svc.Delete(context.Background(), 7, 42)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if objectStorage.removedObject != "" {
+		t.Fatalf("unexpected object removal: %q", objectStorage.removedObject)
+	}
+	if repository.deletedID != 42 {
+		t.Fatalf("deleted ID = %d, want 42", repository.deletedID)
+	}
+}
+
+func TestScriptServiceDeleteStopsWhenObjectRemovalFails(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:       42,
+			UserID:   7,
+			FilePath: "scripts/7/42/file.pdf",
+		},
+	}
+	objectStorage := &fakeScriptStorage{removeErr: errors.New("minio unavailable")}
+	svc := newScriptServiceForTest(repository, objectStorage, &fakeScriptParser{})
+
+	err := svc.Delete(context.Background(), 7, 42)
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("Delete() error = %v, want wrapped %v", err, ErrInternal)
+	}
+	if repository.deletedID != 0 {
+		t.Fatalf("database record deleted after object failure: %d", repository.deletedID)
+	}
+}
+
+func TestScriptServiceDeleteHidesUnauthorizedScriptAsNotFound(t *testing.T) {
+	repository := &fakeScriptRepository{detailErr: gorm.ErrRecordNotFound}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	err := svc.Delete(context.Background(), 99, 42)
+	if !errors.Is(err, ErrScriptNotFound) {
+		t.Fatalf("Delete() error = %v, want %v", err, ErrScriptNotFound)
 	}
 }
 

@@ -22,6 +22,7 @@ type ScriptUploadService interface {
 	Upload(ctx context.Context, req *service.UploadScriptRequest) (*model.Script, error)
 	List(userID uint, page, pageSize int) (*service.ListScriptsResult, error)
 	GetDetail(userID, scriptID uint) (*service.ScriptDetailResult, error)
+	Delete(ctx context.Context, userID, scriptID uint) error
 }
 
 // ScriptHandler 剧本相关 HTTP 处理器。
@@ -315,9 +316,44 @@ func (h *ScriptHandler) GetScriptDetail(c *gin.Context) {
 
 // DeleteScript 删除剧本
 func (h *ScriptHandler) DeleteScript(c *gin.Context) {
-	c.JSON(http.StatusNotImplemented, gin.H{
+	userID, ok := scriptUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    1002,
+			"message": "invalid authentication context",
+		})
+		return
+	}
+
+	scriptID, err := positivePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    1205,
+			"message": "invalid script ID",
+		})
+		return
+	}
+
+	if err := h.svc.Delete(c.Request.Context(), userID, scriptID); err != nil {
+		switch {
+		case errors.Is(err, service.ErrScriptNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    1206,
+				"message": service.ErrScriptNotFound.Error(),
+			})
+		default:
+			log.Printf("script delete: service error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    1203,
+				"message": "internal error",
+			})
+		}
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
-		"message": "Not implemented yet - DeleteScript",
+		"message": "ok",
 	})
 }
 

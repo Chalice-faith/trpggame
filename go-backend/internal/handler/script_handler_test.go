@@ -33,6 +33,9 @@ type fakeScriptUploadService struct {
 	detailErr    error
 	detailUserID uint
 	detailID     uint
+	deleteErr    error
+	deleteUserID uint
+	deleteID     uint
 }
 
 func (s *fakeScriptUploadService) Upload(
@@ -68,6 +71,16 @@ func (s *fakeScriptUploadService) GetDetail(
 	s.detailUserID = userID
 	s.detailID = scriptID
 	return s.detailResult, s.detailErr
+}
+
+func (s *fakeScriptUploadService) Delete(
+	_ context.Context,
+	userID,
+	scriptID uint,
+) error {
+	s.deleteUserID = userID
+	s.deleteID = scriptID
+	return s.deleteErr
 }
 
 func TestScriptHandlerUploadScript(t *testing.T) {
@@ -420,6 +433,64 @@ func TestScriptHandlerGetScriptDetailMapsNotFound(t *testing.T) {
 	assertJSONError(t, recorder, http.StatusNotFound, 1206)
 }
 
+func TestScriptHandlerDeleteScript(t *testing.T) {
+	fakeService := &fakeScriptUploadService{}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := deleteTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodDelete, "/scripts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.deleteUserID != 7 || fakeService.deleteID != 42 {
+		t.Fatalf("delete call = (user=%d, script=%d)", fakeService.deleteUserID, fakeService.deleteID)
+	}
+}
+
+func TestScriptHandlerDeleteScriptRejectsInvalidID(t *testing.T) {
+	fakeService := &fakeScriptUploadService{}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := deleteTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodDelete, "/scripts/invalid", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusBadRequest, 1205)
+	if fakeService.deleteUserID != 0 {
+		t.Fatal("invalid script ID reached service")
+	}
+}
+
+func TestScriptHandlerDeleteScriptMapsNotFound(t *testing.T) {
+	fakeService := &fakeScriptUploadService{deleteErr: service.ErrScriptNotFound}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := deleteTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodDelete, "/scripts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusNotFound, 1206)
+}
+
+func TestScriptHandlerDeleteScriptHandlesStorageFailure(t *testing.T) {
+	fakeService := &fakeScriptUploadService{
+		deleteErr: fmt.Errorf("%w: minio unavailable", service.ErrInternal),
+	}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := deleteTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodDelete, "/scripts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusInternalServerError, 1203)
+}
+
 func uploadTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -452,6 +523,18 @@ func detailTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
 			c.Set("user_id", uint(7))
 		}
 		handler.GetScriptDetail(c)
+	})
+	return router
+}
+
+func deleteTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.DELETE("/scripts/:id", func(c *gin.Context) {
+		if authenticated {
+			c.Set("user_id", uint(7))
+		}
+		handler.DeleteScript(c)
 	})
 	return router
 }

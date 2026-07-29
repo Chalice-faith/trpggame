@@ -33,6 +33,7 @@ type ScriptRepository interface {
 	FindByUserID(userID uint, offset, limit int) ([]model.Script, int64, error)
 	UpdateFile(id uint, filePath string, fileSize int64) error
 	UpdateStatus(id uint, status model.ScriptStatus, errMsg string) error
+	Delete(id uint) error
 }
 
 // ScriptObjectStorage 描述剧本上传流程需要的对象存储能力。
@@ -225,6 +226,32 @@ func (s *ScriptService) GetDetail(userID, scriptID uint) (*ScriptDetailResult, e
 		Script:     script,
 		Characters: characters,
 	}, nil
+}
+
+// Delete 删除用户拥有的剧本对象，并软删除数据库记录。
+func (s *ScriptService) Delete(ctx context.Context, userID, scriptID uint) error {
+	if userID == 0 || scriptID == 0 {
+		return ErrScriptNotFound
+	}
+
+	script, err := s.repo.FindByIDAndUserID(scriptID, userID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrScriptNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%w: find script for deletion: %v", ErrInternal, err)
+	}
+
+	if script.FilePath != "" {
+		if err := s.storage.RemoveObject(ctx, script.FilePath); err != nil {
+			return fmt.Errorf("%w: remove script object: %v", ErrInternal, err)
+		}
+	}
+	if err := s.repo.Delete(scriptID); err != nil {
+		return fmt.Errorf("%w: delete script record: %v", ErrInternal, err)
+	}
+
+	return nil
 }
 
 func (s *ScriptService) markFailed(scriptID uint, message string) {
