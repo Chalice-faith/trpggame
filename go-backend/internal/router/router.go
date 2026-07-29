@@ -16,6 +16,7 @@ func Setup(
 	db *gorm.DB,
 	hub *ws.Hub,
 	scriptHandler *handler.ScriptHandler,
+	internalScriptHandler *handler.InternalScriptHandler,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -40,6 +41,12 @@ func Setup(
 		}
 
 		// 需鉴权的端点
+		internal := v1.Group("/internal")
+		internal.Use(middleware.InternalAuth(cfg.Internal.SharedSecret))
+		{
+			internal.POST("/scripts/:id/status", internalScriptHandler.UpdateStatus)
+		}
+
 		authorized := v1.Group("")
 		authorized.Use(middleware.AuthMiddleware(cfg))
 		{
@@ -56,6 +63,7 @@ func Setup(
 				scripts.POST("/upload", scriptHandler.UploadScript)
 				scripts.GET("", scriptHandler.ListScripts)
 				scripts.GET("/:id", scriptHandler.GetScriptDetail)
+				scripts.POST("/:id/retry", scriptHandler.RetryScript)
 				scripts.DELETE("/:id", scriptHandler.DeleteScript)
 			}
 

@@ -14,14 +14,16 @@ import (
 
 // Client Python AI 服务的 HTTP 客户端
 type Client struct {
-	baseURL    string
-	httpClient *http.Client
+	baseURL      string
+	sharedSecret string
+	httpClient   *http.Client
 }
 
 // NewClient 创建 AI 客户端
-func NewClient(cfg *config.AIConfig) *Client {
+func NewClient(cfg *config.AIConfig, sharedSecret string) *Client {
 	return &Client{
-		baseURL: cfg.BaseURL,
+		baseURL:      cfg.BaseURL,
+		sharedSecret: sharedSecret,
 		httpClient: &http.Client{
 			Timeout: time.Duration(cfg.Timeout) * time.Second,
 		},
@@ -44,6 +46,39 @@ type ParseScriptResponse struct {
 func (c *Client) ParseScript(ctx context.Context, req *ParseScriptRequest) (*ParseScriptResponse, error) {
 	url := c.baseURL + "/api/v1/ai/parse-script"
 	return post[ParseScriptResponse](c, ctx, url, req)
+}
+
+// DeleteScriptVectors 幂等删除指定剧本在 Milvus 中的全部向量。
+func (c *Client) DeleteScriptVectors(ctx context.Context, scriptID uint) error {
+	if scriptID == 0 {
+		return fmt.Errorf("script ID must be positive")
+	}
+
+	url := fmt.Sprintf("%s/api/v1/ai/scripts/%d/vectors", c.baseURL, scriptID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("create vector cleanup request: %w", err)
+	}
+	req.Header.Set("X-Internal-Secret", c.sharedSecret)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("delete script vectors: %w", err)
+	}
+	defer resp.Body.Close()
+
+	responseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read vector cleanup response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf(
+			"ai service vector cleanup error (%d): %s",
+			resp.StatusCode,
+			string(responseBody),
+		)
+	}
+	return nil
 }
 
 // GameActionRequest 游戏行动推理请求
@@ -103,6 +138,7 @@ func post[T any](c *Client, ctx context.Context, url string, body any) (*T, erro
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Secret", c.sharedSecret)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

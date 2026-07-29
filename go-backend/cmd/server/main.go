@@ -44,16 +44,17 @@ func main() {
 	log.Println("MinIO storage connected")
 
 	scriptRepo := repo.NewScriptRepo(db)
-	aiClient := ai_client.NewClient(&cfg.AI)
+	aiClient := ai_client.NewClient(&cfg.AI, cfg.Internal.SharedSecret)
 	scriptService := service.NewScriptService(scriptRepo, scriptStorage, aiClient, cfg)
 	scriptHandler := handler.NewScriptHandler(scriptService, cfg.MinIO.MaxUploadSize)
+	internalScriptHandler := handler.NewInternalScriptHandler(scriptService)
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
 	go hub.Run()
 
 	// 初始化路由
-	r := router.Setup(cfg, db, hub, scriptHandler)
+	r := router.Setup(cfg, db, hub, scriptHandler, internalScriptHandler)
 
 	// 启动服务器
 	addr := fmt.Sprintf(":%s", cfg.Server.Port)

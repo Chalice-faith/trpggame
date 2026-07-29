@@ -23,6 +23,7 @@ type ScriptUploadService interface {
 	List(userID uint, page, pageSize int) (*service.ListScriptsResult, error)
 	GetDetail(userID, scriptID uint) (*service.ScriptDetailResult, error)
 	Delete(ctx context.Context, userID, scriptID uint) error
+	Retry(ctx context.Context, userID, scriptID uint) (*model.Script, error)
 }
 
 // ScriptHandler 剧本相关 HTTP 处理器。
@@ -56,6 +57,7 @@ type scriptListItemResponse struct {
 	FileSize    int64              `json:"file_size"`
 	Status      model.ScriptStatus `json:"status"`
 	ParseError  string             `json:"parse_error,omitempty"`
+	ChunkCount  int                `json:"chunk_count"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
 }
@@ -216,6 +218,7 @@ func (h *ScriptHandler) ListScripts(c *gin.Context) {
 			FileSize:    script.FileSize,
 			Status:      script.Status,
 			ParseError:  script.ParseError,
+			ChunkCount:  script.ChunkCount,
 			CreatedAt:   script.CreatedAt,
 			UpdatedAt:   script.UpdatedAt,
 		})
@@ -306,6 +309,7 @@ func (h *ScriptHandler) GetScriptDetail(c *gin.Context) {
 				FileSize:    script.FileSize,
 				Status:      script.Status,
 				ParseError:  script.ParseError,
+				ChunkCount:  script.ChunkCount,
 				CreatedAt:   script.CreatedAt,
 				UpdatedAt:   script.UpdatedAt,
 			},
@@ -341,6 +345,11 @@ func (h *ScriptHandler) DeleteScript(c *gin.Context) {
 				"code":    1206,
 				"message": service.ErrScriptNotFound.Error(),
 			})
+		case errors.Is(err, service.ErrScriptStatusConflict):
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    1211,
+				"message": service.ErrScriptStatusConflict.Error(),
+			})
 		default:
 			log.Printf("script delete: service error: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{
@@ -354,6 +363,67 @@ func (h *ScriptHandler) DeleteScript(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
 		"message": "ok",
+	})
+}
+
+// RetryScript 重新触发失败剧本的解析。
+func (h *ScriptHandler) RetryScript(c *gin.Context) {
+	userID, ok := scriptUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"code":    1002,
+			"message": "invalid authentication context",
+		})
+		return
+	}
+
+	scriptID, err := positivePathID(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"code":    1205,
+			"message": "invalid script ID",
+		})
+		return
+	}
+
+	script, err := h.svc.Retry(c.Request.Context(), userID, scriptID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrScriptNotFound):
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    1206,
+				"message": service.ErrScriptNotFound.Error(),
+			})
+		case errors.Is(err, service.ErrScriptStatusConflict):
+			c.JSON(http.StatusConflict, gin.H{
+				"code":    1211,
+				"message": service.ErrScriptStatusConflict.Error(),
+			})
+		default:
+			log.Printf("script retry: service error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"code":    1203,
+				"message": "internal error",
+			})
+		}
+		return
+	}
+	if script == nil {
+		log.Print("script retry: service returned an empty result")
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"code":    1203,
+			"message": "internal error",
+		})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{
+		"code":    0,
+		"message": "accepted",
+		"data": gin.H{
+			"id":     script.ID,
+			"status": script.Status,
+		},
 	})
 }
 

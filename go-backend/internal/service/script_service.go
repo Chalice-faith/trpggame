@@ -28,11 +28,14 @@ const (
 // ScriptRepository 描述剧本上传流程需要的数据访问能力。
 type ScriptRepository interface {
 	Create(script *model.Script) error
+	FindByID(id uint) (*model.Script, error)
 	FindByIDAndUserID(id, userID uint) (*model.Script, error)
 	FindCharactersByScriptID(scriptID uint) ([]model.ScriptCharacter, error)
 	FindByUserID(userID uint, offset, limit int) ([]model.Script, int64, error)
 	UpdateFile(id uint, filePath string, fileSize int64) error
 	UpdateStatus(id uint, status model.ScriptStatus, errMsg string) error
+	BeginRetry(id, userID uint) (bool, error)
+	UpdateParseResult(id uint, status model.ScriptStatus, errMsg string, chunkCount int) (bool, error)
 	Delete(id uint) error
 }
 
@@ -45,6 +48,7 @@ type ScriptObjectStorage interface {
 // ScriptParserClient 描述触发 Python 剧本解析所需的能力。
 type ScriptParserClient interface {
 	ParseScript(ctx context.Context, req *ai_client.ParseScriptRequest) (*ai_client.ParseScriptResponse, error)
+	DeleteScriptVectors(ctx context.Context, scriptID uint) error
 }
 
 // ScriptService 剧本业务逻辑。
@@ -241,6 +245,14 @@ func (s *ScriptService) Delete(ctx context.Context, userID, scriptID uint) error
 	if err != nil {
 		return fmt.Errorf("%w: find script for deletion: %v", ErrInternal, err)
 	}
+	if script.Status != model.ScriptStatusReady &&
+		script.Status != model.ScriptStatusFailed {
+		return ErrScriptStatusConflict
+	}
+
+	if err := s.aiClient.DeleteScriptVectors(ctx, scriptID); err != nil {
+		return fmt.Errorf("%w: remove script vectors: %v", ErrInternal, err)
+	}
 
 	if script.FilePath != "" {
 		if err := s.storage.RemoveObject(ctx, script.FilePath); err != nil {
@@ -252,6 +264,103 @@ func (s *ScriptService) Delete(ctx context.Context, userID, scriptID uint) error
 	}
 
 	return nil
+}
+
+// Retry 重新触发用户拥有且处于 failed 状态的剧本解析。
+func (s *ScriptService) Retry(
+	ctx context.Context,
+	userID,
+	scriptID uint,
+) (*model.Script, error) {
+	if userID == 0 || scriptID == 0 {
+		return nil, ErrScriptNotFound
+	}
+
+	script, err := s.repo.FindByIDAndUserID(scriptID, userID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrScriptNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: find script for retry: %v", ErrInternal, err)
+	}
+	if script.Status != model.ScriptStatusFailed || strings.TrimSpace(script.FilePath) == "" {
+		return nil, ErrScriptStatusConflict
+	}
+
+	updated, err := s.repo.BeginRetry(scriptID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: begin script retry: %v", ErrInternal, err)
+	}
+	if !updated {
+		return nil, ErrScriptStatusConflict
+	}
+
+	script.Status = model.ScriptStatusParsing
+	script.ParseError = ""
+	script.ChunkCount = 0
+
+	parseResult, err := s.aiClient.ParseScript(ctx, &ai_client.ParseScriptRequest{
+		ScriptID: script.ID,
+		FilePath: script.FilePath,
+	})
+	if err != nil {
+		s.markFailed(script.ID, "failed to restart script parsing")
+		return nil, fmt.Errorf("%w: restart script parsing: %v", ErrInternal, err)
+	}
+	if parseResult == nil || !parseResult.Success {
+		s.markFailed(script.ID, "script parser rejected the retry task")
+		return nil, fmt.Errorf("%w: script parser rejected the retry task", ErrInternal)
+	}
+
+	return script, nil
+}
+
+// UpdateParseResult 接收 Python 回调，并限制剧本只能从 parsing 进入最终状态。
+func (s *ScriptService) UpdateParseResult(
+	scriptID uint,
+	status model.ScriptStatus,
+	errorMessage string,
+	chunkCount int,
+) error {
+	if scriptID == 0 {
+		return ErrScriptNotFound
+	}
+
+	errorMessage = strings.TrimSpace(errorMessage)
+	switch status {
+	case model.ScriptStatusReady:
+		if chunkCount <= 0 || errorMessage != "" {
+			return ErrInvalidParseResult
+		}
+	case model.ScriptStatusFailed:
+		if chunkCount != 0 || errorMessage == "" || utf8.RuneCountInString(errorMessage) > 2000 {
+			return ErrInvalidParseResult
+		}
+	default:
+		return ErrInvalidScriptStatus
+	}
+
+	updated, err := s.repo.UpdateParseResult(scriptID, status, errorMessage, chunkCount)
+	if err != nil {
+		return fmt.Errorf("%w: update parse result: %v", ErrInternal, err)
+	}
+	if updated {
+		return nil
+	}
+
+	current, err := s.repo.FindByID(scriptID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return ErrScriptNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("%w: inspect script status: %v", ErrInternal, err)
+	}
+	if current.Status == status &&
+		current.ParseError == errorMessage &&
+		current.ChunkCount == chunkCount {
+		return nil
+	}
+	return ErrScriptStatusConflict
 }
 
 func (s *ScriptService) markFailed(scriptID uint, message string) {
