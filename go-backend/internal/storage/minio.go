@@ -38,22 +38,22 @@ func NewMinIOStorage(ctx context.Context, cfg *config.MinIOConfig) (*MinIOStorag
 	return storage, nil
 }
 
-// PutObject 上传对象，并返回 MinIO 实际写入的信息。
+// PutObject 上传对象。
 func (s *MinIOStorage) PutObject(
 	ctx context.Context,
 	objectName string,
 	reader io.Reader,
 	size int64,
 	contentType string,
-) (minio.UploadInfo, error) {
-	info, err := s.client.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{
+) error {
+	_, err := s.client.PutObject(ctx, s.bucket, objectName, reader, size, minio.PutObjectOptions{
 		ContentType: contentType,
 	})
 	if err != nil {
-		return minio.UploadInfo{}, fmt.Errorf("put minio object %q: %w", objectName, err)
+		return fmt.Errorf("put minio object %q: %w", objectName, err)
 	}
 
-	return info, nil
+	return nil
 }
 
 // RemoveObject 删除对象。MinIO 对不存在的对象也按成功处理，因此该操作可安全重试。

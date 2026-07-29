@@ -11,7 +11,12 @@ import (
 )
 
 // Setup 初始化所有路由并返回 Gin Engine
-func Setup(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
+func Setup(
+	cfg *config.Config,
+	db *gorm.DB,
+	hub *ws.Hub,
+	scriptHandler *handler.ScriptHandler,
+) *gin.Engine {
 	r := gin.Default()
 
 	// 全局中间件
@@ -48,10 +53,10 @@ func Setup(cfg *config.Config, db *gorm.DB, hub *ws.Hub) *gin.Engine {
 			// 剧本 (Phase 1 M1.3 实现)
 			scripts := authorized.Group("/scripts")
 			{
-				scripts.POST("/upload", handler.UploadScript)
-				scripts.GET("", handler.ListScripts)
-				scripts.GET("/:id", handler.GetScriptDetail)
-				scripts.DELETE("/:id", handler.DeleteScript)
+				scripts.POST("/upload", scriptHandler.UploadScript)
+				scripts.GET("", scriptHandler.ListScripts)
+				scripts.GET("/:id", scriptHandler.GetScriptDetail)
+				scripts.DELETE("/:id", scriptHandler.DeleteScript)
 			}
 
 			// 游戏 (Phase 1 M1.5 实现)

@@ -1,14 +1,21 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
+	"trpggame/internal/handler"
+	"trpggame/internal/repo"
 	"trpggame/internal/router"
+	"trpggame/internal/service"
+	"trpggame/internal/storage"
 	"trpggame/internal/ws"
 )
 
@@ -26,12 +33,27 @@ func main() {
 	}
 	log.Println("Database connected")
 
+	// 初始化剧本模块依赖
+	storageContext, cancelStorage := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelStorage()
+
+	scriptStorage, err := storage.NewMinIOStorage(storageContext, &cfg.MinIO)
+	if err != nil {
+		log.Fatalf("Failed to initialize MinIO storage: %v", err)
+	}
+	log.Println("MinIO storage connected")
+
+	scriptRepo := repo.NewScriptRepo(db)
+	aiClient := ai_client.NewClient(&cfg.AI)
+	scriptService := service.NewScriptService(scriptRepo, scriptStorage, aiClient, cfg)
+	scriptHandler := handler.NewScriptHandler(scriptService, cfg.MinIO.MaxUploadSize)
+
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
 	go hub.Run()
 
-	// 初始化路由（注入 DB + Hub）
-	r := router.Setup(cfg, db, hub)
+	// 初始化路由
+	r := router.Setup(cfg, db, hub, scriptHandler)
 
 	// 启动服务器
 	addr := fmt.Sprintf(":%s", cfg.Server.Port)
