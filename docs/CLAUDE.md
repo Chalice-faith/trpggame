@@ -70,7 +70,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] 创建 Vue 前端项目骨架 (`Vite + Vue 3 + TypeScript + Pinia`)
 - [x] 编写 `docker-compose.yml`（含 Nginx、MySQL、Redis、Milvus、MinIO、etcd）
 - [x] 配置管理实现：Go 端 Viper、Python 端 config.py、前端 Vite 环境变量
-- [ ] CI/CD：Dockerfile 三份（Go/Python/Nginx）、基础 lint 配置
+- [x] 基础 CI：Go 测试/静态检查、Python 测试、Vue 测试与构建、Compose 配置检查
+- [ ] 生产容器与 lint：补齐前端/Nginx 生产镜像及三端 lint 配置
 
 #### M1.2 用户系统
 
@@ -86,19 +87,21 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.3 剧本系统
 
-- [ ] MySQL 迁移脚本：`scripts` 表 + `script_characters` 表
-- [x] Go: `script_repo.go` — 剧本 CRUD 骨架
-- [ ] Go: `script_service.go` — 上传流程（存 MinIO → 写 DB → 触发 AI 解析）
-- [ ] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
-- [x] Go: `ai_client/client.go` — 调用 Python AI `POST /api/v1/ai/parse-script`
-- [ ] Python: `pdf_parser.py` — PyMuPDF 提取文本
-- [ ] Python: `text_cleaner.py` — 去页眉页脚/页码/空行压缩/特殊字符过滤
-- [ ] Python: `chunker.py` — 按章节标题分片（500-2000 字符，100 字符重叠）
-- [ ] Python: `embedder.py` — 文本向量化（调用 Embedding 模型）
-- [ ] Python: Milvus Collection 创建 + 数据插入
-- [ ] Python: `script.py` router — 剧本解析 API 端点
-- [ ] WebSocket 推送剧本解析进度（`script_progress` 消息类型）
-- [ ] Vue: `ScriptList.vue` + `ScriptUploader.vue` + `ScriptDetail.vue`
+- [x] MySQL 迁移脚本：`scripts`、`script_characters` 表及 `chunk_count`
+- [x] Go: `script_repo.go` — 剧本 CRUD、状态回写和原子重试
+- [x] Go: `script_service.go` — MinIO 上传、解析触发、详情、删除和失败重试
+- [x] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
+- [x] Go: `ai_client/client.go` — 调用 Python 解析及向量清理端点
+- [x] Go: Python 内部状态回写接口及共享密钥鉴权
+- [x] Python: `pdf_parser.py` — PyMuPDF 逐页提取及不可提取文本识别
+- [x] Python: `text_cleaner.py` — 重复页眉页脚、页码、空白及控制字符清洗
+- [x] Python: `chunker.py` — 按章节标题分片（500-2000 字符，约 100 字符重叠）
+- [x] Python: `embedder.py` — BGE 1024 维向量化及 Milvus 幂等写入
+- [x] Python: `script.py` router — 后台解析编排、回调及向量删除端点
+- [x] Vue: Dashboard 剧本列表/上传及 `ScriptDetailView.vue` 详情、轮询、删除、重试
+- [x] 自动化：Go、Python、Vue 测试与统一 M1.3 验证脚本
+- [ ] Docker Compose 真实端到端验收
+- [ ] WebSocket 推送剧本解析进度（增强项；当前使用详情轮询）
 
 #### M1.4 AI 推理核心
 
@@ -225,14 +228,15 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 001_create_users.sql
 002_create_scripts.sql
 003_create_script_characters.sql
-004_create_game_rooms.sql
-005_create_room_players.sql
-006_create_game_saves.sql
-007_create_messages.sql
-008_create_friendships.sql       # Phase 2
-009_create_groups.sql            # Phase 2
-010_create_group_members.sql     # Phase 2
-011_create_key_events.sql        # Phase 3
+004_add_script_chunk_count.sql
+005_create_game_rooms.sql         # 规划
+006_create_room_players.sql       # 规划
+007_create_game_saves.sql         # 规划
+008_create_messages.sql           # 规划
+009_create_friendships.sql        # Phase 2
+010_create_groups.sql              # Phase 2
+011_create_group_members.sql       # Phase 2
+012_create_key_events.sql          # Phase 3
 ```
 
 ---
@@ -251,7 +255,11 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | POST | `/api/v1/scripts/upload` | 上传 PDF 剧本 |
 | GET | `/api/v1/scripts` | 剧本列表 |
 | GET | `/api/v1/scripts/:id` | 剧本详情 |
+| POST | `/api/v1/scripts/:id/retry` | 重新解析失败剧本 |
 | DELETE | `/api/v1/scripts/:id` | 删除剧本 |
+| POST | `/api/v1/ai/parse-script` | 接收后台解析任务（内部共享密钥） |
+| DELETE | `/api/v1/ai/scripts/:id/vectors` | 删除剧本向量（内部共享密钥） |
+| POST | `/api/v1/internal/scripts/:id/status` | Python 回写最终解析状态 |
 | POST | `/api/v1/games/solo/start` | 单人快速开始 |
 | POST | `/api/v1/games/:roomId/action` | 提交行动 |
 | POST | `/api/v1/games/:roomId/save` | 手动存档 |
@@ -360,8 +368,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 — MVP 开发
-- **文档状态**：需求文档 V1.1 ✅ ｜ 技术设计文档 V1.1 ✅ ｜ M1.3 开发计划已补充
-- **代码状态**：M1.1 项目骨架与基础设施基本完成；M1.2 用户系统完成；M1.3 已有模型、Repository 和 AI Client 骨架
-- **验证状态**：Go `go test ./...` 通过（暂无测试用例）；Vue `npm run build` 通过；Python 运行验证待环境恢复
-- **下一步**：M1.3 — 按 [M1.3开发计划.md](./M1.3开发计划.md) 完成剧本上传、解析、向量化和前端管理闭环
+- **当前阶段**：Phase 1 — MVP 暂停开发
+- **文档状态**：需求、技术设计、M1.3 开发计划及验收记录已同步
+- **代码状态**：M1.1 项目骨架完成；M1.2 用户系统完成；M1.3 功能开发完成，待真实环境验收
+- **验证状态**：Go 测试与 `go vet`、41 项 Python 测试、7 项 Vue 测试及 Vue 生产构建通过；Docker Compose 真实端到端验收待执行
+- **暂停状态**：保持当前未提交变更，不继续业务开发，交接说明见 [开发暂停交接.md](./开发暂停交接.md)
+- **恢复后的下一步**：完成 M1.3 Docker Compose 全链路验收后，再进入 M1.4 RAG 与 AI 推理核心
