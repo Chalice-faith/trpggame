@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: go-backend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-backend/go.mod
+          cache-dependency-path: go-backend/go.sum
+      - run: go test ./...
+      - run: go vet ./...
+
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: python-ai
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: python-ai/requirements.txt
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m compileall -q app tests
+      - run: python -m unittest discover -s tests -v
+
+  vue:
+    name: Vue tests and build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vue-frontend
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vue-frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  compose:
+    name: Compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: docker compose config --quiet
