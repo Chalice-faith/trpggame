@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import logging
-import hashlib
-import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -15,7 +13,6 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
-    Header,
     HTTPException,
     Path as PathParameter,
     status,
@@ -23,6 +20,7 @@ from fastapi import (
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import settings
+from app.dependencies import require_internal_secret
 from app.services.chunker import Chunk, chunk_pdf
 from app.services.embedder import (
     EmbeddingError,
@@ -239,28 +237,6 @@ def get_script_pipeline() -> ScriptPipeline:
 
 def get_vector_cleaner() -> Callable[[int], None]:
     return delete_script_chunks
-
-
-def require_internal_secret(
-    provided_secret: str | None = Header(
-        default=None,
-        alias="X-Internal-Secret",
-    ),
-) -> None:
-    expected_secret = settings.internal_shared_secret
-    if not expected_secret:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="internal authentication is not configured",
-        )
-
-    provided_digest = hashlib.sha256((provided_secret or "").encode()).digest()
-    expected_digest = hashlib.sha256(expected_secret.encode()).digest()
-    if not hmac.compare_digest(provided_digest, expected_digest):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid internal credentials",
-        )
 
 
 @router.post(
