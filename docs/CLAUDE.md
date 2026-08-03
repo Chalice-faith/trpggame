@@ -100,15 +100,15 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] Python: `script.py` router — 后台解析编排、回调及向量删除端点
 - [x] Vue: Dashboard 剧本列表/上传及 `ScriptDetailView.vue` 详情、轮询、删除、重试
 - [x] 自动化：Go、Python、Vue 测试与统一 M1.3 验证脚本
-- [ ] Docker Compose 真实端到端验收
+- [ ] Docker Compose 真实端到端验收（2026-08-03 按当前安排暂缓，不视为通过）
 - [ ] WebSocket 推送剧本解析进度（增强项；当前使用详情轮询）
 
 #### M1.4 AI 推理核心
 
-- [ ] Python: `llm_client.py` — GLM-4-Long 调用封装（同步 + 流式）
-- [ ] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
-- [ ] Python: `function_calling.py` — Function Calling 定义 + 执行器（7 个函数）
-- [ ] Python: `summarizer.py` — 摘要记忆（每 5 轮触发，200-500 字叙事摘要）
+- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应）
+- [x] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
+- [x] Python: `function_calling.py` — 7 个函数定义、严格参数校验与可注入执行器
+- [x] Python: `summarizer.py` — 每 5 轮触发、旧摘要合并与 200-500 字结果校验
 - [ ] Python: `dice.py` — 骰子服务（D20/D100，服务端真随机）
 - [ ] Python: `inference.py` router — AI 推理 API（生成开场叙事 / 处理玩家行动）
 - [ ] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令）
@@ -368,9 +368,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 — MVP 已恢复开发，当前执行 M1.3 验收收尾
+- **当前阶段**：Phase 1 — MVP 已恢复开发，当前执行 M1.4 AI 推理核心
 - **文档状态**：需求、技术设计、M1.3 开发计划及验收记录已同步
-- **代码状态**：M1.1 项目骨架完成；M1.2 用户系统完成；M1.3 功能开发完成，待真实环境验收
-- **验证状态**：Go 测试与 `go vet`、42 项 Python 测试、7 项 Vue 测试及 Vue 生产构建通过；Docker Compose 真实端到端验收待执行
+- **代码状态**：M1.1 项目骨架完成；M1.2 用户系统完成；M1.3 功能开发完成、部署验收暂缓；M1.4 已开始
+- **验证状态**：Go 测试与 `go vet`、Python 测试、7 项 Vue 测试及 Vue 生产构建通过；Docker Compose 真实端到端验收按当前安排暂缓
 - **恢复状态**：已于 2026-08-03 按 [开发暂停交接.md](./开发暂停交接.md) 恢复，现有变更按独立模块验证和提交
-- **下一步**：在具备 Docker CLI 的环境完成 M1.3 Docker Compose 全链路验收后，再进入 M1.4 RAG 与 AI 推理核心
+- **下一步**：按模块推进 M1.4；后续补做 M1.3 Docker Compose 全链路验收并单独记录结果

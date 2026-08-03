@@ -35,7 +35,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 
 ## ✨ 功能特性
 
-### Phase 1 — MVP（单人 AI 跑团闭环）⏸️ *暂停开发*
+### Phase 1 — MVP（单人 AI 跑团闭环）🚧 *开发中*
 
 - ✅ **用户系统**：注册、登录、JWT 鉴权、个人信息管理
 - ✅ **基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
@@ -360,7 +360,7 @@ AI 可调用的 Function Calling 函数：
 | `add_buff` | `player_id, buff_name, duration` | 角色获得 BUFF/DEBUFF |
 | `set_location` | `player_id, location` | 更新角色当前位置 |
 | `trigger_event` | `event_name, description` | 记录关键剧情事件 |
-| `roll_dice` | `dice_type, modifier` | 触发骰子检定 |
+| `roll_dice` | `dice_type, target, reason` | 触发骰子检定 |
 
 ---
 
