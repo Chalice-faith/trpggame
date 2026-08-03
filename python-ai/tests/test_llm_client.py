@@ -110,6 +110,82 @@ class GLMClientTests(unittest.IsolatedAsyncioTestCase):
             async for _ in self._client(handler).chat_stream("继续"):
                 self.fail("invalid stream must not yield content")
 
+    async def test_complete_parses_tool_calls_and_sends_function_tools(self):
+        captured_payload: dict[str, object] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            captured_payload.update(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "roll_dice",
+                                            "arguments": '{"dice_type":"D20","target":10,"reason":"侦查"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+
+        function = {
+            "name": "roll_dice",
+            "description": "server dice",
+            "parameters": {"type": "object"},
+        }
+        completion = await self._client(handler).complete(
+            "我检查书架",
+            "你是主持人",
+            [function],
+        )
+
+        self.assertEqual(completion.content, "")
+        self.assertEqual(completion.tool_calls[0].id, "call-1")
+        self.assertEqual(completion.tool_calls[0].name, "roll_dice")
+        self.assertEqual(
+            captured_payload["tools"],
+            [{"type": "function", "function": function}],
+        )
+        self.assertEqual(captured_payload["tool_choice"], "auto")
+
+    async def test_complete_rejects_malformed_tool_call(self):
+        async def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "roll_dice",
+                                            "arguments": {},
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+
+        with self.assertRaisesRegex(LLMAPIError, "arguments must be JSON text"):
+            await self._client(handler).complete("侦查", functions=[{"name": "roll_dice"}])
+
     def _client(
         self,
         handler,

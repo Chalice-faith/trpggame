@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -25,6 +26,23 @@ class LLMAPIError(LLMClientError):
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
         self.status_code = status_code
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """A validated function call requested by the model."""
+
+    id: str
+    name: str
+    arguments: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChatCompletion:
+    """A non-streaming completion, including optional function calls."""
+
+    content: str
+    tool_calls: tuple[ToolCall, ...] = ()
 
 
 class GLMClient:
@@ -56,7 +74,23 @@ class GLMClient:
     async def chat(self, prompt: str, system_prompt: str = "") -> str:
         """调用非流式接口并返回完整文本。"""
 
-        payload = self._build_payload(prompt, system_prompt, stream=False)
+        completion = await self.complete(prompt, system_prompt)
+        return completion.content
+
+    async def complete(
+        self,
+        prompt: str,
+        system_prompt: str = "",
+        functions: Sequence[Mapping[str, Any]] = (),
+    ) -> ChatCompletion:
+        """Return text and validated tool calls from a non-streaming response."""
+
+        payload = self._build_payload(
+            prompt,
+            system_prompt,
+            stream=False,
+            functions=functions,
+        )
         try:
             async with self._create_http_client() as client:
                 response = await client.post(self._endpoint, json=payload)
@@ -66,12 +100,21 @@ class GLMClient:
         self._raise_for_status(response)
         data = self._decode_json(response.content)
         try:
-            content = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMAPIError("GLM API response is missing message content") from exc
+            raise LLMAPIError("GLM API response is missing message") from exc
+        if not isinstance(message, dict):
+            raise LLMAPIError("GLM API message must be an object")
+
+        content = message.get("content")
+        if content is None:
+            content = ""
         if not isinstance(content, str):
             raise LLMAPIError("GLM API message content must be a string")
-        return content
+        return ChatCompletion(
+            content=content,
+            tool_calls=self._parse_tool_calls(message.get("tool_calls", [])),
+        )
 
     async def chat_stream(
         self,
@@ -138,6 +181,7 @@ class GLMClient:
         system_prompt: str,
         *,
         stream: bool,
+        functions: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         if not self.api_key.strip():
             raise LLMConfigurationError("TRPG_AI_GLM_API_KEY is required")
@@ -152,13 +196,54 @@ class GLMClient:
         if system_prompt.strip():
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
-        return {
+        payload: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stream": stream,
         }
+        if functions:
+            payload["tools"] = [
+                {"type": "function", "function": dict(definition)}
+                for definition in functions
+            ]
+            payload["tool_choice"] = "auto"
+        return payload
+
+    @staticmethod
+    def _parse_tool_calls(value: Any) -> tuple[ToolCall, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            raise LLMAPIError("GLM API tool_calls must be an array")
+
+        parsed: list[ToolCall] = []
+        for index, raw_call in enumerate(value):
+            if not isinstance(raw_call, dict):
+                raise LLMAPIError(f"GLM API tool call {index} must be an object")
+            function = raw_call.get("function")
+            if raw_call.get("type") != "function" or not isinstance(function, dict):
+                raise LLMAPIError(f"GLM API tool call {index} is not a function")
+            call_id = raw_call.get("id")
+            name = function.get("name")
+            arguments = function.get("arguments")
+            if not isinstance(call_id, str) or not call_id.strip():
+                raise LLMAPIError(f"GLM API tool call {index} has invalid id")
+            if not isinstance(name, str) or not name.strip():
+                raise LLMAPIError(f"GLM API tool call {index} has invalid name")
+            if not isinstance(arguments, str):
+                raise LLMAPIError(
+                    f"GLM API tool call {index} arguments must be JSON text"
+                )
+            parsed.append(
+                ToolCall(
+                    id=call_id.strip(),
+                    name=name.strip(),
+                    arguments=arguments,
+                )
+            )
+        return tuple(parsed)
 
     @staticmethod
     def _parse_sse_data(line: str) -> str | None:
@@ -204,6 +289,16 @@ async def chat(prompt: str, system_prompt: str = "") -> str:
     """使用默认配置调用 GLM 并返回完整文本。"""
 
     return await GLMClient().chat(prompt, system_prompt)
+
+
+async def complete(
+    prompt: str,
+    system_prompt: str = "",
+    functions: Sequence[Mapping[str, Any]] = (),
+) -> ChatCompletion:
+    """Use the default GLM client and return text plus optional tool calls."""
+
+    return await GLMClient().complete(prompt, system_prompt, functions)
 
 
 async def chat_stream(
