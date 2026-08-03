@@ -105,14 +105,17 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.4 AI 推理核心
 
-- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应）
+- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
 - [x] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
 - [x] Python: `function_calling.py` — 7 个函数定义、严格参数校验与可注入执行器
 - [x] Python: `summarizer.py` — 每 5 轮触发、旧摘要合并与 200-500 字结果校验
-- [ ] Python: `dice.py` — 骰子服务（D20/D100，服务端真随机）
-- [ ] Python: `inference.py` router — AI 推理 API（生成开场叙事 / 处理玩家行动）
-- [ ] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令）
-- [ ] 上下文组装逻辑：系统提示词 + 摘要记忆 + 最近 10 轮 + RAG 片段 + 角色状态
+- [x] Python: `dice.py` — D20/D100 服务端真随机、目标边界与大成功/大失败判定
+- [x] Python: `inference.py` router — AI 推理 API
+  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → GLM 完整响应
+  - [x] 玩家行动：Redis 只读上下文 → RAG → Function Calling → 服务端骰子 → 最终叙事
+  - [x] 状态变更边界：严格校验并返回结构化 `status_changes`；实际 Redis 写入由 M1.5 游戏状态层统一处理
+- [x] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令和动态数据边界）
+- [x] 上下文组装逻辑：系统提示词 + 摘要记忆 + 最近 10 条 + RAG Top-5 + 角色状态
 
 #### M1.5 游戏系统（单人）
 
@@ -368,9 +371,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 — MVP 已恢复开发，当前执行 M1.4 AI 推理核心
-- **文档状态**：需求、技术设计、M1.3 开发计划及验收记录已同步
-- **代码状态**：M1.1 项目骨架完成；M1.2 用户系统完成；M1.3 功能开发完成、部署验收暂缓；M1.4 已开始
-- **验证状态**：Go 测试与 `go vet`、Python 测试、7 项 Vue 测试及 Vue 生产构建通过；Docker Compose 真实端到端验收按当前安排暂缓
-- **恢复状态**：已于 2026-08-03 按 [开发暂停交接.md](./开发暂停交接.md) 恢复，现有变更按独立模块验证和提交
-- **下一步**：按模块推进 M1.4；后续补做 M1.3 Docker Compose 全链路验收并单独记录结果
+- **当前阶段**：Phase 1 — MVP 已恢复开发，M1.4 AI 推理核心代码已完成，待进入 M1.5 游戏系统
+- **文档状态**：需求、技术设计、M1.3 记录及最新暂停交接已同步
+- **代码状态**：M1.1 项目骨架完成；M1.2 用户系统完成；M1.3 功能开发完成、部署验收暂缓；M1.4 Python 推理链路完成
+- **验证状态**：既有 Go 测试与 `go vet`、Python 103 项测试、7 项 Vue 测试及 Vue 生产构建通过；Docker Compose 与真实外部服务端到端验收按当前安排暂缓
+- **暂停状态**：已于 2026-08-03 提交 M1.4 已完成代码并暂停后续开发，恢复顺序见 [开发暂停交接.md](./开发暂停交接.md)
+- **下一步**：进入 M1.5，先实现游戏房间与玩家状态的数据层；后续补做 M1.3 Docker Compose 全链路验收并单独记录结果
