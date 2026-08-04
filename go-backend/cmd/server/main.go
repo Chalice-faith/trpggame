@@ -33,11 +33,22 @@ func main() {
 	}
 	log.Println("Database connected")
 
-	// 初始化剧本模块依赖
-	storageContext, cancelStorage := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelStorage()
+	// 初始化外部依赖
+	dependencyContext, cancelDependencies := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelDependencies()
 
-	scriptStorage, err := storage.NewMinIOStorage(storageContext, &cfg.MinIO)
+	redisClient, err := config.InitRedis(dependencyContext, &cfg.Redis)
+	if err != nil {
+		log.Fatalf("Failed to connect Redis: %v", err)
+	}
+	defer func() {
+		if err := redisClient.Close(); err != nil {
+			log.Printf("Failed to close Redis: %v", err)
+		}
+	}()
+	log.Println("Redis connected")
+
+	scriptStorage, err := storage.NewMinIOStorage(dependencyContext, &cfg.MinIO)
 	if err != nil {
 		log.Fatalf("Failed to initialize MinIO storage: %v", err)
 	}
@@ -48,13 +59,27 @@ func main() {
 	scriptService := service.NewScriptService(scriptRepo, scriptStorage, aiClient, cfg)
 	scriptHandler := handler.NewScriptHandler(scriptService, cfg.MinIO.MaxUploadSize)
 	internalScriptHandler := handler.NewInternalScriptHandler(scriptService)
+	gameRepo := repo.NewGameRepo(db)
+	gameStateRepo, err := repo.NewRedisGameStateRepo(redisClient, repo.DefaultGameRuntimeTTL)
+	if err != nil {
+		log.Fatalf("Failed to initialize game runtime repository: %v", err)
+	}
+	gameService := service.NewGameService(gameRepo, scriptRepo, aiClient, gameStateRepo)
+	gameHandler := handler.NewGameHandler(gameService)
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
 	go hub.Run()
 
 	// 初始化路由
-	r := router.Setup(cfg, db, hub, scriptHandler, internalScriptHandler)
+	r := router.Setup(
+		cfg,
+		db,
+		hub,
+		scriptHandler,
+		internalScriptHandler,
+		gameHandler,
+	)
 
 	// 启动服务器
 	addr := fmt.Sprintf(":%s", cfg.Server.Port)

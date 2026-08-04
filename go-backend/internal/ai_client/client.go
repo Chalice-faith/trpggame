@@ -90,14 +90,22 @@ type GameActionRequest struct {
 	CharacterID uint   `json:"character_id"`
 }
 
+// DiceRollData 是 Python AI 服务返回的服务端骰子结果。
+type DiceRollData struct {
+	Type         string `json:"type"`
+	Result       int    `json:"result"`
+	Target       int    `json:"target"`
+	Success      bool   `json:"success"`
+	CriticalHit  bool   `json:"critical_hit"`
+	CriticalMiss bool   `json:"critical_miss"`
+	Description  string `json:"description"`
+	Reason       string `json:"reason"`
+}
+
 // GameActionResponse 游戏行动推理响应
 type GameActionResponse struct {
-	Narrative string `json:"narrative"`
-	DiceRoll  *struct {
-		Type    string `json:"type"`
-		Result  int    `json:"result"`
-		Success bool   `json:"success"`
-	} `json:"dice_roll,omitempty"`
+	Narrative     string         `json:"narrative"`
+	DiceRoll      *DiceRollData  `json:"dice_roll,omitempty"`
 	StatusChanges map[string]any `json:"status_changes,omitempty"`
 }
 

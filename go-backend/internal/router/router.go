@@ -17,6 +17,7 @@ func Setup(
 	hub *ws.Hub,
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
+	gameHandler *handler.GameHandler,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -70,8 +71,8 @@ func Setup(
 			// 游戏 (Phase 1 M1.5 实现)
 			games := authorized.Group("/games")
 			{
-				games.POST("/solo/start", handler.StartSoloGame)
-				games.POST("/:roomId/action", handler.SubmitAction)
+				games.POST("/solo/start", gameHandler.StartSoloGame)
+				games.POST("/:roomId/action", gameHandler.SubmitAction)
 				games.POST("/:roomId/save", handler.ManualSave)
 				games.GET("/:roomId/saves", handler.ListSaves)
 				games.POST("/:roomId/load", handler.LoadGame)

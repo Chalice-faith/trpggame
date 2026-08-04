@@ -76,3 +76,44 @@ func TestClientDeleteScriptVectorsReportsRemoteFailure(t *testing.T) {
 		t.Fatal("expected remote cleanup failure")
 	}
 }
+
+func TestClientSubmitActionPreservesFullDiceContract(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/ai/inference/action" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Header.Get("X-Internal-Secret") != "test-secret" {
+			t.Errorf("internal secret = %q", r.Header.Get("X-Internal-Secret"))
+		}
+		var request GameActionRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode action request: %v", err)
+		}
+		if request.RoomID != 41 || request.UserID != 7 || request.ScriptID != 11 ||
+			request.CharacterID != 13 || request.Action != "检查书房" {
+			t.Errorf("action request = %#v", request)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"narrative": "发现钥匙",
+			"dice_roll": map[string]any{
+				"type": "D20", "result": 20, "target": 12, "success": true,
+				"critical_hit": true, "critical_miss": false,
+				"description": "大成功", "reason": "侦查",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(&config.AIConfig{BaseURL: server.URL, Timeout: 5}, "test-secret")
+	result, err := client.SubmitAction(context.Background(), &GameActionRequest{
+		RoomID: 41, UserID: 7, ScriptID: 11, CharacterID: 13, Action: "检查书房",
+	})
+	if err != nil {
+		t.Fatalf("SubmitAction() error = %v", err)
+	}
+	if result.DiceRoll == nil || result.DiceRoll.Target != 12 ||
+		!result.DiceRoll.CriticalHit || result.DiceRoll.Reason != "侦查" {
+		t.Fatalf("dice roll = %#v", result.DiceRoll)
+	}
+}
