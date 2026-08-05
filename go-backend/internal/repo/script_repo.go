@@ -72,6 +72,40 @@ func (r *ScriptRepo) UpdateStatus(id uint, status model.ScriptStatus, errMsg str
 	return r.db.Model(&model.Script{}).Where("id = ?", id).Updates(updates).Error
 }
 
+// BeginRetry 仅将当前用户处于 failed 状态的剧本原子切换回 parsing。
+func (r *ScriptRepo) BeginRetry(id, userID uint) (bool, error) {
+	result := r.db.Model(&model.Script{}).
+		Where(
+			"id = ? AND user_id = ? AND status = ?",
+			id,
+			userID,
+			model.ScriptStatusFailed,
+		).
+		Updates(map[string]interface{}{
+			"status":      model.ScriptStatusParsing,
+			"parse_error": "",
+			"chunk_count": 0,
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// UpdateParseResult 仅将 parsing 中的剧本原子更新为最终解析状态。
+func (r *ScriptRepo) UpdateParseResult(
+	id uint,
+	status model.ScriptStatus,
+	errMsg string,
+	chunkCount int,
+) (bool, error) {
+	result := r.db.Model(&model.Script{}).
+		Where("id = ? AND status = ?", id, model.ScriptStatusParsing).
+		Updates(map[string]interface{}{
+			"status":      status,
+			"parse_error": errMsg,
+			"chunk_count": chunkCount,
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 // UpdateFile 更新剧本对应的对象存储路径与文件大小。
 func (r *ScriptRepo) UpdateFile(id uint, filePath string, fileSize int64) error {
 	return r.db.Model(&model.Script{}).Where("id = ?", id).Updates(map[string]interface{}{

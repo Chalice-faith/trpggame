@@ -39,7 +39,8 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 
 - ✅ **用户系统**：注册、登录、JWT 鉴权、个人信息管理
 - ✅ **基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
-- 🚧 **剧本系统**：PDF 剧本上传 → 解析清洗 → 结构化切片 → 向量化存储 → RAG 检索
+- ✅ **剧本系统（代码级）**：PDF 上传 → 解析清洗 → 结构化切片 → 向量化存储 → 状态查询/失败重试
+- 🚧 **RAG 检索**：剧本片段召回、MMR 去重及上下文组装
 - 🚧 **AI 叙事核心**：GLM-4-Long 推理、RAG 检索（含 MMR 去重）、Function Calling、摘要记忆
 - 🚧 **单人游戏**：快速开始、自由文本交互、骰子检定、角色状态管理、存档读档
 - 🚧 **前端**：Vue 3 SPA — 单人跑团聊天界面
@@ -178,7 +179,10 @@ trpggame/
     ├── 需求文档.md             # 产品需求文档 V1.1
     ├── 技术设计文档.md         # 技术设计文档 V1.1
     ├── CLAUDE.md               # AI 开发辅助文档
-    └── M1.3开发计划.md         # Phase 1.3 开发计划
+    ├── M1.3开发计划.md         # Phase 1.3 开发计划
+    ├── M1.3验收记录.md         # Phase 1.3 验收结果
+    ├── 开发暂停交接.md         # 暂停状态与恢复顺序
+    └── 开发问题记录.md         # 非阻塞问题跟踪
 ```
 
 ---
@@ -356,19 +360,19 @@ AI 可调用的 Function Calling 函数：
 | `add_buff` | `player_id, buff_name, duration` | 角色获得 BUFF/DEBUFF |
 | `set_location` | `player_id, location` | 更新角色当前位置 |
 | `trigger_event` | `event_name, description` | 记录关键剧情事件 |
-| `roll_dice` | `dice_type, modifier` | 触发骰子检定 |
+| `roll_dice` | `dice_type, target, reason` | 触发骰子检定 |
 
 ---
 
 ## 🗺 开发路线图
 
-### Phase 1 — MVP（单人 AI 跑团闭环）🎯 **进行中**
+### Phase 1 — MVP（单人 AI 跑团闭环）⏸️ **暂停开发**
 
 - M1.1 项目骨架与基础设施 ✅
 - M1.2 用户系统 ✅
-- M1.3 剧本系统 🚧
-- M1.4 AI 推理核心 🚧
-- M1.5 游戏系统（单人）🚧
+- M1.3 剧本系统 🧪（功能完成，待 Docker Compose 端到端验收）
+- M1.4 AI 推理核心 📋（尚未开始）
+- M1.5 游戏系统（单人）📋（尚未开始）
 - M1.6 联调与验收
 
 ### Phase 2 — 多人社交 📋 *规划中*

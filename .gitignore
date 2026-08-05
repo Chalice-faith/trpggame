@@ -22,6 +22,9 @@ Thumbs.db
 # Docker volumes
 data/
 
+# Local acceptance artifacts
+.artifacts/
+
 # Environment
 .env
 .env.local

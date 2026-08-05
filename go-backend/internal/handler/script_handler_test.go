@@ -36,6 +36,10 @@ type fakeScriptUploadService struct {
 	deleteErr    error
 	deleteUserID uint
 	deleteID     uint
+	retryScript  *model.Script
+	retryErr     error
+	retryUserID  uint
+	retryID      uint
 }
 
 func (s *fakeScriptUploadService) Upload(
@@ -81,6 +85,16 @@ func (s *fakeScriptUploadService) Delete(
 	s.deleteUserID = userID
 	s.deleteID = scriptID
 	return s.deleteErr
+}
+
+func (s *fakeScriptUploadService) Retry(
+	_ context.Context,
+	userID,
+	scriptID uint,
+) (*model.Script, error) {
+	s.retryUserID = userID
+	s.retryID = scriptID
+	return s.retryScript, s.retryErr
 }
 
 func TestScriptHandlerUploadScript(t *testing.T) {
@@ -270,6 +284,7 @@ func TestScriptHandlerListScripts(t *testing.T) {
 				FilePath:   "scripts/7/42/private.pdf",
 				Status:     model.ScriptStatusFailed,
 				ParseError: "no extractable text",
+				ChunkCount: 4,
 			}},
 			Total:    6,
 			Page:     2,
@@ -311,6 +326,9 @@ func TestScriptHandlerListScripts(t *testing.T) {
 	}
 	if response.Data.Items[0]["parse_error"] != "no extractable text" {
 		t.Fatalf("parse error missing from response: %#v", response.Data.Items[0])
+	}
+	if response.Data.Items[0]["chunk_count"] != float64(4) {
+		t.Fatalf("chunk count missing from response: %#v", response.Data.Items[0])
 	}
 }
 
@@ -477,6 +495,18 @@ func TestScriptHandlerDeleteScriptMapsNotFound(t *testing.T) {
 	assertJSONError(t, recorder, http.StatusNotFound, 1206)
 }
 
+func TestScriptHandlerDeleteScriptMapsStatusConflict(t *testing.T) {
+	fakeService := &fakeScriptUploadService{deleteErr: service.ErrScriptStatusConflict}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := deleteTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodDelete, "/scripts/42", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusConflict, 1211)
+}
+
 func TestScriptHandlerDeleteScriptHandlesStorageFailure(t *testing.T) {
 	fakeService := &fakeScriptUploadService{
 		deleteErr: fmt.Errorf("%w: minio unavailable", service.ErrInternal),
@@ -489,6 +519,61 @@ func TestScriptHandlerDeleteScriptHandlesStorageFailure(t *testing.T) {
 	router.ServeHTTP(recorder, request)
 
 	assertJSONError(t, recorder, http.StatusInternalServerError, 1203)
+}
+
+func TestScriptHandlerRetryScript(t *testing.T) {
+	fakeService := &fakeScriptUploadService{
+		retryScript: &model.Script{ID: 42, Status: model.ScriptStatusParsing},
+	}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := retryTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodPost, "/scripts/42/retry", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusAccepted, recorder.Body.String())
+	}
+	if fakeService.retryUserID != 7 || fakeService.retryID != 42 {
+		t.Fatalf("retry request = (user=%d, script=%d)", fakeService.retryUserID, fakeService.retryID)
+	}
+	var response struct {
+		Data struct {
+			ID     uint               `json:"id"`
+			Status model.ScriptStatus `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode retry response: %v", err)
+	}
+	if response.Data.ID != 42 || response.Data.Status != model.ScriptStatusParsing {
+		t.Fatalf("retry response = %#v", response.Data)
+	}
+}
+
+func TestScriptHandlerRetryScriptMapsStatusConflict(t *testing.T) {
+	fakeService := &fakeScriptUploadService{retryErr: service.ErrScriptStatusConflict}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := retryTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodPost, "/scripts/42/retry", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusConflict, 1211)
+}
+
+func TestScriptHandlerRetryScriptMapsNotFound(t *testing.T) {
+	fakeService := &fakeScriptUploadService{retryErr: service.ErrScriptNotFound}
+	handler := NewScriptHandler(fakeService, 1024)
+	router := retryTestRouter(handler, true)
+	request := httptest.NewRequest(http.MethodPost, "/scripts/42/retry", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	assertJSONError(t, recorder, http.StatusNotFound, 1206)
 }
 
 func uploadTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
@@ -535,6 +620,18 @@ func deleteTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
 			c.Set("user_id", uint(7))
 		}
 		handler.DeleteScript(c)
+	})
+	return router
+}
+
+func retryTestRouter(handler *ScriptHandler, authenticated bool) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/scripts/:id/retry", func(c *gin.Context) {
+		if authenticated {
+			c.Set("user_id", uint(7))
+		}
+		handler.RetryScript(c)
 	})
 	return router
 }

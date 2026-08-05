@@ -70,7 +70,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] 创建 Vue 前端项目骨架 (`Vite + Vue 3 + TypeScript + Pinia`)
 - [x] 编写 `docker-compose.yml`（含 Nginx、MySQL、Redis、Milvus、MinIO、etcd）
 - [x] 配置管理实现：Go 端 Viper、Python 端 config.py、前端 Vite 环境变量
-- [ ] CI/CD：Dockerfile 三份（Go/Python/Nginx）、基础 lint 配置
+- [x] 基础 CI：Go 测试/静态检查、Python 测试、Vue 测试与构建、Compose 配置检查
+- [ ] 生产容器与 lint：补齐前端/Nginx 生产镜像及三端 lint 配置
 
 #### M1.2 用户系统
 
@@ -86,49 +87,60 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.3 剧本系统
 
-- [ ] MySQL 迁移脚本：`scripts` 表 + `script_characters` 表
-- [x] Go: `script_repo.go` — 剧本 CRUD 骨架
-- [ ] Go: `script_service.go` — 上传流程（存 MinIO → 写 DB → 触发 AI 解析）
-- [ ] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
-- [x] Go: `ai_client/client.go` — 调用 Python AI `POST /api/v1/ai/parse-script`
-- [ ] Python: `pdf_parser.py` — PyMuPDF 提取文本
-- [ ] Python: `text_cleaner.py` — 去页眉页脚/页码/空行压缩/特殊字符过滤
-- [ ] Python: `chunker.py` — 按章节标题分片（500-2000 字符，100 字符重叠）
-- [ ] Python: `embedder.py` — 文本向量化（调用 Embedding 模型）
-- [ ] Python: Milvus Collection 创建 + 数据插入
-- [ ] Python: `script.py` router — 剧本解析 API 端点
-- [ ] WebSocket 推送剧本解析进度（`script_progress` 消息类型）
-- [ ] Vue: `ScriptList.vue` + `ScriptUploader.vue` + `ScriptDetail.vue`
+- [x] MySQL 迁移脚本：`scripts`、`script_characters` 表及 `chunk_count`
+- [x] Go: `script_repo.go` — 剧本 CRUD、状态回写和原子重试
+- [x] Go: `script_service.go` — MinIO 上传、解析触发、详情、删除和失败重试
+- [x] Go: `script_handler.go` — `/api/v1/scripts/*` REST 端点
+- [x] Go: `ai_client/client.go` — 调用 Python 解析及向量清理端点
+- [x] Go: Python 内部状态回写接口及共享密钥鉴权
+- [x] Python: `pdf_parser.py` — PyMuPDF 逐页提取及不可提取文本识别
+- [x] Python: `text_cleaner.py` — 重复页眉页脚、页码、空白及控制字符清洗
+- [x] Python: `chunker.py` — 按章节标题分片（500-2000 字符，约 100 字符重叠）
+- [x] Python: `embedder.py` — BGE 1024 维向量化及 Milvus 幂等写入
+- [x] Python: `script.py` router — 后台解析编排、回调及向量删除端点
+- [x] Vue: Dashboard 剧本列表/上传及 `ScriptDetailView.vue` 详情、轮询、删除、重试
+- [x] 自动化：Go、Python、Vue 测试与统一 M1.3 验证脚本
+- [ ] Docker Compose 真实端到端验收（2026-08-03 按当前安排暂缓，不视为通过）
+- [ ] WebSocket 推送剧本解析进度（增强项；当前使用详情轮询）
 
 #### M1.4 AI 推理核心
 
-- [ ] Python: `llm_client.py` — GLM-4-Long 调用封装（同步 + 流式）
-- [ ] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
-- [ ] Python: `function_calling.py` — Function Calling 定义 + 执行器（7 个函数）
-- [ ] Python: `summarizer.py` — 摘要记忆（每 5 轮触发，200-500 字叙事摘要）
-- [ ] Python: `dice.py` — 骰子服务（D20/D100，服务端真随机）
-- [ ] Python: `inference.py` router — AI 推理 API（生成开场叙事 / 处理玩家行动）
-- [ ] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令）
-- [ ] 上下文组装逻辑：系统提示词 + 摘要记忆 + 最近 10 轮 + RAG 片段 + 角色状态
+- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
+- [x] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
+- [x] Python: `function_calling.py` — 7 个函数定义、严格参数校验与可注入执行器
+- [x] Python: `summarizer.py` — 每 5 轮触发、旧摘要合并与 200-500 字结果校验
+- [x] Python: `dice.py` — D20/D100 服务端真随机、目标边界与大成功/大失败判定
+- [x] Python: `inference.py` router — AI 推理 API
+  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → GLM 完整响应
+  - [x] 玩家行动：Redis 只读上下文 → RAG → Function Calling → 服务端骰子 → 最终叙事
+  - [x] 状态变更边界：严格校验并返回结构化 `status_changes`；实际 Redis 写入由 M1.5 游戏状态层统一处理
+- [x] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令和动态数据边界）
+- [x] 上下文组装逻辑：系统提示词 + 摘要记忆 + 最近 10 条 + RAG Top-5 + 角色状态
 
 #### M1.5 游戏系统（单人）
 
-- [ ] MySQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
-- [ ] Go: `game_repo.go` — 房间/存档 CRUD
+- [x] MySQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
+- [x] Go: `game_repo.go` — 房间、玩家与存档 CRUD
 - [ ] Go: `game_service.go` — 单人游戏核心逻辑
-  - [ ] 快速开始（创建房间 → 调 AI 生成开场叙事）
-  - [ ] 处理行动（收消息 → 转 Python AI → 流式推送结果）
-  - [ ] 存档/读档（Redis 快照 → MySQL 持久化）
+  - [x] 快速开始（创建房间 → 调 AI 生成开场叙事 → 初始化 Redis）
+  - [x] 处理行动（权限校验 → Python AI → 状态解释 → Redis CAS 原子提交）
+  - [x] 手动存档 Service（Redis 一致性快照 → MySQL 持久化）
+  - [ ] 存档列表与读档恢复
   - [ ] 自动存档（每 10 轮）
 - [ ] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
+  - [x] `POST /games/solo/start` 快速开始
+  - [x] `POST /games/:roomId/action` 同步行动提交
+  - [ ] 手动存档、存档列表、读档、暂停、恢复与结束
 - [ ] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理
 - [ ] Go: `ws_handler.go` — WS 鉴权 + 消息路由
 - [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`
 - [ ] Redis 数据结构落地：
-  - [ ] 玩家状态 HASH (`room:{id}:player:{uid}`)
-  - [ ] 道具 SET、BUFF HASH
-  - [ ] 摘要记忆 STRING
-  - [ ] 最近 10 轮 LIST (LPUSH + LTRIM)
+  - [x] 玩家状态 HASH (`room:{id}:player:{uid}`)
+  - [x] 道具 SET、BUFF HASH
+  - [x] 摘要记忆 STRING
+  - [x] 最近 10 条消息 LIST (`LPUSH + LTRIM`)
+  - [x] 行动 UUID/指纹幂等缓存与预期回合 CAS
+  - [x] 带版本快照的原子读取与恢复（恢复时清空行动缓存）
 - [ ] Vue: `stores/game.ts` — 游戏运行态管理
 - [ ] Vue: `stores/websocket.ts` — WebSocket 连接 + 心跳 + 重连
 - [ ] Vue: `GameSoloView.vue` + `CharacterSelectPanel.vue`
@@ -225,14 +237,15 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 001_create_users.sql
 002_create_scripts.sql
 003_create_script_characters.sql
-004_create_game_rooms.sql
-005_create_room_players.sql
-006_create_game_saves.sql
-007_create_messages.sql
-008_create_friendships.sql       # Phase 2
-009_create_groups.sql            # Phase 2
-010_create_group_members.sql     # Phase 2
-011_create_key_events.sql        # Phase 3
+004_add_script_chunk_count.sql
+005_create_game_rooms.sql         # 已实现
+006_create_room_players.sql       # 已实现
+007_create_game_saves.sql         # 已实现
+008_create_messages.sql           # 规划
+009_create_friendships.sql        # Phase 2
+010_create_groups.sql              # Phase 2
+011_create_group_members.sql       # Phase 2
+012_create_key_events.sql          # Phase 3
 ```
 
 ---
@@ -251,7 +264,11 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | POST | `/api/v1/scripts/upload` | 上传 PDF 剧本 |
 | GET | `/api/v1/scripts` | 剧本列表 |
 | GET | `/api/v1/scripts/:id` | 剧本详情 |
+| POST | `/api/v1/scripts/:id/retry` | 重新解析失败剧本 |
 | DELETE | `/api/v1/scripts/:id` | 删除剧本 |
+| POST | `/api/v1/ai/parse-script` | 接收后台解析任务（内部共享密钥） |
+| DELETE | `/api/v1/ai/scripts/:id/vectors` | 删除剧本向量（内部共享密钥） |
+| POST | `/api/v1/internal/scripts/:id/status` | Python 回写最终解析状态 |
 | POST | `/api/v1/games/solo/start` | 单人快速开始 |
 | POST | `/api/v1/games/:roomId/action` | 提交行动 |
 | POST | `/api/v1/games/:roomId/save` | 手动存档 |
@@ -360,8 +377,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 — MVP 开发
-- **文档状态**：需求文档 V1.1 ✅ ｜ 技术设计文档 V1.1 ✅ ｜ M1.3 开发计划已补充
-- **代码状态**：M1.1 项目骨架与基础设施基本完成；M1.2 用户系统完成；M1.3 已有模型、Repository 和 AI Client 骨架
-- **验证状态**：Go `go test ./...` 通过（暂无测试用例）；Vue `npm run build` 通过；Python 运行验证待环境恢复
-- **下一步**：M1.3 — 按 [M1.3开发计划.md](./M1.3开发计划.md) 完成剧本上传、解析、向量化和前端管理闭环
+- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中，于 2026-08-04 暂停
+- **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
+- **代码状态**：M1.5 已完成 MySQL 数据层、Redis 运行态/快照、快速开始、同步行动接口和手动存档 Service；手动存档 HTTP 入口及读档闭环尚未完成
+- **验证状态**：当前 Go 全量测试、`go vet ./...` 与 `git diff --check` 通过；专项并发/幂等/快照测试通过；真实 MySQL、Redis、Python 与 Docker 端到端联调未执行
+- **暂停状态**：已提交当前完成代码，恢复顺序见 [开发暂停交接.md](./开发暂停交接.md)
+- **下一步**：先实现手动存档 HTTP Handler，再依次实现存档列表、读档恢复、自动存档与房间生命周期接口

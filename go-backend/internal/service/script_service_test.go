@@ -16,28 +16,39 @@ import (
 )
 
 type fakeScriptRepository struct {
-	createErr     error
-	updateFileErr error
-	statusErr     error
-	created       *model.Script
-	filePath      string
-	fileSize      int64
-	statuses      []model.ScriptStatus
-	statusErrors  []string
-	findItems     []model.Script
-	findTotal     int64
-	findErr       error
-	findUserID    uint
-	findOffset    int
-	findLimit     int
-	detailScript  *model.Script
-	detailErr     error
-	detailID      uint
-	detailUserID  uint
-	characters    []model.ScriptCharacter
-	charactersErr error
-	deleteErr     error
-	deletedID     uint
+	createErr      error
+	updateFileErr  error
+	statusErr      error
+	created        *model.Script
+	filePath       string
+	fileSize       int64
+	statuses       []model.ScriptStatus
+	statusErrors   []string
+	retryUpdated   bool
+	retryErr       error
+	retryID        uint
+	retryUserID    uint
+	parseUpdated   bool
+	parseStatus    model.ScriptStatus
+	parseError     string
+	parseChunks    int
+	parseUpdateErr error
+	scriptByID     *model.Script
+	scriptByIDErr  error
+	findItems      []model.Script
+	findTotal      int64
+	findErr        error
+	findUserID     uint
+	findOffset     int
+	findLimit      int
+	detailScript   *model.Script
+	detailErr      error
+	detailID       uint
+	detailUserID   uint
+	characters     []model.ScriptCharacter
+	charactersErr  error
+	deleteErr      error
+	deletedID      uint
 }
 
 func (r *fakeScriptRepository) Create(script *model.Script) error {
@@ -48,6 +59,10 @@ func (r *fakeScriptRepository) Create(script *model.Script) error {
 	copied := *script
 	r.created = &copied
 	return nil
+}
+
+func (r *fakeScriptRepository) FindByID(_ uint) (*model.Script, error) {
+	return r.scriptByID, r.scriptByIDErr
 }
 
 func (r *fakeScriptRepository) FindByUserID(
@@ -86,9 +101,130 @@ func (r *fakeScriptRepository) UpdateStatus(_ uint, status model.ScriptStatus, e
 	return r.statusErr
 }
 
+func (r *fakeScriptRepository) BeginRetry(id, userID uint) (bool, error) {
+	r.retryID = id
+	r.retryUserID = userID
+	return r.retryUpdated, r.retryErr
+}
+
+func (r *fakeScriptRepository) UpdateParseResult(
+	_ uint,
+	status model.ScriptStatus,
+	errMsg string,
+	chunkCount int,
+) (bool, error) {
+	r.parseStatus = status
+	r.parseError = errMsg
+	r.parseChunks = chunkCount
+	return r.parseUpdated, r.parseUpdateErr
+}
+
 func (r *fakeScriptRepository) Delete(id uint) error {
 	r.deletedID = id
 	return r.deleteErr
+}
+
+func TestScriptServiceUpdateParseResult(t *testing.T) {
+	repository := &fakeScriptRepository{parseUpdated: true}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	err := svc.UpdateParseResult(42, model.ScriptStatusReady, "", 6)
+
+	if err != nil {
+		t.Fatalf("UpdateParseResult() error = %v", err)
+	}
+	if repository.parseStatus != model.ScriptStatusReady ||
+		repository.parseError != "" ||
+		repository.parseChunks != 6 {
+		t.Fatalf(
+			"parse update = (%q, %q, %d)",
+			repository.parseStatus,
+			repository.parseError,
+			repository.parseChunks,
+		)
+	}
+}
+
+func TestScriptServiceUpdateParseResultValidatesTerminalResult(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     model.ScriptStatus
+		errorText  string
+		chunkCount int
+		wantErr    error
+	}{
+		{"unsupported status", model.ScriptStatusParsing, "", 0, ErrInvalidScriptStatus},
+		{"ready without chunks", model.ScriptStatusReady, "", 0, ErrInvalidParseResult},
+		{"ready with error", model.ScriptStatusReady, "unexpected", 2, ErrInvalidParseResult},
+		{"failed without error", model.ScriptStatusFailed, "", 0, ErrInvalidParseResult},
+		{"failed with chunks", model.ScriptStatusFailed, "failed", 1, ErrInvalidParseResult},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repository := &fakeScriptRepository{}
+			svc := newScriptServiceForTest(
+				repository,
+				&fakeScriptStorage{},
+				&fakeScriptParser{},
+			)
+
+			err := svc.UpdateParseResult(42, tt.status, tt.errorText, tt.chunkCount)
+
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if repository.parseStatus != "" {
+				t.Fatalf("invalid result reached repository: %q", repository.parseStatus)
+			}
+		})
+	}
+}
+
+func TestScriptServiceUpdateParseResultIsIdempotent(t *testing.T) {
+	repository := &fakeScriptRepository{
+		scriptByID: &model.Script{
+			ID:         42,
+			Status:     model.ScriptStatusFailed,
+			ParseError: "PDF 解析失败",
+			ChunkCount: 0,
+		},
+	}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	err := svc.UpdateParseResult(42, model.ScriptStatusFailed, " PDF 解析失败 ", 0)
+
+	if err != nil {
+		t.Fatalf("repeated callback error = %v", err)
+	}
+}
+
+func TestScriptServiceUpdateParseResultRejectsConflictingCallback(t *testing.T) {
+	repository := &fakeScriptRepository{
+		scriptByID: &model.Script{
+			ID:         42,
+			Status:     model.ScriptStatusReady,
+			ChunkCount: 5,
+		},
+	}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	err := svc.UpdateParseResult(42, model.ScriptStatusFailed, "late failure", 0)
+
+	if !errors.Is(err, ErrScriptStatusConflict) {
+		t.Fatalf("error = %v, want ErrScriptStatusConflict", err)
+	}
+}
+
+func TestScriptServiceUpdateParseResultMapsMissingScript(t *testing.T) {
+	repository := &fakeScriptRepository{scriptByIDErr: gorm.ErrRecordNotFound}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	err := svc.UpdateParseResult(42, model.ScriptStatusReady, "", 3)
+
+	if !errors.Is(err, ErrScriptNotFound) {
+		t.Fatalf("error = %v, want ErrScriptNotFound", err)
+	}
 }
 
 type fakeScriptStorage struct {
@@ -126,9 +262,11 @@ func (s *fakeScriptStorage) RemoveObject(_ context.Context, objectName string) e
 }
 
 type fakeScriptParser struct {
-	err      error
-	response *ai_client.ParseScriptResponse
-	request  *ai_client.ParseScriptRequest
+	err              error
+	response         *ai_client.ParseScriptResponse
+	request          *ai_client.ParseScriptRequest
+	deleteVectorsErr error
+	deletedVectorID  uint
 }
 
 func (p *fakeScriptParser) ParseScript(
@@ -137,6 +275,11 @@ func (p *fakeScriptParser) ParseScript(
 ) (*ai_client.ParseScriptResponse, error) {
 	p.request = req
 	return p.response, p.err
+}
+
+func (p *fakeScriptParser) DeleteScriptVectors(_ context.Context, scriptID uint) error {
+	p.deletedVectorID = scriptID
+	return p.deleteVectorsErr
 }
 
 func newScriptServiceForTest(
@@ -391,10 +534,12 @@ func TestScriptServiceDelete(t *testing.T) {
 			ID:       42,
 			UserID:   7,
 			FilePath: "scripts/7/42/file.pdf",
+			Status:   model.ScriptStatusReady,
 		},
 	}
 	objectStorage := &fakeScriptStorage{}
-	svc := newScriptServiceForTest(repository, objectStorage, &fakeScriptParser{})
+	parser := &fakeScriptParser{}
+	svc := newScriptServiceForTest(repository, objectStorage, parser)
 
 	err := svc.Delete(context.Background(), 7, 42)
 	if err != nil {
@@ -406,6 +551,9 @@ func TestScriptServiceDelete(t *testing.T) {
 	if objectStorage.removedObject != "scripts/7/42/file.pdf" {
 		t.Fatalf("removed object = %q", objectStorage.removedObject)
 	}
+	if parser.deletedVectorID != 42 {
+		t.Fatalf("deleted vector script ID = %d, want 42", parser.deletedVectorID)
+	}
 	if repository.deletedID != 42 {
 		t.Fatalf("deleted ID = %d, want 42", repository.deletedID)
 	}
@@ -413,7 +561,11 @@ func TestScriptServiceDelete(t *testing.T) {
 
 func TestScriptServiceDeleteWithoutStoredObject(t *testing.T) {
 	repository := &fakeScriptRepository{
-		detailScript: &model.Script{ID: 42, UserID: 7},
+		detailScript: &model.Script{
+			ID:     42,
+			UserID: 7,
+			Status: model.ScriptStatusFailed,
+		},
 	}
 	objectStorage := &fakeScriptStorage{}
 	svc := newScriptServiceForTest(repository, objectStorage, &fakeScriptParser{})
@@ -436,6 +588,7 @@ func TestScriptServiceDeleteStopsWhenObjectRemovalFails(t *testing.T) {
 			ID:       42,
 			UserID:   7,
 			FilePath: "scripts/7/42/file.pdf",
+			Status:   model.ScriptStatusReady,
 		},
 	}
 	objectStorage := &fakeScriptStorage{removeErr: errors.New("minio unavailable")}
@@ -450,6 +603,50 @@ func TestScriptServiceDeleteStopsWhenObjectRemovalFails(t *testing.T) {
 	}
 }
 
+func TestScriptServiceDeleteStopsWhenVectorCleanupFails(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:       42,
+			UserID:   7,
+			FilePath: "scripts/7/42/file.pdf",
+			Status:   model.ScriptStatusReady,
+		},
+	}
+	objectStorage := &fakeScriptStorage{}
+	parser := &fakeScriptParser{deleteVectorsErr: errors.New("milvus unavailable")}
+	svc := newScriptServiceForTest(repository, objectStorage, parser)
+
+	err := svc.Delete(context.Background(), 7, 42)
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("Delete() error = %v, want wrapped %v", err, ErrInternal)
+	}
+	if objectStorage.removedObject != "" || repository.deletedID != 0 {
+		t.Fatal("deletion continued after vector cleanup failure")
+	}
+}
+
+func TestScriptServiceDeleteRejectsActiveParsing(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:     42,
+			UserID: 7,
+			Status: model.ScriptStatusParsing,
+		},
+	}
+	parser := &fakeScriptParser{}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, parser)
+
+	err := svc.Delete(context.Background(), 7, 42)
+
+	if !errors.Is(err, ErrScriptStatusConflict) {
+		t.Fatalf("Delete() error = %v, want ErrScriptStatusConflict", err)
+	}
+	if parser.deletedVectorID != 0 || repository.deletedID != 0 {
+		t.Fatal("active script reached deletion dependencies")
+	}
+}
+
 func TestScriptServiceDeleteHidesUnauthorizedScriptAsNotFound(t *testing.T) {
 	repository := &fakeScriptRepository{detailErr: gorm.ErrRecordNotFound}
 	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
@@ -457,6 +654,106 @@ func TestScriptServiceDeleteHidesUnauthorizedScriptAsNotFound(t *testing.T) {
 	err := svc.Delete(context.Background(), 99, 42)
 	if !errors.Is(err, ErrScriptNotFound) {
 		t.Fatalf("Delete() error = %v, want %v", err, ErrScriptNotFound)
+	}
+}
+
+func TestScriptServiceRetry(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:         42,
+			UserID:     7,
+			FilePath:   "scripts/7/42/source.pdf",
+			Status:     model.ScriptStatusFailed,
+			ParseError: "empty PDF",
+			ChunkCount: 3,
+		},
+		retryUpdated: true,
+	}
+	parser := &fakeScriptParser{
+		response: &ai_client.ParseScriptResponse{Success: true, Message: "accepted"},
+	}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, parser)
+
+	script, err := svc.Retry(context.Background(), 7, 42)
+
+	if err != nil {
+		t.Fatalf("Retry() error = %v", err)
+	}
+	if repository.retryID != 42 || repository.retryUserID != 7 {
+		t.Fatalf(
+			"retry transition = (script=%d, user=%d)",
+			repository.retryID,
+			repository.retryUserID,
+		)
+	}
+	if parser.request == nil ||
+		parser.request.ScriptID != 42 ||
+		parser.request.FilePath != "scripts/7/42/source.pdf" {
+		t.Fatalf("parser request = %#v", parser.request)
+	}
+	if script.Status != model.ScriptStatusParsing ||
+		script.ParseError != "" ||
+		script.ChunkCount != 0 {
+		t.Fatalf("retried script = %#v", script)
+	}
+}
+
+func TestScriptServiceRetryRejectsNonFailedScript(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:       42,
+			UserID:   7,
+			FilePath: "scripts/7/42/source.pdf",
+			Status:   model.ScriptStatusReady,
+		},
+	}
+	parser := &fakeScriptParser{}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, parser)
+
+	_, err := svc.Retry(context.Background(), 7, 42)
+
+	if !errors.Is(err, ErrScriptStatusConflict) {
+		t.Fatalf("Retry() error = %v, want ErrScriptStatusConflict", err)
+	}
+	if repository.retryID != 0 || parser.request != nil {
+		t.Fatal("non-failed script reached retry dependencies")
+	}
+}
+
+func TestScriptServiceRetryRestoresFailedStatusWhenParserCallFails(t *testing.T) {
+	repository := &fakeScriptRepository{
+		detailScript: &model.Script{
+			ID:       42,
+			UserID:   7,
+			FilePath: "scripts/7/42/source.pdf",
+			Status:   model.ScriptStatusFailed,
+		},
+		retryUpdated: true,
+	}
+	parser := &fakeScriptParser{err: errors.New("python unavailable")}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, parser)
+
+	_, err := svc.Retry(context.Background(), 7, 42)
+
+	if !errors.Is(err, ErrInternal) {
+		t.Fatalf("Retry() error = %v, want wrapped ErrInternal", err)
+	}
+	assertLastScriptStatus(
+		t,
+		repository,
+		model.ScriptStatusFailed,
+		"failed to restart script parsing",
+	)
+}
+
+func TestScriptServiceRetryHidesUnauthorizedScriptAsNotFound(t *testing.T) {
+	repository := &fakeScriptRepository{detailErr: gorm.ErrRecordNotFound}
+	svc := newScriptServiceForTest(repository, &fakeScriptStorage{}, &fakeScriptParser{})
+
+	_, err := svc.Retry(context.Background(), 99, 42)
+
+	if !errors.Is(err, ErrScriptNotFound) {
+		t.Fatalf("Retry() error = %v, want ErrScriptNotFound", err)
 	}
 }
 

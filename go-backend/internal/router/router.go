@@ -16,6 +16,8 @@ func Setup(
 	db *gorm.DB,
 	hub *ws.Hub,
 	scriptHandler *handler.ScriptHandler,
+	internalScriptHandler *handler.InternalScriptHandler,
+	gameHandler *handler.GameHandler,
 ) *gin.Engine {
 	r := gin.Default()
 
@@ -40,6 +42,12 @@ func Setup(
 		}
 
 		// 需鉴权的端点
+		internal := v1.Group("/internal")
+		internal.Use(middleware.InternalAuth(cfg.Internal.SharedSecret))
+		{
+			internal.POST("/scripts/:id/status", internalScriptHandler.UpdateStatus)
+		}
+
 		authorized := v1.Group("")
 		authorized.Use(middleware.AuthMiddleware(cfg))
 		{
@@ -56,14 +64,15 @@ func Setup(
 				scripts.POST("/upload", scriptHandler.UploadScript)
 				scripts.GET("", scriptHandler.ListScripts)
 				scripts.GET("/:id", scriptHandler.GetScriptDetail)
+				scripts.POST("/:id/retry", scriptHandler.RetryScript)
 				scripts.DELETE("/:id", scriptHandler.DeleteScript)
 			}
 
 			// 游戏 (Phase 1 M1.5 实现)
 			games := authorized.Group("/games")
 			{
-				games.POST("/solo/start", handler.StartSoloGame)
-				games.POST("/:roomId/action", handler.SubmitAction)
+				games.POST("/solo/start", gameHandler.StartSoloGame)
+				games.POST("/:roomId/action", gameHandler.SubmitAction)
 				games.POST("/:roomId/save", handler.ManualSave)
 				games.GET("/:roomId/saves", handler.ListSaves)
 				games.POST("/:roomId/load", handler.LoadGame)

@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 const LoginView = () => import('@/views/LoginView.vue')
 const RegisterView = () => import('@/views/RegisterView.vue')
 const DashboardView = () => import('@/views/DashboardView.vue')
+const ScriptDetailView = () => import('@/views/ScriptDetailView.vue')
 const GameSoloView = () => import('@/views/GameSoloView.vue')
 const GamePlayView = () => import('@/views/GamePlayView.vue')
 
@@ -32,6 +33,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/scripts/:id',
+    name: 'ScriptDetail',
+    component: ScriptDetailView,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/game/solo/:id',
     name: 'GameSolo',
     component: GameSoloView,
@@ -51,16 +58,25 @@ const router = createRouter({
 })
 
 // 路由守卫 — 鉴权检查
-router.beforeEach((to, _from, next) => {
+router.beforeEach(async (to) => {
   const authStore = useAuthStore()
 
-  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
-    next({ name: 'Login', query: { redirect: to.fullPath } })
-  } else if (to.meta.guest && authStore.isLoggedIn) {
-    next({ name: 'Dashboard' })
-  } else {
-    next()
+  if (authStore.accessToken && !authStore.user) {
+    try {
+      await authStore.fetchProfile()
+    } catch {
+      authStore.logout()
+    }
   }
+
+  if (to.meta.requiresAuth && !authStore.isLoggedIn) {
+    return { name: 'Login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.guest && authStore.isLoggedIn) {
+    return { name: 'Dashboard' }
+  }
+
+  return true
 })
 
 export default router
