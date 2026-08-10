@@ -121,16 +121,17 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 - [x] MySQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
 - [x] Go: `game_repo.go` — 房间、玩家与存档 CRUD
-- [ ] Go: `game_service.go` — 单人游戏核心逻辑
+- [x] Go: `game_service.go` — 单人游戏核心逻辑
   - [x] 快速开始（创建房间 → 调 AI 生成开场叙事 → 初始化 Redis）
   - [x] 处理行动（权限校验 → Python AI → 状态解释 → Redis CAS 原子提交）
   - [x] 手动存档 Service（Redis 一致性快照 → MySQL 持久化）
-  - [ ] 存档列表与读档恢复
-  - [ ] 自动存档（每 10 轮）
-- [ ] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
+  - [x] 存档列表与读档恢复
+  - [x] 自动存档（每 10 轮）
+  - [x] 暂停、恢复、结束及 MySQL/Redis 补偿一致性
+- [x] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
   - [x] `POST /games/solo/start` 快速开始
   - [x] `POST /games/:roomId/action` 同步行动提交
-  - [ ] 手动存档、存档列表、读档、暂停、恢复与结束
+  - [x] 手动存档、存档列表、读档、暂停、恢复与结束
 - [ ] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理
 - [ ] Go: `ws_handler.go` — WS 鉴权 + 消息路由
 - [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`
@@ -141,6 +142,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
   - [x] 最近 10 条消息 LIST (`LPUSH + LTRIM`)
   - [x] 行动 UUID/指纹幂等缓存与预期回合 CAS
   - [x] 带版本快照的原子读取与恢复（恢复时清空行动缓存）
+  - [x] 运行态世代隔离（暂停/读档后拒绝旧 AI 结果）
+  - [x] 自动存档待持久化队列及失败重试补偿
 - [ ] Vue: `stores/game.ts` — 游戏运行态管理
 - [ ] Vue: `stores/websocket.ts` — WebSocket 连接 + 心跳 + 重连
 - [ ] Vue: `GameSoloView.vue` + `CharacterSelectPanel.vue`
@@ -377,9 +380,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中，于 2026-08-04 暂停
+- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；后端生命周期闭环完成，准备进入 WebSocket 模块
 - **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
-- **代码状态**：M1.5 已完成 MySQL 数据层、Redis 运行态/快照、快速开始、同步行动接口和手动存档 Service；手动存档 HTTP 入口及读档闭环尚未完成
-- **验证状态**：当前 Go 全量测试、`go vet ./...` 与 `git diff --check` 通过；专项并发/幂等/快照测试通过；真实 MySQL、Redis、Python 与 Docker 端到端联调未执行
-- **暂停状态**：已提交当前完成代码，恢复顺序见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：先实现手动存档 HTTP Handler，再依次实现存档列表、读档恢复、自动存档与房间生命周期接口
+- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环
+- **验证状态**：Go 全量测试、`go vet ./...`、`go build ./...`、`git diff --check` 与 `go test -race ./...` 通过；真实 MySQL、Redis、Python 与 Docker 端到端联调仍暂缓
+- **提交状态**：数据库迁移执行器和 M1.5 后端生命周期已按模块提交，详见 [开发暂停交接.md](./开发暂停交接.md)
+- **下一步**：实现 WebSocket 流式事件与游戏消息推送，再进入 Vue 单人游戏页面
