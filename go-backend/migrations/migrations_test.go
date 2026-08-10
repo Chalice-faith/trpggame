@@ -39,6 +39,13 @@ func TestM15MigrationsExposeRequiredContracts(t *testing.T) {
 				"KEY idx_game_saves_room_created (room_id, created_at DESC)",
 			},
 		},
+		{
+			file: "008_add_auto_save_uniqueness.sql",
+			required: []string{
+				"GENERATED ALWAYS AS (CASE WHEN is_auto THEN round_number ELSE NULL END) STORED",
+				"UNIQUE KEY idx_game_saves_auto_round (room_id, auto_round_number)",
+			},
+		},
 	}
 
 	for _, test := range tests {
