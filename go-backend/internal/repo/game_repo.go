@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"trpggame/internal/model"
 )
@@ -112,6 +113,45 @@ func (r *GameRepo) TransitionRoomStatus(
 	return result.RowsAffected == 1, result.Error
 }
 
+// AdvanceRoomProgress 单调推进房间回合字段，迟到请求不会覆盖更大的进度。
+func (r *GameRepo) AdvanceRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 {
+		return false, errors.New("invalid room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND status IN ?", roomID, ownerID, []model.RoomStatus{
+			model.RoomStatusPlaying, model.RoomStatusPaused,
+		}).
+		Updates(map[string]any{
+			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
+			"round_number": gorm.Expr("GREATEST(round_number, ?)", turn),
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// ReplacePausedRoomProgress 在读档隔离状态下用存档回合替换持久化进度。
+func (r *GameRepo) ReplacePausedRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 {
+		return false, errors.New("invalid paused room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND status = ?", roomID, ownerID, model.RoomStatusPaused).
+		Updates(map[string]any{"current_turn": turn, "round_number": turn})
+	return result.RowsAffected == 1, result.Error
+}
+
 // AddPlayer 添加玩家到已有房间。
 func (r *GameRepo) AddPlayer(
 	ctx context.Context,
@@ -167,6 +207,20 @@ func (r *GameRepo) CreateSave(
 	save *model.GameSave,
 ) error {
 	return r.db.WithContext(ctx).Create(save).Error
+}
+
+// CreateAutoSave 幂等创建指定房间和回合的自动存档；唯一约束冲突时返回 false。
+func (r *GameRepo) CreateAutoSave(
+	ctx context.Context,
+	save *model.GameSave,
+) (bool, error) {
+	if save == nil || !save.IsAuto || save.RoomID == 0 || save.RoundNumber <= 0 {
+		return false, errors.New("invalid automatic game save")
+	}
+	result := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(save)
+	return result.RowsAffected == 1, result.Error
 }
 
 // ListSaves 列出房间存档，创建时间相同时按 ID 逆序稳定排序。

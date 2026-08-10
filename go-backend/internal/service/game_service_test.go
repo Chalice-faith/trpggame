@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"trpggame/internal/ai_client"
@@ -27,28 +28,137 @@ type gameTransitionResult struct {
 }
 
 type fakeGameRepository struct {
-	createErr         error
-	createdRoom       *model.GameRoom
-	createdPlayer     *model.RoomPlayer
-	transitions       []gameTransitionCall
-	transitionResults []gameTransitionResult
-	room              *model.GameRoom
-	roomErr           error
-	player            *model.RoomPlayer
-	playerErr         error
-	roomQueryID       uint
-	roomQueryOwnerID  uint
-	createSaveErr     error
-	createdSave       *model.GameSave
-	assignSaveID      uint
+	createErr              error
+	createdRoom            *model.GameRoom
+	createdPlayer          *model.RoomPlayer
+	transitions            []gameTransitionCall
+	transitionResults      []gameTransitionResult
+	room                   *model.GameRoom
+	roomErr                error
+	player                 *model.RoomPlayer
+	playerErr              error
+	roomQueryID            uint
+	roomQueryOwnerID       uint
+	createSaveErr          error
+	createdSave            *model.GameSave
+	assignSaveID           uint
+	createAutoSaveErr      error
+	autoSaveCreated        bool
+	createdAutoSave        *model.GameSave
+	listedSaves            []model.GameSave
+	listSavesErr           error
+	listSavesRoomID        uint
+	foundSave              *model.GameSave
+	findSaveErr            error
+	findSaveRoomID         uint
+	findSaveID             uint
+	roomResults            []gameRoomQueryResult
+	roomQueryContexts      []error
+	transitionHook         func()
+	progressCalls          []gameProgressCall
+	progressResults        []gameTransitionResult
+	replaceProgressCalls   []gameProgressCall
+	replaceProgressResults []gameTransitionResult
+}
+
+type gameProgressCall struct {
+	contextErr error
+	roomID     uint
+	ownerID    uint
+	turn       int
+}
+
+func (r *fakeGameRepository) AdvanceRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	r.progressCalls = append(r.progressCalls, gameProgressCall{
+		contextErr: ctx.Err(), roomID: roomID, ownerID: ownerID, turn: turn,
+	})
+	if len(r.progressResults) > 0 {
+		result := r.progressResults[0]
+		r.progressResults = r.progressResults[1:]
+		return result.updated, result.err
+	}
+	return true, nil
+}
+
+func (r *fakeGameRepository) ReplacePausedRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	r.replaceProgressCalls = append(r.replaceProgressCalls, gameProgressCall{
+		contextErr: ctx.Err(), roomID: roomID, ownerID: ownerID, turn: turn,
+	})
+	if len(r.replaceProgressResults) > 0 {
+		result := r.replaceProgressResults[0]
+		r.replaceProgressResults = r.replaceProgressResults[1:]
+		return result.updated, result.err
+	}
+	return true, nil
+}
+
+func (r *fakeGameRepository) CreateAutoSave(
+	_ context.Context,
+	save *model.GameSave,
+) (bool, error) {
+	if save != nil {
+		copySave := *save
+		copySave.RedisSnapshot = append(json.RawMessage(nil), save.RedisSnapshot...)
+		copySave.RecentMessages = append(json.RawMessage(nil), save.RecentMessages...)
+		r.createdAutoSave = &copySave
+	}
+	if r.createAutoSaveErr != nil {
+		return false, r.createAutoSaveErr
+	}
+	if r.autoSaveCreated {
+		if save != nil && save.ID == 0 {
+			save.ID = 92
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (r *fakeGameRepository) FindSaveByID(
+	_ context.Context,
+	roomID uint,
+	saveID uint,
+) (*model.GameSave, error) {
+	r.findSaveRoomID = roomID
+	r.findSaveID = saveID
+	return r.foundSave, r.findSaveErr
+}
+
+type gameRoomQueryResult struct {
+	room *model.GameRoom
+	err  error
+}
+
+func (r *fakeGameRepository) ListSaves(
+	_ context.Context,
+	roomID uint,
+) ([]model.GameSave, error) {
+	r.listSavesRoomID = roomID
+	return r.listedSaves, r.listSavesErr
 }
 
 func (r *fakeGameRepository) FindRoomByIDAndOwnerID(
-	_ context.Context,
+	ctx context.Context,
 	roomID, ownerID uint,
 ) (*model.GameRoom, error) {
 	r.roomQueryID = roomID
 	r.roomQueryOwnerID = ownerID
+	r.roomQueryContexts = append(r.roomQueryContexts, ctx.Err())
+	if len(r.roomResults) > 0 {
+		result := r.roomResults[0]
+		r.roomResults = r.roomResults[1:]
+		return result.room, result.err
+	}
 	return r.room, r.roomErr
 }
 
@@ -96,6 +206,9 @@ func (r *fakeGameRepository) TransitionRoomStatus(
 	from []model.RoomStatus,
 	to model.RoomStatus,
 ) (bool, error) {
+	if r.transitionHook != nil {
+		r.transitionHook()
+	}
 	r.transitions = append(r.transitions, gameTransitionCall{
 		contextErr: ctx.Err(),
 		roomID:     roomID,
@@ -173,29 +286,143 @@ type runtimeDeleteCall struct {
 }
 
 type fakeGameRuntimeRepository struct {
-	initializeErr        error
-	initializeContextErr error
-	deleteErr            error
-	initialized          *model.SoloRuntimeState
-	deleteCalls          []runtimeDeleteCall
-	findResult           *model.ActionCommitResult
-	findFound            bool
-	findErr              error
-	findCalls            int
-	commitResult         *model.ActionCommitResult
-	commitErr            error
-	committed            *model.ActionRuntimeMutation
-	captureResult        *model.SoloRuntimeSnapshot
-	captureErr           error
-	captureRoomID        uint
-	captureUserID        uint
+	initializeErr         error
+	initializeContextErr  error
+	deleteErr             error
+	deleteResults         []error
+	initialized           *model.SoloRuntimeState
+	deleteCalls           []runtimeDeleteCall
+	findResult            *model.ActionCommitResult
+	findFound             bool
+	findErr               error
+	findCalls             int
+	commitResult          *model.ActionCommitResult
+	commitErr             error
+	committed             *model.ActionRuntimeMutation
+	captureResult         *model.SoloRuntimeSnapshot
+	captureErr            error
+	captureRoomID         uint
+	captureUserID         uint
+	captureContextErr     error
+	statusTransitions     []runtimeStatusTransitionCall
+	statusResults         []runtimeStatusTransitionResult
+	statusTransitionHook  func()
+	beginGeneration       string
+	beginErr              error
+	beginCalls            int
+	beginRoomID           uint
+	beginUserID           uint
+	beginExpectedTurn     int
+	restoreErr            error
+	restored              *model.SoloRuntimeSnapshot
+	pendingAutoSaves      []model.PendingAutoSave
+	listPendingErr        error
+	acknowledgedAutoSaves []model.PendingAutoSave
+	acknowledgeErr        error
 }
 
-func (r *fakeGameRuntimeRepository) CaptureSoloRoom(
+func (r *fakeGameRuntimeRepository) ListPendingAutoSaves(
+	_ context.Context,
+	_, _ uint,
+) ([]model.PendingAutoSave, error) {
+	return append([]model.PendingAutoSave(nil), r.pendingAutoSaves...), r.listPendingErr
+}
+
+func (r *fakeGameRuntimeRepository) AcknowledgeAutoSave(
+	_ context.Context,
+	_ uint,
+	turn int,
+	generation string,
+) error {
+	if r.acknowledgeErr != nil {
+		return r.acknowledgeErr
+	}
+	for index, item := range r.pendingAutoSaves {
+		if item.Generation == generation && item.Snapshot != nil && item.Snapshot.Turn == turn {
+			r.acknowledgedAutoSaves = append(r.acknowledgedAutoSaves, item)
+			r.pendingAutoSaves = append(r.pendingAutoSaves[:index], r.pendingAutoSaves[index+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+func (r *fakeGameRuntimeRepository) RestoreSoloRoom(
+	_ context.Context,
+	snapshot *model.SoloRuntimeSnapshot,
+) error {
+	if snapshot != nil {
+		copySnapshot := *snapshot
+		copySnapshot.TurnOrder = append([]uint{}, snapshot.TurnOrder...)
+		copySnapshot.RecentMessages = append([]model.RuntimeMessage{}, snapshot.RecentMessages...)
+		copySnapshot.Items = append([]model.RuntimeItem{}, snapshot.Items...)
+		copySnapshot.Buffs = append([]model.RuntimeBuff{}, snapshot.Buffs...)
+		copySnapshot.PlayerState = make(map[string]string, len(snapshot.PlayerState))
+		for field, value := range snapshot.PlayerState {
+			copySnapshot.PlayerState[field] = value
+		}
+		r.restored = &copySnapshot
+	}
+	return r.restoreErr
+}
+
+func (r *fakeGameRuntimeRepository) BeginSoloAction(
 	_ context.Context,
 	roomID uint,
 	userID uint,
+	expectedTurn int,
+) (string, error) {
+	r.beginCalls++
+	r.beginRoomID = roomID
+	r.beginUserID = userID
+	r.beginExpectedTurn = expectedTurn
+	if r.beginGeneration == "" {
+		r.beginGeneration = "11111111-1111-4111-8111-111111111111"
+	}
+	return r.beginGeneration, r.beginErr
+}
+
+type runtimeStatusTransitionCall struct {
+	contextErr error
+	roomID     uint
+	userID     uint
+	from       []model.RoomStatus
+	to         model.RoomStatus
+}
+
+type runtimeStatusTransitionResult struct {
+	updated bool
+	err     error
+}
+
+func (r *fakeGameRuntimeRepository) TransitionSoloRoomStatus(
+	ctx context.Context,
+	roomID uint,
+	userID uint,
+	from []model.RoomStatus,
+	to model.RoomStatus,
+) (bool, error) {
+	if r.statusTransitionHook != nil {
+		r.statusTransitionHook()
+	}
+	r.statusTransitions = append(r.statusTransitions, runtimeStatusTransitionCall{
+		contextErr: ctx.Err(), roomID: roomID, userID: userID,
+		from: append([]model.RoomStatus(nil), from...), to: to,
+	})
+	if len(r.statusResults) == 0 {
+		return true, nil
+	}
+	result := r.statusResults[0]
+	r.statusResults = r.statusResults[1:]
+	return result.updated, result.err
+}
+
+func (r *fakeGameRuntimeRepository) CaptureSoloRoom(
+	ctx context.Context,
+	roomID uint,
+	userID uint,
 ) (*model.SoloRuntimeSnapshot, error) {
+	r.captureContextErr = ctx.Err()
 	r.captureRoomID = roomID
 	r.captureUserID = userID
 	return r.captureResult, r.captureErr
@@ -221,6 +448,12 @@ func (r *fakeGameRuntimeRepository) CommitAction(
 			CurrentTurn:  mutation.ExpectedTurn + 1,
 			ResponseJSON: append(json.RawMessage(nil), mutation.ResponseJSON...),
 		}, nil
+	}
+	if r.commitResult != nil && r.commitResult.AutoSaveSnapshot != nil {
+		r.pendingAutoSaves = append(r.pendingAutoSaves, model.PendingAutoSave{
+			Generation: mutation.Generation,
+			Snapshot:   r.commitResult.AutoSaveSnapshot,
+		})
 	}
 	return r.commitResult, r.commitErr
 }
@@ -251,6 +484,11 @@ func (r *fakeGameRuntimeRepository) DeleteSoloRoom(
 		roomID:     roomID,
 		userID:     userID,
 	})
+	if len(r.deleteResults) > 0 {
+		err := r.deleteResults[0]
+		r.deleteResults = r.deleteResults[1:]
+		return err
+	}
 	return r.deleteErr
 }
 
@@ -306,6 +544,9 @@ func TestGameServiceStartSoloGame(t *testing.T) {
 		runtimeRepository.initialized.PlayerState["hp"] != "10" ||
 		runtimeRepository.initialized.PlayerState["location"] != "" {
 		t.Fatalf("initialized runtime = %#v", runtimeRepository.initialized)
+	}
+	if _, err := uuid.Parse(runtimeRepository.initialized.Generation); err != nil {
+		t.Fatalf("runtime generation = %q, want UUID", runtimeRepository.initialized.Generation)
 	}
 	assertTransition(t, gameRepository.transitions, 0, model.RoomStatusWaiting, model.RoomStatusPlaying)
 }

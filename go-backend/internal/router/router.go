@@ -73,12 +73,12 @@ func Setup(
 			{
 				games.POST("/solo/start", gameHandler.StartSoloGame)
 				games.POST("/:roomId/action", gameHandler.SubmitAction)
-				games.POST("/:roomId/save", handler.ManualSave)
-				games.GET("/:roomId/saves", handler.ListSaves)
-				games.POST("/:roomId/load", handler.LoadGame)
-				games.POST("/:roomId/pause", handler.PauseGame)
-				games.POST("/:roomId/resume", handler.ResumeGame)
-				games.POST("/:roomId/end", handler.EndGame)
+				games.POST("/:roomId/save", gameHandler.ManualSave)
+				games.GET("/:roomId/saves", gameHandler.ListSaves)
+				games.POST("/:roomId/load", gameHandler.LoadGame)
+				games.POST("/:roomId/pause", gameHandler.PauseGame)
+				games.POST("/:roomId/resume", gameHandler.ResumeGame)
+				games.POST("/:roomId/end", gameHandler.EndGame)
 			}
 		}
 	}

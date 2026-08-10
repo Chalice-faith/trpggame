@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"trpggame/internal/ai_client"
@@ -23,6 +24,9 @@ const (
 type GameRepository interface {
 	CreateRoomWithPlayer(ctx context.Context, room *model.GameRoom, player *model.RoomPlayer) error
 	CreateSave(ctx context.Context, save *model.GameSave) error
+	CreateAutoSave(ctx context.Context, save *model.GameSave) (bool, error)
+	ListSaves(ctx context.Context, roomID uint) ([]model.GameSave, error)
+	FindSaveByID(ctx context.Context, roomID, saveID uint) (*model.GameSave, error)
 	FindRoomByIDAndOwnerID(ctx context.Context, id, ownerID uint) (*model.GameRoom, error)
 	FindPlayer(ctx context.Context, roomID, userID uint) (*model.RoomPlayer, error)
 	TransitionRoomStatus(
@@ -32,6 +36,8 @@ type GameRepository interface {
 		from []model.RoomStatus,
 		to model.RoomStatus,
 	) (bool, error)
+	AdvanceRoomProgress(ctx context.Context, roomID, ownerID uint, turn int) (bool, error)
+	ReplacePausedRoomProgress(ctx context.Context, roomID, ownerID uint, turn int) (bool, error)
 }
 
 // GameScriptRepository 描述单人游戏启动所需的剧本查询能力。
@@ -57,6 +63,10 @@ type GameRuntimeRepository interface {
 	InitializeSoloRoom(ctx context.Context, state *model.SoloRuntimeState) error
 	DeleteSoloRoom(ctx context.Context, roomID, userID uint) error
 	CaptureSoloRoom(ctx context.Context, roomID, userID uint) (*model.SoloRuntimeSnapshot, error)
+	RestoreSoloRoom(ctx context.Context, snapshot *model.SoloRuntimeSnapshot) error
+	BeginSoloAction(ctx context.Context, roomID, userID uint, expectedTurn int) (string, error)
+	ListPendingAutoSaves(ctx context.Context, roomID, userID uint) ([]model.PendingAutoSave, error)
+	AcknowledgeAutoSave(ctx context.Context, roomID uint, turn int, generation string) error
 	FindActionResult(
 		ctx context.Context,
 		roomID uint,
@@ -67,6 +77,13 @@ type GameRuntimeRepository interface {
 		ctx context.Context,
 		mutation *model.ActionRuntimeMutation,
 	) (*model.ActionCommitResult, error)
+	TransitionSoloRoomStatus(
+		ctx context.Context,
+		roomID uint,
+		userID uint,
+		from []model.RoomStatus,
+		to model.RoomStatus,
+	) (bool, error)
 }
 
 // GameService 单人游戏业务逻辑。
@@ -194,6 +211,7 @@ func (s *GameService) StartSoloGame(
 	if err := s.runtimeRepo.InitializeSoloRoom(ctx, &model.SoloRuntimeState{
 		RoomID:      room.ID,
 		UserID:      req.UserID,
+		Generation:  uuid.NewString(),
 		Status:      model.RoomStatusPlaying,
 		Turn:        room.RoundNumber,
 		PlayerState: playerState,

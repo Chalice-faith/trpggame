@@ -67,6 +67,7 @@ type RuntimeMessage struct {
 type SoloRuntimeState struct {
 	RoomID      uint
 	UserID      uint
+	Generation  string
 	Status      RoomStatus
 	Turn        int
 	Summary     string
@@ -78,6 +79,7 @@ type SoloRuntimeState struct {
 type ActionRuntimeMutation struct {
 	RoomID             uint
 	UserID             uint
+	Generation         string
 	ExpectedTurn       int
 	RequestID          string
 	RequestFingerprint string
@@ -135,9 +137,16 @@ type SoloRuntimeSnapshot struct {
 
 // ActionCommitResult 是 Redis 行动提交或幂等重放的结果。
 type ActionCommitResult struct {
-	Duplicate    bool
-	CurrentTurn  int
-	ResponseJSON json.RawMessage
+	Duplicate        bool
+	CurrentTurn      int
+	ResponseJSON     json.RawMessage
+	AutoSaveSnapshot *SoloRuntimeSnapshot
+}
+
+// PendingAutoSave 是 Redis 中等待持久化到 MySQL 的自动存档快照。
+type PendingAutoSave struct {
+	Generation string
+	Snapshot   *SoloRuntimeSnapshot
 }
 
 // TableName 自定义表名

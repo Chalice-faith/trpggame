@@ -14,6 +14,7 @@ import (
 	"time"
 
 	miniredis "github.com/alicebob/miniredis/v2"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
 	"trpggame/internal/model"
@@ -34,11 +35,12 @@ func TestRedisGameStateRepoInitializeSoloRoom(t *testing.T) {
 		server.Set(key, "stale")
 	}
 	err = repository.InitializeSoloRoom(ctx, &model.SoloRuntimeState{
-		RoomID:  41,
-		UserID:  7,
-		Status:  model.RoomStatusPlaying,
-		Turn:    0,
-		Summary: "  ",
+		RoomID:     41,
+		UserID:     7,
+		Generation: "11111111-1111-4111-8111-111111111111",
+		Status:     model.RoomStatusPlaying,
+		Turn:       0,
+		Summary:    "  ",
 		PlayerState: map[string]string{
 			"max_hp": "10",
 			"hp":     "10",
@@ -53,6 +55,10 @@ func TestRedisGameStateRepoInitializeSoloRoom(t *testing.T) {
 	assertRedisString(t, server, "room:41:status", "playing")
 	assertRedisString(t, server, "room:41:turn", "0")
 	assertRedisString(t, server, "room:41:summary", "")
+	assertRedisString(t, server, runtimeGenerationKey(41), "11111111-1111-4111-8111-111111111111")
+	if ttl := server.TTL(runtimeGenerationKey(41)); ttl != DefaultGameRuntimeTTL {
+		t.Fatalf("generation TTL = %s, want %s", ttl, DefaultGameRuntimeTTL)
+	}
 	gotTurnOrder, err := server.List("room:41:turn_order")
 	if err != nil {
 		t.Fatalf("read turn order: %v", err)
@@ -83,6 +89,9 @@ func TestRedisGameStateRepoInitializeSoloRoom(t *testing.T) {
 		}
 	}
 	for _, key := range staleKeys[len(runtimeKeys(41, 7)):] {
+		if key == runtimeGenerationKey(41) {
+			continue
+		}
 		if server.Exists(key) {
 			t.Fatalf("stale optional runtime key still exists: %s", key)
 		}
@@ -349,6 +358,71 @@ func TestRedisGameStateRepoCommitActionUsesTurnCAS(t *testing.T) {
 	}
 }
 
+func TestRedisGameStateRepoCommitActionReturnsExactAutomaticSaveSnapshot(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	server.Set("room:41:turn", "9")
+	server.Set("room:41:summary", "第十回合前")
+	mutation := validActionMutation(9, "10101010-1010-4010-8010-101010101010", "turn-ten")
+	mutation.PlayerStateChanges = map[string]string{"hp": "8"}
+	mutation.ItemMutations = []model.RuntimeItemMutation{{Name: "钥匙", QuantityDelta: 1}}
+
+	result, err := repository.CommitAction(context.Background(), mutation)
+
+	if err != nil {
+		t.Fatalf("CommitAction() error = %v", err)
+	}
+	snapshot := result.AutoSaveSnapshot
+	if result.CurrentTurn != 10 || snapshot == nil || snapshot.Turn != 10 ||
+		snapshot.Status != model.RoomStatusPlaying || snapshot.RoomID != 41 || snapshot.UserID != 7 ||
+		snapshot.Summary != "第十回合前" || snapshot.PlayerState["hp"] != "8" ||
+		len(snapshot.Items) != 1 || snapshot.Items[0].Name != "钥匙" ||
+		len(snapshot.RecentMessages) != 3 {
+		t.Fatalf("commit result = %#v", result)
+	}
+	pending, err := repository.ListPendingAutoSaves(context.Background(), 41, 7)
+	if err != nil || len(pending) != 1 || pending[0].Generation != mutation.Generation ||
+		pending[0].Snapshot.Turn != 10 || pending[0].Snapshot.PlayerState["hp"] != "8" {
+		t.Fatalf("pending automatic saves = %#v, error = %v", pending, err)
+	}
+	if err := repository.AcknowledgeAutoSave(
+		context.Background(), 41, 10, "22222222-2222-4222-8222-222222222222",
+	); !errors.Is(err, ErrGameRuntimeGenerationConflict) {
+		t.Fatalf("wrong generation acknowledgement error = %v", err)
+	}
+	if err := repository.AcknowledgeAutoSave(
+		context.Background(), 41, 10, mutation.Generation,
+	); err != nil {
+		t.Fatalf("acknowledge automatic save: %v", err)
+	}
+	pending, err = repository.ListPendingAutoSaves(context.Background(), 41, 7)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("pending after acknowledgement = %#v, error = %v", pending, err)
+	}
+}
+
+func TestRedisGameStateRepoBeginSoloActionBindsGeneration(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	generation, err := repository.BeginSoloAction(context.Background(), 41, 7, 0)
+	if err != nil || generation != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("BeginSoloAction() = (%q, %v)", generation, err)
+	}
+
+	server.Set("room:41:turn", "2")
+	if _, err := repository.BeginSoloAction(context.Background(), 41, 7, 0); !errors.Is(err, ErrGameRuntimeConflict) {
+		t.Fatalf("turn conflict error = %v", err)
+	}
+	server.Set("room:41:turn", "0")
+	server.Set("room:41:status", "paused")
+	if _, err := repository.BeginSoloAction(context.Background(), 41, 7, 0); !errors.Is(err, ErrGameRuntimeNotPlaying) {
+		t.Fatalf("paused error = %v", err)
+	}
+	server.Set("room:41:status", "playing")
+	server.Set(runtimeGenerationKey(41), "malformed")
+	if _, err := repository.BeginSoloAction(context.Background(), 41, 7, 0); !errors.Is(err, ErrGameRuntimeUnavailable) {
+		t.Fatalf("malformed generation error = %v", err)
+	}
+}
+
 func TestRedisGameStateRepoCommitActionRejectsInsufficientItemsAtomically(t *testing.T) {
 	server, repository := initializedRuntimeRepository(t)
 	server.SAdd(itemStateKey(41, 7), "火把|1|旧火把")
@@ -463,6 +537,7 @@ func TestRedisGameStateRepoCommitActionRejectsInvalidContractWithoutMutation(t *
 	tests := []*model.ActionRuntimeMutation{
 		nil,
 		func() *model.ActionRuntimeMutation { value := valid(); value.ExpectedTurn = -1; return value }(),
+		func() *model.ActionRuntimeMutation { value := valid(); value.Generation = "not-uuid"; return value }(),
 		func() *model.ActionRuntimeMutation { value := valid(); value.RequestID = "not-uuid"; return value }(),
 		func() *model.ActionRuntimeMutation {
 			value := valid()
@@ -657,8 +732,15 @@ func TestRedisGameStateRepoRestoreSoloRoomAtomicallyReplacesRuntime(t *testing.T
 	if !reflect.DeepEqual(restored, snapshot) {
 		t.Fatalf("restored snapshot = %#v, want %#v", restored, snapshot)
 	}
+	generation, err := server.Get(runtimeGenerationKey(41))
+	if err != nil {
+		t.Fatalf("read restored generation: %v", err)
+	}
+	if _, err := uuid.Parse(generation); err != nil || generation == "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("restored generation = %q, want a fresh UUID", generation)
+	}
 	for _, key := range soloRuntimeCleanupKeys(41, 7) {
-		if key == actionResultsKey(41) {
+		if key == actionResultsKey(41) || key == pendingAutoSavesKey(41) {
 			continue
 		}
 		if ttl := server.TTL(key); ttl != DefaultGameRuntimeTTL {
@@ -667,9 +749,32 @@ func TestRedisGameStateRepoRestoreSoloRoomAtomicallyReplacesRuntime(t *testing.T
 	}
 }
 
+func TestRedisGameStateRepoRestoreInvalidatesInFlightActionGeneration(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	mutation := validActionMutation(3, "abababab-abab-4bab-8bab-abababababab", "before-load")
+
+	if err := repository.RestoreSoloRoom(context.Background(), validRuntimeSnapshot()); err != nil {
+		t.Fatalf("restore solo room: %v", err)
+	}
+	if _, err := repository.TransitionSoloRoomStatus(
+		context.Background(), 41, 7,
+		[]model.RoomStatus{model.RoomStatusPaused}, model.RoomStatusPlaying,
+	); err != nil {
+		t.Fatalf("resume restored room: %v", err)
+	}
+	if _, err := repository.CommitAction(context.Background(), mutation); !errors.Is(err, ErrGameRuntimeGenerationConflict) {
+		t.Fatalf("stale in-flight action error = %v", err)
+	}
+	assertRedisString(t, server, "room:41:turn", "3")
+	if server.Exists(actionResultsKey(41)) {
+		t.Fatal("stale in-flight action created idempotency cache")
+	}
+}
+
 func TestRedisGameStateRepoRestoreSoloRoomDeletesStaleOptionalState(t *testing.T) {
 	server, repository := initializedRuntimeRepository(t)
 	server.HSet(actionResultsKey(41), "old-request", "cached")
+	server.HSet(pendingAutoSavesKey(41), "10", "stale")
 	server.SAdd(itemStateKey(41, 7), "旧物|1|应删除")
 	server.HSet(buffStateKey(41, 7), "旧Buff", "9")
 	snapshot := validRuntimeSnapshot()
@@ -680,7 +785,7 @@ func TestRedisGameStateRepoRestoreSoloRoomDeletesStaleOptionalState(t *testing.T
 		t.Fatalf("restore solo room: %v", err)
 	}
 	if server.Exists(actionResultsKey(41)) || server.Exists(itemStateKey(41, 7)) ||
-		server.Exists(buffStateKey(41, 7)) {
+		server.Exists(buffStateKey(41, 7)) || server.Exists(pendingAutoSavesKey(41)) {
 		t.Fatal("restore retained stale optional runtime state")
 	}
 }
@@ -800,6 +905,258 @@ func TestRedisGameStateRepoSnapshotMethodsWrapRedisFailure(t *testing.T) {
 	}
 }
 
+func TestRedisGameStateRepoTransitionSoloRoomStatusPausesAndResumes(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	inFlight := validActionMutation(0, "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "paused")
+
+	updated, err := repository.TransitionSoloRoomStatus(
+		context.Background(),
+		41,
+		7,
+		[]model.RoomStatus{model.RoomStatusPlaying},
+		model.RoomStatusPaused,
+	)
+	if err != nil || !updated {
+		t.Fatalf("pause result = %v, error = %v", updated, err)
+	}
+	assertRedisString(t, server, "room:41:status", "paused")
+	pausedGeneration, err := server.Get(runtimeGenerationKey(41))
+	if err != nil {
+		t.Fatalf("read paused generation: %v", err)
+	}
+	if _, err := uuid.Parse(pausedGeneration); err != nil || pausedGeneration == inFlight.Generation {
+		t.Fatalf("paused generation = %q, want fresh UUID", pausedGeneration)
+	}
+	if _, err := repository.CommitAction(
+		context.Background(),
+		inFlight,
+	); !errors.Is(err, ErrGameRuntimeGenerationConflict) {
+		t.Fatalf("action while paused error = %v", err)
+	}
+
+	updated, err = repository.TransitionSoloRoomStatus(
+		context.Background(),
+		41,
+		7,
+		[]model.RoomStatus{model.RoomStatusPaused},
+		model.RoomStatusPlaying,
+	)
+	if err != nil || !updated {
+		t.Fatalf("resume result = %v, error = %v", updated, err)
+	}
+	if _, err := repository.CommitAction(context.Background(), inFlight); !errors.Is(err, ErrGameRuntimeGenerationConflict) {
+		t.Fatalf("in-flight action after resume error = %v", err)
+	}
+	resumedGeneration, err := repository.BeginSoloAction(context.Background(), 41, 7, 0)
+	if err != nil || resumedGeneration != pausedGeneration {
+		t.Fatalf("BeginSoloAction() = (%q, %v), want paused generation", resumedGeneration, err)
+	}
+	resumed := validActionMutation(0, "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "resumed")
+	resumed.Generation = resumedGeneration
+	if _, err := repository.CommitAction(context.Background(), resumed); err != nil {
+		t.Fatalf("action after resume: %v", err)
+	}
+	assertRedisString(t, server, "room:41:turn", "1")
+}
+
+func TestRedisGameStateRepoTransitionSoloRoomStatusSupportsIdempotentSource(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	server.FastForward(time.Hour)
+
+	updated, err := repository.TransitionSoloRoomStatus(
+		context.Background(),
+		41,
+		7,
+		[]model.RoomStatus{model.RoomStatusPlaying},
+		model.RoomStatusPlaying,
+	)
+
+	if err != nil || !updated {
+		t.Fatalf("idempotent transition result = %v, error = %v", updated, err)
+	}
+	assertRedisString(t, server, "room:41:status", "playing")
+	assertRedisString(t, server, runtimeGenerationKey(41), "11111111-1111-4111-8111-111111111111")
+	for _, key := range runtimeKeys(41, 7) {
+		if ttl := server.TTL(key); ttl != DefaultGameRuntimeTTL {
+			t.Fatalf("TTL(%s) = %s, want %s", key, ttl, DefaultGameRuntimeTTL)
+		}
+	}
+}
+
+func TestRedisGameStateRepoIdempotentPauseDoesNotRotateGenerationAgain(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	if _, err := repository.TransitionSoloRoomStatus(
+		context.Background(), 41, 7,
+		[]model.RoomStatus{model.RoomStatusPlaying}, model.RoomStatusPaused,
+	); err != nil {
+		t.Fatalf("initial pause: %v", err)
+	}
+	generation, err := server.Get(runtimeGenerationKey(41))
+	if err != nil {
+		t.Fatalf("read generation after initial pause: %v", err)
+	}
+
+	updated, err := repository.TransitionSoloRoomStatus(
+		context.Background(), 41, 7,
+		[]model.RoomStatus{model.RoomStatusPlaying, model.RoomStatusPaused}, model.RoomStatusPaused,
+	)
+
+	if err != nil || !updated {
+		t.Fatalf("idempotent pause = (%v, %v)", updated, err)
+	}
+	assertRedisString(t, server, runtimeGenerationKey(41), generation)
+}
+
+func TestRedisGameStateRepoTransitionSoloRoomStatusRejectsConflict(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+
+	updated, err := repository.TransitionSoloRoomStatus(
+		context.Background(),
+		41,
+		7,
+		[]model.RoomStatus{model.RoomStatusPaused},
+		model.RoomStatusPlaying,
+	)
+
+	if updated || !errors.Is(err, ErrGameRuntimeStatusConflict) {
+		t.Fatalf("conflict result = %v, error = %v", updated, err)
+	}
+	assertRedisString(t, server, "room:41:status", "playing")
+}
+
+func TestRedisGameStateRepoTransitionSoloRoomStatusRejectsInvalidContractWithoutMutation(t *testing.T) {
+	tests := []struct {
+		roomID uint
+		userID uint
+		from   []model.RoomStatus
+		to     model.RoomStatus
+	}{
+		{0, 7, []model.RoomStatus{model.RoomStatusPlaying}, model.RoomStatusPaused},
+		{41, 0, []model.RoomStatus{model.RoomStatusPlaying}, model.RoomStatusPaused},
+		{41, 7, nil, model.RoomStatusPaused},
+		{41, 7, []model.RoomStatus{model.RoomStatusWaiting}, model.RoomStatusPaused},
+		{41, 7, []model.RoomStatus{model.RoomStatusPlaying}, model.RoomStatusEnded},
+	}
+	for index, test := range tests {
+		server, repository := initializedRuntimeRepository(t)
+		updated, err := repository.TransitionSoloRoomStatus(
+			context.Background(), test.roomID, test.userID, test.from, test.to,
+		)
+		if updated || !errors.Is(err, ErrInvalidGameRuntimeState) {
+			t.Fatalf("case %d result = %v, error = %v", index, updated, err)
+		}
+		assertRedisString(t, server, "room:41:status", "playing")
+	}
+}
+
+func TestRedisGameStateRepoTransitionSoloRoomStatusRejectsMalformedRuntime(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*miniredis.Miniredis)
+	}{
+		{"missing player", func(server *miniredis.Miniredis) { server.Del("room:41:player:7") }},
+		{"invalid turn", func(server *miniredis.Miniredis) { server.Set("room:41:turn", "bad") }},
+		{"wrong action cache type", func(server *miniredis.Miniredis) {
+			server.Set(actionResultsKey(41), "bad")
+		}},
+		{"wrong item type", func(server *miniredis.Miniredis) {
+			server.Set(itemStateKey(41, 7), "bad")
+		}},
+		{"wrong buff type", func(server *miniredis.Miniredis) {
+			server.Set(buffStateKey(41, 7), "bad")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, repository := initializedRuntimeRepository(t)
+			test.mutate(server)
+			updated, err := repository.TransitionSoloRoomStatus(
+				context.Background(),
+				41,
+				7,
+				[]model.RoomStatus{model.RoomStatusPlaying},
+				model.RoomStatusPaused,
+			)
+			if updated || !errors.Is(err, ErrGameRuntimeUnavailable) {
+				t.Fatalf("result = %v, error = %v", updated, err)
+			}
+		})
+	}
+}
+
+func TestRedisGameStateRepoStatusTransitionSerializesWithAction(t *testing.T) {
+	for iteration := 0; iteration < 30; iteration++ {
+		server, repository := initializedRuntimeRepository(t)
+		mutation := validActionMutation(
+			0,
+			fmt.Sprintf("eeeeeeee-eeee-4eee-8eee-%012d", iteration),
+			fmt.Sprintf("status-race-%d", iteration),
+		)
+		mutation.PlayerStateChanges = map[string]string{"hp": "8"}
+		start := make(chan struct{})
+		var wait sync.WaitGroup
+		var actionErr error
+		var transitionUpdated bool
+		var transitionErr error
+		wait.Add(2)
+		go func() {
+			defer wait.Done()
+			<-start
+			_, actionErr = repository.CommitAction(context.Background(), mutation)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			transitionUpdated, transitionErr = repository.TransitionSoloRoomStatus(
+				context.Background(),
+				41,
+				7,
+				[]model.RoomStatus{model.RoomStatusPlaying},
+				model.RoomStatusPaused,
+			)
+		}()
+		close(start)
+		wait.Wait()
+
+		if transitionErr != nil || !transitionUpdated {
+			t.Fatalf("iteration %d transition = %v, error = %v", iteration, transitionUpdated, transitionErr)
+		}
+		assertRedisString(t, server, "room:41:status", "paused")
+		turn, err := server.Get("room:41:turn")
+		if err != nil {
+			t.Fatalf("iteration %d read turn: %v", iteration, err)
+		}
+		hp := server.HGet("room:41:player:7", "hp")
+		switch {
+		case actionErr == nil:
+			if turn != "1" || hp != "8" {
+				t.Fatalf("iteration %d action won with torn state: turn=%s hp=%s", iteration, turn, hp)
+			}
+		case errors.Is(actionErr, ErrGameRuntimeGenerationConflict):
+			if turn != "0" || hp != "10" {
+				t.Fatalf("iteration %d pause won with torn state: turn=%s hp=%s", iteration, turn, hp)
+			}
+		default:
+			t.Fatalf("iteration %d unexpected action error: %v", iteration, actionErr)
+		}
+	}
+}
+
+func TestRedisGameStateRepoTransitionSoloRoomStatusWrapsRedisFailure(t *testing.T) {
+	server, repository := initializedRuntimeRepository(t)
+	server.Close()
+	updated, err := repository.TransitionSoloRoomStatus(
+		context.Background(),
+		41,
+		7,
+		[]model.RoomStatus{model.RoomStatusPlaying},
+		model.RoomStatusPaused,
+	)
+	if updated || !errors.Is(err, ErrGameRuntimeUnavailable) {
+		t.Fatalf("Redis failure result = %v, error = %v", updated, err)
+	}
+}
+
 func validRuntimeSnapshot() *model.SoloRuntimeSnapshot {
 	return &model.SoloRuntimeSnapshot{
 		Version:   model.SoloRuntimeSnapshotVersion,
@@ -826,6 +1183,7 @@ func validSoloRuntimeState() *model.SoloRuntimeState {
 	return &model.SoloRuntimeState{
 		RoomID:      41,
 		UserID:      7,
+		Generation:  "11111111-1111-4111-8111-111111111111",
 		Status:      model.RoomStatusPlaying,
 		PlayerState: map[string]string{"hp": "10"},
 		Opening:     model.RuntimeMessage{Role: "assistant", Content: "opening"},
@@ -852,6 +1210,7 @@ func validActionMutation(turn int, requestID, fingerprintSource string) *model.A
 	return &model.ActionRuntimeMutation{
 		RoomID:             41,
 		UserID:             7,
+		Generation:         "11111111-1111-4111-8111-111111111111",
 		ExpectedTurn:       turn,
 		RequestID:          requestID,
 		RequestFingerprint: fmt.Sprintf("%x", fingerprint),

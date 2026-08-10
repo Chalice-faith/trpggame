@@ -33,12 +33,14 @@ const (
 )
 
 var (
-	ErrInvalidGameRuntimeState   = errors.New("invalid game runtime state")
-	ErrGameRuntimeUnavailable    = errors.New("game runtime unavailable")
-	ErrGameRuntimeConflict       = errors.New("game runtime turn conflict")
-	ErrGameRuntimeNotPlaying     = errors.New("game runtime is not playing")
-	ErrActionIdempotencyConflict = errors.New("action request ID was reused")
-	ErrInsufficientItemQuantity  = errors.New("insufficient item quantity")
+	ErrInvalidGameRuntimeState       = errors.New("invalid game runtime state")
+	ErrGameRuntimeUnavailable        = errors.New("game runtime unavailable")
+	ErrGameRuntimeConflict           = errors.New("game runtime turn conflict")
+	ErrGameRuntimeStatusConflict     = errors.New("game runtime status conflict")
+	ErrGameRuntimeGenerationConflict = errors.New("game runtime generation conflict")
+	ErrGameRuntimeNotPlaying         = errors.New("game runtime is not playing")
+	ErrActionIdempotencyConflict     = errors.New("action request ID was reused")
+	ErrInsufficientItemQuantity      = errors.New("insufficient item quantity")
 )
 
 var integerRuntimeFields = map[string]struct{}{
@@ -53,8 +55,9 @@ redis.call("SET", KEYS[2], ARGV[3])
 redis.call("RPUSH", KEYS[3], ARGV[4])
 redis.call("SET", KEYS[4], ARGV[5])
 redis.call("LPUSH", KEYS[5], ARGV[6])
-if #ARGV > 6 then
-  redis.call("HSET", KEYS[6], unpack(ARGV, 7))
+redis.call("SET", KEYS[10], ARGV[7])
+if #ARGV > 7 then
+  redis.call("HSET", KEYS[6], unpack(ARGV, 8))
 end
 for _, key in ipairs(KEYS) do
   redis.call("EXPIRE", key, ARGV[1])
@@ -76,6 +79,28 @@ if not current or current < 0 or current % 1 ~= 0 then
   return {2, -1, cached}
 end
 return {1, current, cached}
+`)
+
+var beginSoloActionScript = redis.NewScript(`
+local status_type = redis.call("TYPE", KEYS[1]).ok
+local turn_type = redis.call("TYPE", KEYS[2]).ok
+local player_type = redis.call("TYPE", KEYS[3]).ok
+local generation_type = redis.call("TYPE", KEYS[4]).ok
+if status_type ~= "string" or turn_type ~= "string" or player_type ~= "hash" or
+   generation_type ~= "string" then
+  return {4, ""}
+end
+if redis.call("GET", KEYS[1]) ~= "playing" then
+  return {2, ""}
+end
+local current = tonumber(redis.call("GET", KEYS[2]))
+if not current or current < 0 or current % 1 ~= 0 then
+  return {4, ""}
+end
+if current ~= tonumber(ARGV[1]) then
+  return {3, tostring(current)}
+end
+return {1, redis.call("GET", KEYS[4])}
 `)
 
 var captureSoloRuntimeScript = redis.NewScript(`
@@ -116,6 +141,7 @@ redis.call("DEL", unpack(KEYS))
 redis.call("SET", KEYS[1], ARGV[2])
 redis.call("SET", KEYS[2], ARGV[3])
 redis.call("SET", KEYS[4], ARGV[4])
+redis.call("SET", KEYS[10], ARGV[#ARGV])
 local index = 5
 local order_count = tonumber(ARGV[index])
 index = index + 1
@@ -154,6 +180,57 @@ end
 return 1
 `)
 
+var transitionSoloRuntimeStatusScript = redis.NewScript(`
+local status_type = redis.call("TYPE", KEYS[1]).ok
+local turn_type = redis.call("TYPE", KEYS[2]).ok
+local order_type = redis.call("TYPE", KEYS[3]).ok
+local summary_type = redis.call("TYPE", KEYS[4]).ok
+local rounds_type = redis.call("TYPE", KEYS[5]).ok
+local player_type = redis.call("TYPE", KEYS[6]).ok
+local actions_type = redis.call("TYPE", KEYS[7]).ok
+local items_type = redis.call("TYPE", KEYS[8]).ok
+local buffs_type = redis.call("TYPE", KEYS[9]).ok
+local generation_type = redis.call("TYPE", KEYS[10]).ok
+local auto_saves_type = redis.call("TYPE", KEYS[11]).ok
+if status_type ~= "string" or turn_type ~= "string" or order_type ~= "list" or
+   summary_type ~= "string" or rounds_type ~= "list" or player_type ~= "hash" or
+   (actions_type ~= "none" and actions_type ~= "hash") or
+   (items_type ~= "none" and items_type ~= "set") or
+   (buffs_type ~= "none" and buffs_type ~= "hash") or generation_type ~= "string" or
+   (auto_saves_type ~= "none" and auto_saves_type ~= "hash") then
+  return {3, ""}
+end
+local current = redis.call("GET", KEYS[1])
+local turn = tonumber(redis.call("GET", KEYS[2]))
+if (current ~= "playing" and current ~= "paused") or
+   not turn or turn < 0 or turn % 1 ~= 0 then
+  return {3, current or ""}
+end
+local source_count = tonumber(ARGV[3])
+local allowed = false
+for index = 1, source_count do
+  if current == ARGV[3 + index] then
+    allowed = true
+    break
+  end
+end
+if not allowed then
+  return {2, current}
+end
+if current ~= ARGV[2] then
+  redis.call("SET", KEYS[1], ARGV[2])
+  if ARGV[2] == "paused" then
+    redis.call("SET", KEYS[10], ARGV[#ARGV])
+  end
+end
+for _, key in ipairs(KEYS) do
+  if redis.call("EXISTS", key) == 1 then
+    redis.call("EXPIRE", key, ARGV[1])
+  end
+end
+return {1, current}
+`)
+
 var commitActionRuntimeScript = redis.NewScript(`
 local cached = redis.call("HGET", KEYS[7], ARGV[3])
 if cached then
@@ -167,11 +244,17 @@ local player_type = redis.call("TYPE", KEYS[6]).ok
 local actions_type = redis.call("TYPE", KEYS[7]).ok
 local items_type = redis.call("TYPE", KEYS[8]).ok
 local buffs_type = redis.call("TYPE", KEYS[9]).ok
+local generation_type = redis.call("TYPE", KEYS[10]).ok
+local auto_saves_type = redis.call("TYPE", KEYS[11]).ok
 if status_type ~= "string" or turn_type ~= "string" or rounds_type ~= "list" or
    player_type ~= "hash" or (actions_type ~= "none" and actions_type ~= "hash") or
    (items_type ~= "none" and items_type ~= "set") or
-   (buffs_type ~= "none" and buffs_type ~= "hash") then
+   (buffs_type ~= "none" and buffs_type ~= "hash") or generation_type ~= "string" or
+   (auto_saves_type ~= "none" and auto_saves_type ~= "hash") then
   return {5, -1, ""}
+end
+if redis.call("GET", KEYS[10]) ~= ARGV[#ARGV] then
+  return {8, -1, ""}
 end
 if redis.call("GET", KEYS[1]) ~= "playing" then
   return {3, -1, ""}
@@ -255,10 +338,86 @@ redis.call("LTRIM", KEYS[5], 0, 9)
 local next_turn = current + 1
 redis.call("SET", KEYS[2], next_turn)
 redis.call("HSET", KEYS[7], ARGV[3], ARGV[4])
+if next_turn % 10 == 0 then
+  local turn_order = cjson.decode("[]")
+  for _, value in ipairs(redis.call("LRANGE", KEYS[3], 0, -1)) do
+    table.insert(turn_order, tonumber(value))
+  end
+  local recent_messages = cjson.decode("[]")
+  for _, value in ipairs(redis.call("LRANGE", KEYS[5], 0, -1)) do
+    table.insert(recent_messages, cjson.decode(value))
+  end
+  local player_state = cjson.decode("{}")
+  local player_values = redis.call("HGETALL", KEYS[6])
+  for index = 1, #player_values, 2 do
+    player_state[player_values[index]] = player_values[index + 1]
+  end
+  local items = cjson.decode("[]")
+  for _, member in ipairs(redis.call("SMEMBERS", KEYS[8])) do
+    local first = string.find(member, "|", 1, true)
+    local second = first and string.find(member, "|", first + 1, true)
+    table.insert(items, {
+      name = string.sub(member, 1, first - 1),
+      quantity = tonumber(string.sub(member, first + 1, second - 1)),
+      description = string.sub(member, second + 1)
+    })
+  end
+  local buffs = cjson.decode("[]")
+  local buff_values = redis.call("HGETALL", KEYS[9])
+  for index = 1, #buff_values, 2 do
+    table.insert(buffs, {name = buff_values[index], duration = tonumber(buff_values[index + 1])})
+  end
+  local snapshot = cjson.encode({
+    version = 1,
+    status = redis.call("GET", KEYS[1]),
+    turn = next_turn,
+    turn_order = turn_order,
+    player_state = player_state,
+    items = items,
+    buffs = buffs,
+    summary = redis.call("GET", KEYS[4]),
+    recent_messages = recent_messages
+  })
+  redis.call("HSET", KEYS[11], tostring(next_turn), redis.call("GET", KEYS[10]) .. "|" .. snapshot)
+end
 for _, key in ipairs(KEYS) do
   redis.call("EXPIRE", key, ARGV[1])
 end
+if next_turn % 10 == 0 then
+  return {
+    1, next_turn, ARGV[4],
+    redis.call("GET", KEYS[1]),
+    tostring(next_turn),
+    redis.call("LRANGE", KEYS[3], 0, -1),
+    redis.call("GET", KEYS[4]),
+    redis.call("LRANGE", KEYS[5], 0, -1),
+    redis.call("HGETALL", KEYS[6]),
+    redis.call("SMEMBERS", KEYS[8]),
+    redis.call("HGETALL", KEYS[9])
+  }
+end
 return {1, next_turn, ARGV[4]}
+`)
+
+var acknowledgeAutoSaveScript = redis.NewScript(`
+local value = redis.call("HGET", KEYS[1], ARGV[1])
+if not value then
+  return 1
+end
+local prefix = ARGV[2] .. "|"
+if string.sub(value, 1, string.len(prefix)) ~= prefix then
+  return 2
+end
+redis.call("HDEL", KEYS[1], ARGV[1])
+return 1
+`)
+
+var listPendingAutoSavesScript = redis.NewScript(`
+local key_type = redis.call("TYPE", KEYS[1]).ok
+if key_type ~= "none" and key_type ~= "hash" then
+  return {0}
+end
+return {1, redis.call("HGETALL", KEYS[1])}
 `)
 
 type cachedActionResult struct {
@@ -316,7 +475,7 @@ func (r *RedisGameStateRepo) CommitAction(
 	if err != nil {
 		return nil, fmt.Errorf("%w: commit action: %v", ErrGameRuntimeUnavailable, err)
 	}
-	if len(values) != 3 {
+	if len(values) != 3 && len(values) != 11 {
 		return nil, fmt.Errorf("%w: invalid action commit result", ErrGameRuntimeUnavailable)
 	}
 	code, ok := redisInt64(values[0])
@@ -337,11 +496,19 @@ func (r *RedisGameStateRepo) CommitAction(
 		if cached.Fingerprint != fingerprint {
 			return nil, ErrActionIdempotencyConflict
 		}
-		return &ActionCommitResult{
+		result := &ActionCommitResult{
 			Duplicate:    code == 2,
 			CurrentTurn:  int(turn),
 			ResponseJSON: append(json.RawMessage(nil), cached.Response...),
-		}, nil
+		}
+		if code == 1 && len(values) == 11 {
+			snapshot, err := decodeSoloRuntimeSnapshot(mutation.RoomID, mutation.UserID, values[3:])
+			if err != nil || snapshot.Turn != int(turn) || snapshot.Status != model.RoomStatusPlaying {
+				return nil, fmt.Errorf("%w: malformed automatic save snapshot", ErrGameRuntimeUnavailable)
+			}
+			result.AutoSaveSnapshot = snapshot
+		}
+		return result, nil
 	case 3:
 		return nil, ErrGameRuntimeNotPlaying
 	case 4:
@@ -352,8 +519,56 @@ func (r *RedisGameStateRepo) CommitAction(
 		return nil, ErrGameRuntimeUnavailable
 	case 7:
 		return nil, ErrInsufficientItemQuantity
+	case 8:
+		return nil, ErrGameRuntimeGenerationConflict
 	default:
 		return nil, fmt.Errorf("%w: unknown action commit code %d", ErrGameRuntimeUnavailable, code)
+	}
+}
+
+// BeginSoloAction 在调用 AI 前绑定当前运行态世代，并校验房间仍可接受指定回合的行动。
+func (r *RedisGameStateRepo) BeginSoloAction(
+	ctx context.Context,
+	roomID uint,
+	userID uint,
+	expectedTurn int,
+) (string, error) {
+	if roomID == 0 || userID == 0 || expectedTurn < 0 {
+		return "", ErrInvalidGameRuntimeState
+	}
+	values, err := beginSoloActionScript.Run(ctx, r.client, []string{
+		runtimeStatusKey(roomID),
+		runtimeTurnKey(roomID),
+		runtimePlayerKey(roomID, userID),
+		runtimeGenerationKey(roomID),
+	}, expectedTurn).Slice()
+	if err != nil {
+		return "", fmt.Errorf("%w: begin solo action: %v", ErrGameRuntimeUnavailable, err)
+	}
+	if len(values) != 2 {
+		return "", ErrGameRuntimeUnavailable
+	}
+	code, ok := redisInt64(values[0])
+	if !ok {
+		return "", ErrGameRuntimeUnavailable
+	}
+	switch code {
+	case 1:
+		generation, ok := redisString(values[1])
+		if !ok {
+			return "", ErrGameRuntimeUnavailable
+		}
+		parsed, parseErr := uuid.Parse(strings.TrimSpace(generation))
+		if parseErr != nil {
+			return "", ErrGameRuntimeUnavailable
+		}
+		return parsed.String(), nil
+	case 2:
+		return "", ErrGameRuntimeNotPlaying
+	case 3:
+		return "", ErrGameRuntimeConflict
+	default:
+		return "", ErrGameRuntimeUnavailable
 	}
 }
 
@@ -417,6 +632,115 @@ func (r *RedisGameStateRepo) FindActionResult(
 	}, true, nil
 }
 
+type pendingAutoSavePayload struct {
+	Version        int                    `json:"version"`
+	Status         model.RoomStatus       `json:"status"`
+	Turn           int                    `json:"turn"`
+	TurnOrder      []uint                 `json:"turn_order"`
+	PlayerState    map[string]string      `json:"player_state"`
+	Items          []model.RuntimeItem    `json:"items"`
+	Buffs          []model.RuntimeBuff    `json:"buffs"`
+	Summary        string                 `json:"summary"`
+	RecentMessages []model.RuntimeMessage `json:"recent_messages"`
+}
+
+// ListPendingAutoSaves 返回当前时间线尚未确认持久化的自动存档快照。
+func (r *RedisGameStateRepo) ListPendingAutoSaves(
+	ctx context.Context,
+	roomID uint,
+	userID uint,
+) ([]model.PendingAutoSave, error) {
+	if roomID == 0 || userID == 0 {
+		return nil, ErrInvalidGameRuntimeState
+	}
+	values, err := listPendingAutoSavesScript.Run(
+		ctx,
+		r.client,
+		[]string{pendingAutoSavesKey(roomID)},
+	).Slice()
+	if err != nil {
+		return nil, fmt.Errorf("%w: list pending automatic saves: %v", ErrGameRuntimeUnavailable, err)
+	}
+	if len(values) != 2 {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	code, ok := redisInt64(values[0])
+	if !ok || code != 1 {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	entries, ok := redisStringSlice(values[1])
+	if !ok || len(entries)%2 != 0 {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	pending := make([]model.PendingAutoSave, 0, len(entries)/2)
+	for index := 0; index < len(entries); index += 2 {
+		turn, err := strconv.Atoi(entries[index])
+		if err != nil || turn <= 0 || turn%10 != 0 {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		generationText, encoded, found := strings.Cut(entries[index+1], "|")
+		generation, err := uuid.Parse(strings.TrimSpace(generationText))
+		if !found || err != nil {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		var payload pendingAutoSavePayload
+		decoder := json.NewDecoder(strings.NewReader(encoded))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil ||
+			decoder.Decode(&struct{}{}) != io.EOF || payload.Turn != turn {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		snapshot, err := normalizeSoloRuntimeSnapshot(&model.SoloRuntimeSnapshot{
+			Version: payload.Version, RoomID: roomID, UserID: userID,
+			Status: payload.Status, Turn: payload.Turn, TurnOrder: payload.TurnOrder,
+			PlayerState: payload.PlayerState, Items: payload.Items, Buffs: payload.Buffs,
+			Summary: payload.Summary, RecentMessages: payload.RecentMessages,
+		})
+		if err != nil || snapshot.Status != model.RoomStatusPlaying {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		pending = append(pending, model.PendingAutoSave{
+			Generation: generation.String(),
+			Snapshot:   snapshot,
+		})
+	}
+	sort.Slice(pending, func(i, j int) bool {
+		return pending[i].Snapshot.Turn < pending[j].Snapshot.Turn
+	})
+	return pending, nil
+}
+
+// AcknowledgeAutoSave 仅在回合和世代都匹配时删除已持久化的待处理快照。
+func (r *RedisGameStateRepo) AcknowledgeAutoSave(
+	ctx context.Context,
+	roomID uint,
+	turn int,
+	generation string,
+) error {
+	parsedGeneration, err := uuid.Parse(strings.TrimSpace(generation))
+	if roomID == 0 || turn <= 0 || turn%10 != 0 || err != nil {
+		return ErrInvalidGameRuntimeState
+	}
+	code, err := acknowledgeAutoSaveScript.Run(
+		ctx,
+		r.client,
+		[]string{pendingAutoSavesKey(roomID)},
+		turn,
+		parsedGeneration.String(),
+	).Int64()
+	if err != nil {
+		return fmt.Errorf("%w: acknowledge automatic save: %v", ErrGameRuntimeUnavailable, err)
+	}
+	switch code {
+	case 1:
+		return nil
+	case 2:
+		return ErrGameRuntimeGenerationConflict
+	default:
+		return ErrGameRuntimeUnavailable
+	}
+}
+
 // CaptureSoloRoom 原子读取单人房间的完整可持久运行态。
 func (r *RedisGameStateRepo) CaptureSoloRoom(
 	ctx context.Context,
@@ -473,6 +797,67 @@ func (r *RedisGameStateRepo) RestoreSoloRoom(
 	return nil
 }
 
+// TransitionSoloRoomStatus 使用来源状态集合原子切换 Redis 单人房间状态。
+// Redis Lua 的串行执行保证该切换不会与行动提交形成部分状态。
+func (r *RedisGameStateRepo) TransitionSoloRoomStatus(
+	ctx context.Context,
+	roomID uint,
+	userID uint,
+	from []model.RoomStatus,
+	to model.RoomStatus,
+) (bool, error) {
+	if roomID == 0 || userID == 0 || !validRuntimeStatus(to) || len(from) == 0 {
+		return false, ErrInvalidGameRuntimeState
+	}
+	normalizedSources := make([]model.RoomStatus, 0, len(from))
+	seen := make(map[model.RoomStatus]struct{}, len(from))
+	for _, status := range from {
+		if !validRuntimeStatus(status) {
+			return false, ErrInvalidGameRuntimeState
+		}
+		if _, duplicate := seen[status]; duplicate {
+			continue
+		}
+		seen[status] = struct{}{}
+		normalizedSources = append(normalizedSources, status)
+	}
+	arguments := []any{
+		int64(r.ttl / time.Second),
+		string(to),
+		len(normalizedSources),
+	}
+	for _, status := range normalizedSources {
+		arguments = append(arguments, string(status))
+	}
+	arguments = append(arguments, uuid.NewString())
+	values, err := transitionSoloRuntimeStatusScript.Run(
+		ctx,
+		r.client,
+		soloRuntimeCleanupKeys(roomID, userID),
+		arguments...,
+	).Slice()
+	if err != nil {
+		return false, fmt.Errorf("%w: transition solo room status: %v", ErrGameRuntimeUnavailable, err)
+	}
+	if len(values) != 2 {
+		return false, fmt.Errorf("%w: malformed status transition result", ErrGameRuntimeUnavailable)
+	}
+	code, ok := redisInt64(values[0])
+	if !ok {
+		return false, fmt.Errorf("%w: malformed status transition code", ErrGameRuntimeUnavailable)
+	}
+	switch code {
+	case 1:
+		return true, nil
+	case 2:
+		return false, ErrGameRuntimeStatusConflict
+	case 3:
+		return false, ErrGameRuntimeUnavailable
+	default:
+		return false, fmt.Errorf("%w: unknown status transition code %d", ErrGameRuntimeUnavailable, code)
+	}
+}
+
 // DeleteSoloRoom 原子删除指定单人房间的全部运行态键，用于失败补偿。
 func (r *RedisGameStateRepo) DeleteSoloRoom(ctx context.Context, roomID, userID uint) error {
 	if roomID == 0 || userID == 0 {
@@ -493,6 +878,10 @@ func (r *RedisGameStateRepo) actionCommitArguments(
 ) ([]string, []any, string, error) {
 	if mutation == nil || mutation.RoomID == 0 || mutation.UserID == 0 ||
 		mutation.ExpectedTurn < 0 || len(mutation.Messages) != 2 {
+		return nil, nil, "", ErrInvalidGameRuntimeState
+	}
+	generation, err := uuid.Parse(strings.TrimSpace(mutation.Generation))
+	if err != nil {
 		return nil, nil, "", ErrInvalidGameRuntimeState
 	}
 	requestID, err := uuid.Parse(strings.TrimSpace(mutation.RequestID))
@@ -576,11 +965,14 @@ func (r *RedisGameStateRepo) actionCommitArguments(
 		}
 		arguments = append(arguments, buff.Name, buff.Duration)
 	}
+	arguments = append(arguments, generation.String())
 	keys := append(
 		runtimeKeys(mutation.RoomID, mutation.UserID),
 		actionResultsKey(mutation.RoomID),
 		itemStateKey(mutation.RoomID, mutation.UserID),
 		buffStateKey(mutation.RoomID, mutation.UserID),
+		runtimeGenerationKey(mutation.RoomID),
+		pendingAutoSavesKey(mutation.RoomID),
 	)
 	return keys, arguments, fingerprint, nil
 }
@@ -588,6 +980,10 @@ func (r *RedisGameStateRepo) actionCommitArguments(
 func (r *RedisGameStateRepo) initializeArguments(state *model.SoloRuntimeState) ([]any, error) {
 	if state == nil || state.RoomID == 0 || state.UserID == 0 || state.Turn < 0 ||
 		state.Status != model.RoomStatusPlaying {
+		return nil, ErrInvalidGameRuntimeState
+	}
+	generation, err := uuid.Parse(strings.TrimSpace(state.Generation))
+	if err != nil {
 		return nil, ErrInvalidGameRuntimeState
 	}
 
@@ -610,6 +1006,7 @@ func (r *RedisGameStateRepo) initializeArguments(state *model.SoloRuntimeState) 
 		state.UserID,
 		strings.TrimSpace(state.Summary),
 		string(encodedMessage),
+		generation.String(),
 	}
 	fields, normalizedState, err := normalizePlayerState(state.PlayerState, true)
 	if err != nil {
@@ -756,6 +1153,7 @@ func (r *RedisGameStateRepo) snapshotRestoreArguments(
 	for _, buff := range normalized.Buffs {
 		arguments = append(arguments, buff.Name, buff.Duration)
 	}
+	arguments = append(arguments, uuid.NewString())
 	return soloRuntimeCleanupKeys(normalized.RoomID, normalized.UserID), arguments, nil
 }
 
@@ -826,6 +1224,13 @@ func normalizeSoloRuntimeSnapshot(
 	return normalized, nil
 }
 
+// NormalizeSoloRuntimeSnapshot 校验并复制可恢复的单人运行态快照，不访问 Redis。
+func NormalizeSoloRuntimeSnapshot(
+	snapshot *model.SoloRuntimeSnapshot,
+) (*model.SoloRuntimeSnapshot, error) {
+	return normalizeSoloRuntimeSnapshot(snapshot)
+}
+
 func decodeRuntimeMessage(encoded string, destination *model.RuntimeMessage) error {
 	decoder := json.NewDecoder(bytes.NewBufferString(encoded))
 	decoder.DisallowUnknownFields()
@@ -868,6 +1273,10 @@ func normalizePlayerState(
 	return fields, normalized, nil
 }
 
+func validRuntimeStatus(status model.RoomStatus) bool {
+	return status == model.RoomStatusPlaying || status == model.RoomStatusPaused
+}
+
 func runtimeKeys(roomID, userID uint) []string {
 	room := strconv.FormatUint(uint64(roomID), 10)
 	user := strconv.FormatUint(uint64(userID), 10)
@@ -888,6 +1297,8 @@ func soloRuntimeCleanupKeys(roomID, userID uint) []string {
 		actionResultsKey(roomID),
 		itemStateKey(roomID, userID),
 		buffStateKey(roomID, userID),
+		runtimeGenerationKey(roomID),
+		pendingAutoSavesKey(roomID),
 	)
 }
 
@@ -897,6 +1308,22 @@ func actionResultsKey(roomID uint) string {
 
 func runtimeTurnKey(roomID uint) string {
 	return fmt.Sprintf("room:%d:turn", roomID)
+}
+
+func runtimeStatusKey(roomID uint) string {
+	return fmt.Sprintf("room:%d:status", roomID)
+}
+
+func runtimePlayerKey(roomID, userID uint) string {
+	return fmt.Sprintf("room:%d:player:%d", roomID, userID)
+}
+
+func runtimeGenerationKey(roomID uint) string {
+	return fmt.Sprintf("room:%d:generation", roomID)
+}
+
+func pendingAutoSavesKey(roomID uint) string {
+	return fmt.Sprintf("room:%d:auto_saves", roomID)
 }
 
 func itemStateKey(roomID, userID uint) string {

@@ -85,10 +85,38 @@ func (s *GameService) SubmitAction(
 		return nil, mapActionRuntimeError(err)
 	}
 	if found {
-		return decodeSubmitActionResult(cached.ResponseJSON, true)
+		if cached == nil {
+			return nil, fmt.Errorf("%w: empty cached action result", ErrInternal)
+		}
+		result, err := decodeSubmitActionResult(cached.ResponseJSON, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+			return nil, err
+		}
+		if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, result.CurrentTurn); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	if room.Status != model.RoomStatusPlaying {
 		return nil, ErrGameRoomNotPlaying
+	}
+	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+		return nil, err
+	}
+	generation, err := s.runtimeRepo.BeginSoloAction(
+		ctx,
+		room.ID,
+		req.UserID,
+		req.ExpectedTurn,
+	)
+	if err != nil {
+		return nil, mapActionRuntimeError(err)
+	}
+	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, req.ExpectedTurn); err != nil {
+		return nil, err
 	}
 
 	aiResult, err := s.aiClient.SubmitAction(ctx, &ai_client.GameActionRequest{
@@ -126,6 +154,7 @@ func (s *GameService) SubmitAction(
 	commitResult, err := s.runtimeRepo.CommitAction(ctx, &model.ActionRuntimeMutation{
 		RoomID:             room.ID,
 		UserID:             req.UserID,
+		Generation:         generation,
 		ExpectedTurn:       req.ExpectedTurn,
 		RequestID:          requestID,
 		RequestFingerprint: fingerprint,
@@ -144,7 +173,17 @@ func (s *GameService) SubmitAction(
 	if commitResult == nil || (!commitResult.Duplicate && commitResult.CurrentTurn != result.CurrentTurn) {
 		return nil, fmt.Errorf("%w: invalid action commit result", ErrInternal)
 	}
-	return decodeSubmitActionResult(commitResult.ResponseJSON, commitResult.Duplicate)
+	committedResult, err := decodeSubmitActionResult(commitResult.ResponseJSON, commitResult.Duplicate)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, committedResult.CurrentTurn); err != nil {
+		return nil, err
+	}
+	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+		return nil, err
+	}
+	return committedResult, nil
 }
 
 func validateGameActionRequest(
@@ -263,6 +302,8 @@ func decodeSubmitActionResult(encoded json.RawMessage, duplicate bool) (*SubmitG
 func mapActionRuntimeError(err error) error {
 	switch {
 	case errors.Is(err, repo.ErrGameRuntimeConflict):
+		return ErrGameActionConflict
+	case errors.Is(err, repo.ErrGameRuntimeGenerationConflict):
 		return ErrGameActionConflict
 	case errors.Is(err, repo.ErrGameRuntimeNotPlaying):
 		return ErrGameRoomNotPlaying

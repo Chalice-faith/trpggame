@@ -102,6 +102,52 @@ func TestGameRepoTransitionRoomStatusRejectsInvalidContractBeforeSQL(t *testing.
 	assertSQLExpectations(t, mock)
 }
 
+func TestGameRepoAdvanceRoomProgressUsesMonotonicMySQLExpressions(t *testing.T) {
+	repository, mock := newMockGameRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec(
+		regexp.QuoteMeta("UPDATE `game_rooms` SET `current_turn`=GREATEST(current_turn, ?),`round_number`=GREATEST(round_number, ?) WHERE id = ? AND owner_id = ? AND status IN (?,?)"),
+	).WithArgs(12, 12, 41, 7, model.RoomStatusPlaying, model.RoomStatusPaused).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	updated, err := repository.AdvanceRoomProgress(context.Background(), 41, 7, 12)
+
+	if err != nil || !updated {
+		t.Fatalf("AdvanceRoomProgress() = (%v, %v), want (true, nil)", updated, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
+func TestGameRepoReplacePausedRoomProgressCanMoveBackward(t *testing.T) {
+	repository, mock := newMockGameRepo(t)
+	mock.ExpectBegin()
+	mock.ExpectExec(
+		regexp.QuoteMeta("UPDATE `game_rooms` SET `current_turn`=?,`round_number`=? WHERE id = ? AND owner_id = ? AND status = ?"),
+	).WithArgs(3, 3, 41, 7, model.RoomStatusPaused).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	updated, err := repository.ReplacePausedRoomProgress(context.Background(), 41, 7, 3)
+
+	if err != nil || !updated {
+		t.Fatalf("ReplacePausedRoomProgress() = (%v, %v), want (true, nil)", updated, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
+func TestGameRepoRoomProgressRejectsInvalidContractBeforeSQL(t *testing.T) {
+	repository, mock := newMockGameRepo(t)
+
+	if updated, err := repository.AdvanceRoomProgress(context.Background(), 0, 7, 1); updated || err == nil {
+		t.Fatalf("invalid advance = (%v, %v)", updated, err)
+	}
+	if updated, err := repository.ReplacePausedRoomProgress(context.Background(), 41, 7, -1); updated || err == nil {
+		t.Fatalf("invalid replace = (%v, %v)", updated, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
 func TestGameRepoFindRoomByIDAndOwnerIDScopesAccess(t *testing.T) {
 	repository, mock := newMockGameRepo(t)
 	rows := sqlmock.NewRows([]string{
@@ -178,6 +224,37 @@ func TestGameRepoSaveQueriesRemainRoomScoped(t *testing.T) {
 		t.Fatalf("DeleteSave() = (%v, %v), want (true, nil)", deleted, err)
 	}
 	assertSQLExpectations(t, mock)
+}
+
+func TestGameRepoCreateAutoSaveIsIdempotent(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		rowsAffected int64
+		wantCreated  bool
+	}{
+		{"created", 1, true},
+		{"duplicate", 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			repository, mock := newMockGameRepo(t)
+			mock.ExpectBegin()
+			mock.ExpectExec("INSERT INTO `game_saves`").
+				WillReturnResult(sqlmock.NewResult(92, test.rowsAffected))
+			mock.ExpectCommit()
+			save := &model.GameSave{
+				RoomID: 41, SaveName: "自动存档-10", RoundNumber: 10,
+				RedisSnapshot:  json.RawMessage(`{"version":1}`),
+				RecentMessages: json.RawMessage(`[]`), IsAuto: true,
+			}
+
+			created, err := repository.CreateAutoSave(context.Background(), save)
+
+			if err != nil || created != test.wantCreated {
+				t.Fatalf("CreateAutoSave() = (%v, %v)", created, err)
+			}
+			assertSQLExpectations(t, mock)
+		})
+	}
 }
 
 func newMockGameRepo(t *testing.T) (*GameRepo, sqlmock.Sqlmock) {
