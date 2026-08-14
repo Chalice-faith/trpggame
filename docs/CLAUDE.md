@@ -132,9 +132,9 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
   - [x] `POST /games/solo/start` 快速开始
   - [x] `POST /games/:roomId/action` 同步行动提交
   - [x] 手动存档、存档列表、读档、暂停、恢复与结束
-- [ ] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理
-- [ ] Go: `ws_handler.go` — WS 鉴权 + 消息路由
-- [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`
+- [x] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理（按房间 seq 单调、recent 补推缓冲、HandleInbound 分发、register/unregister 竞态加固）
+- [x] Go: `ws_handler.go` — WS 鉴权 + 消息路由（JWT + RoomAuthorizer 房间订阅校验；`subscribed` 确认、`sync`/`sync_batch` 断线补推；行动流式分发待下一步）
+- [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`（依赖 Python 流式端点，下一步）
 - [ ] Redis 数据结构落地：
   - [x] 玩家状态 HASH (`room:{id}:player:{uid}`)
   - [x] 道具 SET、BUFF HASH
@@ -299,6 +299,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | type | 用途 | Phase |
 |------|------|-------|
 | `pong` | 心跳响应 | 1 |
+| `subscribed` | 订阅房间成功确认（含房间当前水位 seq） | 1 |
 | `narrative_chunk` | AI 流式输出片段 | 1 |
 | `narrative_complete` | AI 输出完毕 | 1 |
 | `dice_roll` | 骰子检定结果 | 1 |
@@ -323,7 +324,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | 1200-1299 | 剧本模块 |
 | 1300-1399 | 游戏模块 |
 | 1400-1499 | AI 服务 |
-| 1500-1599 | WebSocket |
+| 1500-1599 | WebSocket（1500 缺失 token、1501 token 校验失败、1502 非法 room_id、1503 无房间访问权、1504 非法 sync 请求、1505 不支持的消息类型） |
 | 1600-1699 | 好友/IM（Phase 2） |
 
 统一响应格式：`{"code": 0, "message": "ok", "data": {...}}`
@@ -380,9 +381,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；后端生命周期闭环完成，准备进入 WebSocket 模块
+- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；WebSocket 事件信封、鉴权订阅与补推基础层完成，行动仍走 REST，准备进入流式链路
 - **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
-- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环
-- **验证状态**：Go 全量测试、`go vet ./...`、`go build ./...`、`git diff --check` 与 `go test -race ./...` 通过；真实 MySQL、Redis、Python 与 Docker 端到端联调仍暂缓
-- **提交状态**：数据库迁移执行器和 M1.5 后端生命周期已按模块提交，详见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：实现 WebSocket 流式事件与游戏消息推送，再进入 Vue 单人游戏页面
+- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环；WebSocket Hub/Client 重写（JWT 鉴权、按房间 seq、sync 断线补推、subscribed 订阅确认）完成
+- **验证状态**：Go 全量测试、`go vet ./...`、`go build ./...`、`git diff --check` 通过；`go test -race ./...` 此前在 WSL 容器通过，Windows 本机无 CGO 无法运行；真实 MySQL、Redis、Python 与 Docker 端到端联调仍暂缓
+- **提交状态**：数据库迁移执行器和 M1.5 后端生命周期、WebSocket 基础层已按模块提交，详见 [开发暂停交接.md](./开发暂停交接.md)
+- **下一步**：实现行动流式事件链路（Python 流式端点 → Go 流式客户端 → `narrative_chunk`/`dice_roll`/`status_update`/`narrative_complete` 推送），再进入 Vue `websocket.ts` store 与单人游戏页面
