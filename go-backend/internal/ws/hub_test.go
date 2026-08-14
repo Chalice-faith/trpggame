@@ -1,0 +1,224 @@
+package ws
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+const testRecvTimeout = 3 * time.Second
+
+// startTestHub 启动一个 Hub 并注册清理。
+func startTestHub(t *testing.T) *Hub {
+	t.Helper()
+	hub := NewHub()
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+	return hub
+}
+
+// registerTestClient 构造客户端并注册到房间，等待订阅确认后返回。
+func registerTestClient(t *testing.T, hub *Hub, roomID, userID uint) *Client {
+	t.Helper()
+	client := NewClient(hub, nil, userID, roomID)
+	hub.register <- client
+
+	subscribed := recvMessage(t, client)
+	if subscribed.Type != MsgSubscribed {
+		t.Fatalf("first message type = %q, want %q", subscribed.Type, MsgSubscribed)
+	}
+	var data SubscribedData
+	if err := json.Unmarshal(subscribed.Data, &data); err != nil {
+		t.Fatalf("unmarshal subscribed data: %v", err)
+	}
+	if data.RoomID != roomID {
+		t.Fatalf("subscribed room_id = %d, want %d", data.RoomID, roomID)
+	}
+	return client
+}
+
+// recvMessage 从客户端发送通道读取一条消息并解码。
+func recvMessage(t *testing.T, client *Client) *Message {
+	t.Helper()
+	select {
+	case raw := <-client.Send:
+		var msg Message
+		if err := json.Unmarshal(raw, &msg); err != nil {
+			t.Fatalf("unmarshal message: %v", err)
+		}
+		return &msg
+	case <-time.After(testRecvTimeout):
+		t.Fatal("timed out waiting for message")
+		return nil
+	}
+}
+
+func recvNone(t *testing.T, client *Client) {
+	t.Helper()
+	select {
+	case raw := <-client.Send:
+		t.Fatalf("expected no message, got %s", raw)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestBroadcastDeliversToAllClientsWithMonotonicSeq(t *testing.T) {
+	hub := startTestHub(t)
+
+	room := uint(1)
+	alice := registerTestClient(t, hub, room, 10)
+	bob := registerTestClient(t, hub, room, 11)
+
+	for i := 1; i <= 3; i++ {
+		hub.BroadcastToRoom(room, MsgSystem, json.RawMessage(`{"n":"`+string(rune('0'+i))+`"}`))
+
+		msgAlice := recvMessage(t, alice)
+		msgBob := recvMessage(t, bob)
+		if msgAlice.Seq != int64(i) || msgBob.Seq != int64(i) {
+			t.Fatalf("broadcast %d seq = (%d, %d), want (%d, %d)", i, msgAlice.Seq, msgBob.Seq, i, i)
+		}
+		if msgAlice.Type != MsgSystem || msgBob.Type != MsgSystem {
+			t.Fatalf("broadcast %d type = (%q, %q), want system", i, msgAlice.Type, msgBob.Type)
+		}
+	}
+}
+
+func TestSendToUserOnlyDeliversToTarget(t *testing.T) {
+	hub := startTestHub(t)
+
+	room := uint(1)
+	alice := registerTestClient(t, hub, room, 10)
+	bob := registerTestClient(t, hub, room, 11)
+	carol := registerTestClient(t, hub, room, 12)
+
+	hub.SendToUser(room, bob.UserID, MsgStatusUpdate, json.RawMessage(`{"player_id":11}`))
+
+	if msg := recvMessage(t, bob); msg.UserID != 0 || msg.Seq != 1 || msg.Type != MsgStatusUpdate {
+		t.Fatalf("target message = %#v, want status_update seq=1", msg)
+	}
+	recvNone(t, alice)
+	recvNone(t, carol)
+}
+
+func TestSendToUnknownUserIsSilentlyDropped(t *testing.T) {
+	hub := startTestHub(t)
+
+	room := uint(1)
+	alice := registerTestClient(t, hub, room, 10)
+	hub.SendToUser(room, 99, MsgSystem, json.RawMessage(`{}`))
+	recvNone(t, alice)
+}
+
+func TestSyncReplaysMissingMessagesSinceSeq(t *testing.T) {
+	hub := startTestHub(t)
+
+	room := uint(1)
+	client := registerTestClient(t, hub, room, 10)
+
+	hub.BroadcastToRoom(room, MsgSystem, json.RawMessage(`{"n":1}`))
+	hub.BroadcastToRoom(room, MsgSystem, json.RawMessage(`{"n":2}`))
+	hub.BroadcastToRoom(room, MsgSystem, json.RawMessage(`{"n":3}`))
+	recvMessage(t, client) // seq=1
+	recvMessage(t, client) // seq=2
+	recvMessage(t, client) // seq=3
+
+	req, _ := json.Marshal(SyncRequestData{SinceSeq: 2})
+	hub.HandleInbound(client, &Message{Type: MsgSync, Data: req})
+
+	sync := recvMessage(t, client)
+	if sync.Type != MsgSyncBatch {
+		t.Fatalf("sync response type = %q, want sync_batch", sync.Type)
+	}
+	var batch SyncBatchData
+	if err := json.Unmarshal(sync.Data, &batch); err != nil {
+		t.Fatalf("unmarshal sync_batch: %v", err)
+	}
+	if batch.NextSeq != 3 {
+		t.Fatalf("next_seq = %d, want 3", batch.NextSeq)
+	}
+	if len(batch.Messages) != 1 || batch.Messages[0].Seq != 3 {
+		t.Fatalf("replayed messages = %#v, want [seq=3]", batch.Messages)
+	}
+}
+
+func TestUnknownInboundMessageReturnsError(t *testing.T) {
+	hub := startTestHub(t)
+
+	room := uint(1)
+	client := registerTestClient(t, hub, room, 10)
+	hub.HandleInbound(client, &Message{Type: MsgChatMessage})
+
+	errMsg := recvMessage(t, client)
+	if errMsg.Type != MsgError {
+		t.Fatalf("response type = %q, want error", errMsg.Type)
+	}
+	var data ErrorData
+	if err := json.Unmarshal(errMsg.Data, &data); err != nil {
+		t.Fatalf("unmarshal error data: %v", err)
+	}
+	if data.Code != 1505 {
+		t.Fatalf("error code = %d, want 1505", data.Code)
+	}
+}
+
+func TestRegisterSkippedForClosedClient(t *testing.T) {
+	hub := startTestHub(t)
+
+	client := NewClient(hub, nil, 7, 41)
+	client.closed.Store(true) // 模拟连接在 register 入队后已结束
+	hub.registerClient(client)
+	hub.unregisterClient(client)
+
+	if _, ok := hub.rooms[41]; ok {
+		t.Fatal("closed client must not be registered into the room")
+	}
+}
+
+func TestRegisterThenUnregisterCleansUpRoom(t *testing.T) {
+	hub := startTestHub(t)
+
+	client := NewClient(hub, nil, 7, 41)
+	hub.register <- client
+	_ = recvMessage(t, client) // 等待订阅确认，确保 register 已处理
+	hub.unregister <- client
+
+	deadline := time.After(testRecvTimeout)
+	for {
+		hub.mu.RLock()
+		_, ok := hub.rooms[41]
+		hub.mu.RUnlock()
+		if !ok {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("room 41 was not cleaned up after last client unregistered")
+		default:
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+func TestAppendRecentTrimsToCapacity(t *testing.T) {
+	recent := []Message(nil)
+	for i := 1; i <= recentCapacity+10; i++ {
+		recent = appendRecent(recent, Message{Seq: int64(i)}, recentCapacity)
+	}
+	if len(recent) != recentCapacity {
+		t.Fatalf("len(recent) = %d, want %d", len(recent), recentCapacity)
+	}
+	if recent[0].Seq != 11 {
+		t.Fatalf("oldest kept seq = %d, want 11", recent[0].Seq)
+	}
+	if recent[len(recent)-1].Seq != int64(recentCapacity+10) {
+		t.Fatalf("newest seq = %d, want %d", recent[len(recent)-1].Seq, recentCapacity+10)
+	}
+}
+
+func TestRecentSinceFiltersBySeq(t *testing.T) {
+	recent := []Message{{Seq: 1}, {Seq: 2}, {Seq: 3}}
+	got := recentSince(recent, 1)
+	if len(got) != 2 || got[0].Seq != 2 || got[1].Seq != 3 {
+		t.Fatalf("recentSince = %#v, want seq [2 3]", got)
+	}
+}

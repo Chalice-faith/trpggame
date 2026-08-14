@@ -34,6 +34,7 @@ type Client struct {
 	RoomID uint
 	Send   chan []byte
 	isAlive atomic.Bool
+	closed  atomic.Bool // 连接已结束；防止 unregister 先于 register 处理时残留死连接
 }
 
 // NewClient 创建新的 WebSocket 客户端
@@ -52,6 +53,7 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID, roomID uint) *Client {
 // readPump 从 WebSocket 连接读取消息并分发
 func (c *Client) readPump() {
 	defer func() {
+		c.closed.Store(true)
 		c.Hub.unregister <- c
 		c.Conn.Close()
 	}()
@@ -94,8 +96,8 @@ func (c *Client) readPump() {
 			continue
 		}
 
-		// 其他消息类型转发到 Hub 广播通道（后续由 game_service 处理）
-		c.Hub.broadcast <- &msg
+		// 其他客户端消息交给 Hub 分发（例如 sync 重连补推）；服务端事件由 Hub 主动推送，不回显。
+		c.Hub.HandleInbound(c, &msg)
 	}
 }
 

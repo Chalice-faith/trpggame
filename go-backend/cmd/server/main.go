@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
+
+	"gorm.io/gorm"
 
 	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
@@ -19,6 +22,22 @@ import (
 	"trpggame/internal/ws"
 	"trpggame/migrations"
 )
+
+// roomAuthorizer 校验用户是否为房间房主，与 REST 行动链路的访问控制一致。
+type roomAuthorizer struct {
+	repo *repo.GameRepo
+}
+
+func (a roomAuthorizer) Authorize(ctx context.Context, userID, roomID uint) error {
+	_, err := a.repo.FindRoomByIDAndOwnerID(ctx, roomID, userID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("room not found or not owned by user")
+		}
+		return fmt.Errorf("authorize room: %w", err)
+	}
+	return nil
+}
 
 func main() {
 	// 加载配置
@@ -79,11 +98,12 @@ func main() {
 	hub := ws.NewHub()
 	go hub.Run()
 
-	// 初始化路由
+	// 初始化路由（WebSocket 端点接入 JWT 鉴权与房间订阅校验）
+	wsHandler := ws.HandleWebSocket(hub, cfg.JWT.Secret, roomAuthorizer{repo: gameRepo})
 	r := router.Setup(
 		cfg,
 		db,
-		hub,
+		wsHandler,
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,

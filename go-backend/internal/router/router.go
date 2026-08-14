@@ -7,14 +7,13 @@ import (
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
 	"trpggame/internal/middleware"
-	"trpggame/internal/ws"
 )
 
 // Setup 初始化所有路由并返回 Gin Engine
 func Setup(
 	cfg *config.Config,
 	db *gorm.DB,
-	hub *ws.Hub,
+	wsHandler gin.HandlerFunc,
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
 	gameHandler *handler.GameHandler,
@@ -27,8 +26,10 @@ func Setup(
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)
 
-	// WebSocket 端点
-	r.GET("/ws", ws.HandleWebSocket(hub))
+	// WebSocket 端点（JWT + 房间订阅鉴权由 main 组装后传入）
+	if wsHandler != nil {
+		r.GET("/ws", wsHandler)
+	}
 
 	// API v1
 	v1 := r.Group("/api/v1")
