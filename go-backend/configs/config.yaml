@@ -8,8 +8,8 @@ server:
 database:
   host: localhost
   port: "3306"
-  user: trpg
-  password: trpg123
+  user: root
+  password: 123456
   dbname: trpggame
   charset: utf8mb4
   loc: Local
@@ -30,8 +30,8 @@ ai:
 
 minio:
   endpoint: localhost:9000
-  accesskey: minioadmin
-  secretkey: minioadmin
+  accesskey: admin
+  secretkey: adminadmin
   bucket: trpg-scripts
   usessl: false
   maxuploadsize: 52428800 # 50 MiB，单位：字节
