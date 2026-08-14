@@ -22,7 +22,7 @@
 | UI 组件 | Element Plus / Naive UI | 开箱即用中文组件 |
 | 后端-业务 | Go 1.22+ (Gin + gorilla/websocket + GORM) | 用户/房间/剧本管理 + WebSocket Hub |
 | 后端-AI | Python 3.11+ (FastAPI) | PDF 解析、RAG 检索、LLM 推理、Function Calling |
-| AI 模型 | GLM-4-Long (1M 上下文窗口) | 叙事生成 + 规则裁定 |
+| AI 模型 | DeepSeek-V4-Flash (1M 上下文窗口) | 叙事生成 + 规则裁定 |
 | 关系数据库 | MySQL 8.4 | 持久化存储 |
 | 缓存/状态 | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
 | 向量数据库 | Milvus 2.4 | 剧本片段向量检索 |
@@ -45,7 +45,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
                                                       │
                                                       ├──► Milvus (向量检索)
                                                       ├──► Redis (状态读写)
-                                                      └──► GLM-4 API (推理)
+                                                      └──► DeepSeek API (推理)
 ```
 
 **关键设计原则**：
@@ -105,13 +105,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.4 AI 推理核心
 
-- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
+- [x] Python: `llm_client.py` — DeepSeek-V4-Flash 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
 - [x] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
 - [x] Python: `function_calling.py` — 7 个函数定义、严格参数校验与可注入执行器
 - [x] Python: `summarizer.py` — 每 5 轮触发、旧摘要合并与 200-500 字结果校验
 - [x] Python: `dice.py` — D20/D100 服务端真随机、目标边界与大成功/大失败判定
 - [x] Python: `inference.py` router — AI 推理 API
-  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → GLM 完整响应
+  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → DeepSeek 完整响应
   - [x] 玩家行动：Redis 只读上下文 → RAG → Function Calling → 服务端骰子 → 最终叙事
   - [x] 状态变更边界：严格校验并返回结构化 `status_changes`；实际 Redis 写入由 M1.5 游戏状态层统一处理
 - [x] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令和动态数据边界）
@@ -344,7 +344,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | 8 | 市场定位 | 面向海外市场，无需国内合规 | 2026-06-29 |
 | 9 | 对象存储 | MinIO 自部署 | 2026-06-29 |
 | 10 | Go↔Python 通信 | HTTP 同步调用（非消息队列） | 2026-06-29 |
-| 11 | AI 模型 | GLM-4-Long（1M 上下文，成本低） | 2026-06-29 |
+| 11 | AI 模型 | DeepSeek-V4-Flash（1M 上下文，成本低） | 2026-06-29 |
 | 12 | 流式输出 | Python → SSE/NDJSON → Go → WebSocket → 前端 | 2026-06-29 |
 | 13 | 记忆系统 | 摘要记忆（每5轮）+ 最近10轮保留 | 2026-06-29 |
 | 14 | 认证方案 | JWT Access(15min) + Refresh(7d)，bcrypt cost=12 | 2026-06-29 |

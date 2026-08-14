@@ -107,7 +107,7 @@ class SummarizerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wraps_generator_failure(self):
         async def generator(prompt: str, system_prompt: str) -> str:
-            raise OSError("GLM unavailable")
+            raise OSError("DeepSeek unavailable")
 
         with self.assertRaisesRegex(SummarizationError, "generate") as raised:
             await summarize(

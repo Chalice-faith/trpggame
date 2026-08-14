@@ -6,13 +6,13 @@ import unittest
 import httpx
 
 from app.services.llm_client import (
-    GLMClient,
+    DeepSeekClient,
     LLMAPIError,
     LLMConfigurationError,
 )
 
 
-class GLMClientTests(unittest.IsolatedAsyncioTestCase):
+class DeepSeekClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_chat_returns_content_and_sends_expected_contract(self):
         captured_request: httpx.Request | None = None
 
@@ -32,11 +32,11 @@ class GLMClientTests(unittest.IsolatedAsyncioTestCase):
         assert captured_request is not None
         self.assertEqual(
             str(captured_request.url),
-            "https://glm.example.test/api/paas/v4/chat/completions",
+            "https://deepseek.example.test/chat/completions",
         )
         self.assertEqual(captured_request.headers["authorization"], "Bearer test-key")
         payload = json.loads(captured_request.content)
-        self.assertEqual(payload["model"], "glm-test")
+        self.assertEqual(payload["model"], "deepseek-test")
         self.assertEqual(payload["temperature"], 0.2)
         self.assertEqual(payload["max_tokens"], 128)
         self.assertFalse(payload["stream"])
@@ -82,7 +82,7 @@ class GLMClientTests(unittest.IsolatedAsyncioTestCase):
 
         client = self._client(handler, api_key="")
 
-        with self.assertRaisesRegex(LLMConfigurationError, "GLM_API_KEY"):
+        with self.assertRaisesRegex(LLMConfigurationError, "DEEPSEEK_API_KEY"):
             await client.chat("开始")
         self.assertFalse(requested)
 
@@ -191,11 +191,11 @@ class GLMClientTests(unittest.IsolatedAsyncioTestCase):
         handler,
         *,
         api_key: str = "test-key",
-    ) -> GLMClient:
-        return GLMClient(
+    ) -> DeepSeekClient:
+        return DeepSeekClient(
             api_key=api_key,
-            api_base="https://glm.example.test/api/paas/v4/",
-            model="glm-test",
+            api_base="https://deepseek.example.test/",
+            model="deepseek-test",
             temperature=0.2,
             max_tokens=128,
             timeout=5,

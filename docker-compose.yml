@@ -84,7 +84,7 @@ services:
       - TRPG_AI_MILVUS_HOST=milvus
       - TRPG_AI_MILVUS_PORT=19530
       - TRPG_AI_REDIS_URL=redis://redis:6379/0
-      - TRPG_AI_GLM_API_KEY=${GLM_API_KEY:-}
+      - TRPG_AI_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - TRPG_AI_MINIO_ENDPOINT=minio:9000
       - TRPG_AI_MINIO_ACCESS_KEY=minioadmin
       - TRPG_AI_MINIO_SECRET_KEY=minioadmin

@@ -1,4 +1,4 @@
-"""GLM 对话补全封装，支持完整响应与 SSE 流式响应。"""
+"""DeepSeek 对话补全封装，支持完整响应与 SSE 流式响应。"""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ class LLMConfigurationError(LLMClientError):
 
 
 class LLMAPIError(LLMClientError):
-    """GLM API 请求或响应异常。"""
+    """DeepSeek API 请求或响应异常。"""
 
     def __init__(self, message: str, *, status_code: int | None = None):
         super().__init__(message)
@@ -45,8 +45,8 @@ class ChatCompletion:
     tool_calls: tuple[ToolCall, ...] = ()
 
 
-class GLMClient:
-    """通过智谱兼容接口调用 GLM 对话补全 API。"""
+class DeepSeekClient:
+    """通过 OpenAI 兼容接口调用 DeepSeek 对话补全 API。"""
 
     def __init__(
         self,
@@ -59,11 +59,11 @@ class GLMClient:
         timeout: float | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.api_key = settings.glm_api_key if api_key is None else api_key
+        self.api_key = settings.deepseek_api_key if api_key is None else api_key
         self.api_base = (
-            settings.glm_api_base if api_base is None else api_base
+            settings.deepseek_api_base if api_base is None else api_base
         ).rstrip("/")
-        self.model = settings.glm_model if model is None else model
+        self.model = settings.deepseek_model if model is None else model
         self.temperature = (
             settings.llm_temperature if temperature is None else temperature
         )
@@ -95,22 +95,22 @@ class GLMClient:
             async with self._create_http_client() as client:
                 response = await client.post(self._endpoint, json=payload)
         except httpx.HTTPError as exc:
-            raise LLMAPIError(f"GLM API request failed: {exc}") from exc
+            raise LLMAPIError(f"DeepSeek API request failed: {exc}") from exc
 
         self._raise_for_status(response)
         data = self._decode_json(response.content)
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise LLMAPIError("GLM API response is missing message") from exc
+            raise LLMAPIError("DeepSeek API response is missing message") from exc
         if not isinstance(message, dict):
-            raise LLMAPIError("GLM API message must be an object")
+            raise LLMAPIError("DeepSeek API message must be an object")
 
         content = message.get("content")
         if content is None:
             content = ""
         if not isinstance(content, str):
-            raise LLMAPIError("GLM API message content must be a string")
+            raise LLMAPIError("DeepSeek API message content must be a string")
         return ChatCompletion(
             content=content,
             tool_calls=self._parse_tool_calls(message.get("tool_calls", [])),
@@ -146,20 +146,20 @@ class GLMClient:
                             content = event["choices"][0]["delta"].get("content")
                         except (KeyError, IndexError, TypeError) as exc:
                             raise LLMAPIError(
-                                "GLM API stream event is missing delta content"
+                                "DeepSeek API stream event is missing delta content"
                             ) from exc
                         if content is None:
                             continue
                         if not isinstance(content, str):
                             raise LLMAPIError(
-                                "GLM API stream content must be a string"
+                                "DeepSeek API stream content must be a string"
                             )
                         if content:
                             yield content
         except LLMClientError:
             raise
         except httpx.HTTPError as exc:
-            raise LLMAPIError(f"GLM API stream failed: {exc}") from exc
+            raise LLMAPIError(f"DeepSeek API stream failed: {exc}") from exc
 
     @property
     def _endpoint(self) -> str:
@@ -184,11 +184,11 @@ class GLMClient:
         functions: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
         if not self.api_key.strip():
-            raise LLMConfigurationError("TRPG_AI_GLM_API_KEY is required")
+            raise LLMConfigurationError("TRPG_AI_DEEPSEEK_API_KEY is required")
         if not self.api_base:
-            raise LLMConfigurationError("GLM API base URL is required")
+            raise LLMConfigurationError("DeepSeek API base URL is required")
         if not self.model.strip():
-            raise LLMConfigurationError("GLM model is required")
+            raise LLMConfigurationError("DeepSeek model is required")
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
 
@@ -216,25 +216,25 @@ class GLMClient:
         if value is None:
             return ()
         if not isinstance(value, list):
-            raise LLMAPIError("GLM API tool_calls must be an array")
+            raise LLMAPIError("DeepSeek API tool_calls must be an array")
 
         parsed: list[ToolCall] = []
         for index, raw_call in enumerate(value):
             if not isinstance(raw_call, dict):
-                raise LLMAPIError(f"GLM API tool call {index} must be an object")
+                raise LLMAPIError(f"DeepSeek API tool call {index} must be an object")
             function = raw_call.get("function")
             if raw_call.get("type") != "function" or not isinstance(function, dict):
-                raise LLMAPIError(f"GLM API tool call {index} is not a function")
+                raise LLMAPIError(f"DeepSeek API tool call {index} is not a function")
             call_id = raw_call.get("id")
             name = function.get("name")
             arguments = function.get("arguments")
             if not isinstance(call_id, str) or not call_id.strip():
-                raise LLMAPIError(f"GLM API tool call {index} has invalid id")
+                raise LLMAPIError(f"DeepSeek API tool call {index} has invalid id")
             if not isinstance(name, str) or not name.strip():
-                raise LLMAPIError(f"GLM API tool call {index} has invalid name")
+                raise LLMAPIError(f"DeepSeek API tool call {index} has invalid name")
             if not isinstance(arguments, str):
                 raise LLMAPIError(
-                    f"GLM API tool call {index} arguments must be JSON text"
+                    f"DeepSeek API tool call {index} arguments must be JSON text"
                 )
             parsed.append(
                 ToolCall(
@@ -259,9 +259,9 @@ class GLMClient:
         try:
             data = json.loads(content)
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-            raise LLMAPIError("GLM API returned invalid JSON") from exc
+            raise LLMAPIError("DeepSeek API returned invalid JSON") from exc
         if not isinstance(data, dict):
-            raise LLMAPIError("GLM API response must be a JSON object")
+            raise LLMAPIError("DeepSeek API response must be a JSON object")
         return data
 
     @staticmethod
@@ -280,15 +280,15 @@ class GLMClient:
             pass
         detail = detail or "unknown error"
         raise LLMAPIError(
-            f"GLM API returned HTTP {response.status_code}: {detail}",
+            f"DeepSeek API returned HTTP {response.status_code}: {detail}",
             status_code=response.status_code,
         )
 
 
 async def chat(prompt: str, system_prompt: str = "") -> str:
-    """使用默认配置调用 GLM 并返回完整文本。"""
+    """使用默认配置调用 DeepSeek 并返回完整文本。"""
 
-    return await GLMClient().chat(prompt, system_prompt)
+    return await DeepSeekClient().chat(prompt, system_prompt)
 
 
 async def complete(
@@ -296,16 +296,16 @@ async def complete(
     system_prompt: str = "",
     functions: Sequence[Mapping[str, Any]] = (),
 ) -> ChatCompletion:
-    """Use the default GLM client and return text plus optional tool calls."""
+    """Use the default DeepSeek client and return text plus optional tool calls."""
 
-    return await GLMClient().complete(prompt, system_prompt, functions)
+    return await DeepSeekClient().complete(prompt, system_prompt, functions)
 
 
 async def chat_stream(
     prompt: str,
     system_prompt: str = "",
 ) -> AsyncGenerator[str, None]:
-    """使用默认配置调用 GLM 并逐段产出文本。"""
+    """使用默认配置调用 DeepSeek 并逐段产出文本。"""
 
-    async for content in GLMClient().chat_stream(prompt, system_prompt):
+    async for content in DeepSeekClient().chat_stream(prompt, system_prompt):
         yield content

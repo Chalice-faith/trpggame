@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379/0"
 
-    # GLM-4 大模型 API
-    glm_api_key: str = ""
-    glm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
-    glm_model: str = "glm-4-long"
+    # DeepSeek 大模型 API
+    deepseek_api_key: str = ""
+    deepseek_api_base: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-v4-flash"
 
     # Embedding 模型
     embedding_model: str = "BAAI/bge-large-zh-v1.5"

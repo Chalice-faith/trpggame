@@ -41,7 +41,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 - ✅ **基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
 - ✅ **剧本系统（代码级）**：PDF 上传 → 解析清洗 → 结构化切片 → 向量化存储 → 状态查询/失败重试
 - 🚧 **RAG 检索**：剧本片段召回、MMR 去重及上下文组装
-- 🚧 **AI 叙事核心**：GLM-4-Long 推理、RAG 检索（含 MMR 去重）、Function Calling、摘要记忆
+- 🚧 **AI 叙事核心**：DeepSeek-V4-Flash 推理、RAG 检索（含 MMR 去重）、Function Calling、摘要记忆
 - 🚧 **单人游戏**：快速开始、自由文本交互、骰子检定、角色状态管理、存档读档
 - 🚧 **前端**：Vue 3 SPA — 单人跑团聊天界面
 
@@ -86,7 +86,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 │  └─────────┬─────────────┘  │   │  └────────┬──────────┘  │
 │  ┌─────────▼─────────────┐  │   │  ┌────────▼──────────┐  │
 │  │   Service Layer       │◄─┼──┼──►│ LLM 推理          │  │
-│  │   User/Game/Script    │  │   │  │ (GLM-4-Long)      │  │
+│  │   User/Game/Script    │  │   │  │ (DeepSeek-V4-Flash)      │  │
 │  └───┬───┬───┬───────────┘  │   │  ├───────────────────┤  │
 └──────┼───┼───┼──────────────┘   │  │ Function Calling   │
        │   │   │                   │  │ 摘要记忆/骰子服务  │
@@ -108,7 +108,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 | **UI** | Element Plus + Pinia + Axios | 中文友好组件，状态管理，HTTP 封装 |
 | **业务后端** | Go 1.22 + Gin + GORM + gorilla/websocket | 高并发、低延迟，天然适合 IM 场景 |
 | **AI 服务** | Python 3.11 + FastAPI | 生态丰富，LLM/向量/PDF 库齐全 |
-| **AI 模型** | GLM-4-Long（1M 上下文窗口） | 成本低、上下文长，适合长剧本场景 |
+| **AI 模型** | DeepSeek-V4-Flash（1M 上下文窗口） | 成本低、上下文长，适合长剧本场景 |
 | **关系数据库** | MySQL 8.4 | 成熟稳定，支持 JSON 字段 |
 | **缓存/状态** | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
 | **向量数据库** | Milvus 2.4 | 高性能向量检索，支持 MMR 去重 |
@@ -195,7 +195,7 @@ trpggame/
 - [Go 1.22+](https://go.dev/dl/)（本地开发）
 - [Node.js 18+](https://nodejs.org/)（前端开发）
 - [Python 3.11+](https://www.python.org/)（AI 服务开发）
-- GLM-4 API Key（需要配置到 `docker-compose.yml` 的 `GLM_API_KEY` 环境变量）
+- DeepSeek API Key（需要配置到 `docker-compose.yml` 的 `DEEPSEEK_API_KEY` 环境变量）
 
 ### Docker Compose 一键启动（推荐）
 
@@ -334,7 +334,7 @@ npm run dev
         ▼
 ┌─────────────────┐
 │ 2. LLM 推理      │
-│  - GLM-4-Long    │
+│  - DeepSeek-V4-Flash    │
 │  - 叙事生成      │
 │  - 规则裁定      │
 │  - Function Call │ → 需要状态变更时调用
@@ -393,7 +393,7 @@ AI 可调用的 Function Calling 函数：
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `GLM_API_KEY` | GLM-4-Long API Key | - |
+| `DEEPSEEK_API_KEY` | DeepSeek-V4-Flash API Key | - |
 | `TRPG_SERVER_PORT` | Go 服务端口 | `8080` |
 | `TRPG_SERVER_MODE` | Go 运行模式 | `debug` |
 | `TRPG_DATABASE_*` | MySQL 连接配置 | 见 docker-compose.yml |
