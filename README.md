@@ -189,6 +189,7 @@ trpggame/
     ├── 技术设计文档.md         # 技术设计文档 V1.1
     ├── 部署指南.md             # 部署快速开始手册
     ├── M1.3验收记录.md         # M1.3 剧本系统验收记录
+    ├── API接口测试文档.md       # Swagger 风格 REST / WebSocket / AI 接口测试文档
     ├── 开发暂停交接.md         # 开发交接与恢复说明
     ├── 开发问题记录.md         # 开发问题记录
     └── CLAUDE.md               # AI 开发辅助文档
@@ -287,6 +288,8 @@ docker compose config --quiet
 ---
 
 ## 🔌 API 概述
+
+完整请求/响应字段、错误码、`curl` 示例和 WebSocket 测试步骤见：[API接口测试文档](docs/API接口测试文档.md)。
 
 ### 认证模块
 
