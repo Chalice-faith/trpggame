@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.dependencies import require_internal_secret
@@ -28,6 +29,7 @@ from app.services.llm_client import (
     ChatCompletion,
     LLMClientError,
     chat,
+    chat_stream,
     complete,
 )
 from app.services.retriever import RetrievalError, retrieve
@@ -205,6 +207,9 @@ class ActionInferenceResult:
     status_changes: dict[str, Any] | None = None
 
 
+NarrativeStreamGenerator = Callable[[str, str], AsyncIterator[str]]
+
+
 class ActionEffectCollector:
     """Collect validated state changes for the later authoritative state layer."""
 
@@ -257,6 +262,7 @@ class ActionInferenceService:
         context_builder: ContextBuilder = assemble_context,
         completion_generator: CompletionGenerator = complete,
         narrative_generator: NarrativeGenerator = chat,
+        stream_narrative_generator: NarrativeStreamGenerator = chat_stream,
         executor_factory: ExecutorFactory = _create_executor,
     ) -> None:
         self._retriever = retriever
@@ -264,6 +270,7 @@ class ActionInferenceService:
         self._context_builder = context_builder
         self._completion_generator = completion_generator
         self._narrative_generator = narrative_generator
+        self._stream_narrative_generator = stream_narrative_generator
         self._executor_factory = executor_factory
 
     async def infer(self, request: GameActionRequest) -> ActionInferenceResult:
@@ -294,6 +301,116 @@ class ActionInferenceService:
                 context,
                 completion_result,
             )
+        except ActionInferenceError:
+            raise
+        except RetrievalError as exc:
+            raise ActionInferenceError("script retrieval failed") from exc
+        except GameContextError as exc:
+            raise ActionInferenceError("game context unavailable") from exc
+        except LLMClientError as exc:
+            raise ActionInferenceError("LLM generation failed") from exc
+        except FunctionCallError as exc:
+            raise ActionInferenceError("function call execution failed") from exc
+        except Exception as exc:
+            raise ActionInferenceError("player action inference failed") from exc
+
+    async def infer_stream(
+        self,
+        request: GameActionRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run action inference and expose the final narration as NDJSON events.
+
+        Tool calls are resolved before any authoritative metadata is emitted. The
+        narrative itself may stream while the runtime state is still being
+        prepared; the final ``complete`` event is emitted only after all tool
+        results have been validated.
+        """
+
+        try:
+            rag_chunks = await self._retriever(request.action, request.script_id)
+            if not rag_chunks:
+                raise ActionInferenceError(
+                    "script has no retrievable action context"
+                )
+            runtime = await self._context_provider.load(
+                request.room_id,
+                request.user_id,
+                request.character_id,
+            )
+            context = self._context_builder(
+                request.action,
+                rag_chunks=rag_chunks,
+                summary_memory=runtime.summary_memory,
+                recent_history=runtime.recent_history,
+                player_state=runtime.player_state,
+                character_profile=runtime.character_profile,
+            )
+            completion_result = await self._completion_generator(
+                context.user_prompt,
+                context.system_prompt,
+                FUNCTIONS,
+            )
+            tool_calls = completion_result.tool_calls
+            if len(tool_calls) > self.MAX_TOOL_CALLS:
+                raise ActionInferenceError("LLM requested too many function calls")
+
+            if not tool_calls:
+                narrative = completion_result.content.strip()
+                if not narrative:
+                    raise ActionInferenceError("LLM returned an empty narrative")
+                yield {"type": "narrative_chunk", "content": narrative}
+                yield {
+                    "type": "complete",
+                    "narrative": narrative,
+                    "dice_roll": None,
+                    "status_changes": None,
+                }
+                return
+
+            collector = ActionEffectCollector(request.user_id)
+            executor = self._executor_factory(collector.handlers())
+            tool_results: list[dict[str, Any]] = []
+            dice_roll: dict[str, Any] | None = None
+            for tool_call in tool_calls:
+                execution = await executor.execute(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+                tool_results.append({"id": tool_call.id, **execution})
+                if tool_call.name == "roll_dice":
+                    if dice_roll is not None:
+                        raise ActionInferenceError(
+                            "multiple dice rolls are not supported"
+                        )
+                    dice_roll = dict(execution["result"])
+
+            narrative_prompt = self._build_result_prompt(
+                context.user_prompt,
+                tool_results,
+            )
+            chunks: list[str] = []
+            async for chunk in self._stream_narrative_generator(
+                narrative_prompt,
+                context.system_prompt,
+            ):
+                if not isinstance(chunk, str):
+                    raise ActionInferenceError(
+                        "LLM stream returned a non-text chunk"
+                    )
+                if chunk:
+                    chunks.append(chunk)
+                    yield {"type": "narrative_chunk", "content": chunk}
+
+            narrative = "".join(chunks).strip()
+            if not narrative:
+                raise ActionInferenceError("LLM returned an empty final narrative")
+            status_changes = {"calls": collector.calls} if collector.calls else None
+            yield {
+                "type": "complete",
+                "narrative": narrative,
+                "dice_roll": dice_roll,
+                "status_changes": status_changes,
+            }
         except ActionInferenceError:
             raise
         except RetrievalError as exc:
@@ -403,4 +520,47 @@ async def process_action(
         narrative=result.narrative,
         dice_roll=result.dice_roll,
         status_changes=result.status_changes,
+    )
+
+
+@router.post(
+    "/inference/action/stream",
+    dependencies=[Depends(require_internal_secret)],
+)
+async def process_action_stream(
+    request: GameActionRequest,
+    service: ActionInferenceService = Depends(get_action_inference_service),
+) -> StreamingResponse:
+    """Stream action narration and finish with one authoritative metadata event.
+
+    Each line is a standalone JSON object. The successful event sequence is
+    ``narrative_chunk`` (one or more) followed by ``complete``. Failures are
+    represented as an ``error`` line because the HTTP status is already sent
+    when a streaming body begins.
+    """
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in service.infer_stream(request):
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        except ActionInferenceError:
+            logger.exception(
+                "streaming action inference failed for room=%s user=%s script=%s",
+                request.room_id,
+                request.user_id,
+                request.script_id,
+            )
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "message": "player action inference unavailable",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ) + "\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

@@ -47,10 +47,41 @@ type SubmitGameActionResult struct {
 	Duplicate   bool            `json:"-"`
 }
 
+// GameActionStreamEvent 是游戏层向 WebSocket 层暴露的稳定事件。
+// 只有 narrative_chunk 在 AI 调用期间发送；其余事件均在运行态提交成功后发送。
+type GameActionStreamEvent struct {
+	Type    string
+	Content string
+	Result  *SubmitGameActionResult
+}
+
+// ActionStreamObserver 接收一次行动的流式事件。
+type ActionStreamObserver func(event GameActionStreamEvent)
+
 // SubmitAction 校验持久权限，调用 AI，并通过 Redis CAS 原子提交运行态。
 func (s *GameService) SubmitAction(
 	ctx context.Context,
 	req *SubmitGameActionRequest,
+) (*SubmitGameActionResult, error) {
+	return s.submitAction(ctx, req, nil)
+}
+
+// SubmitActionStream 提交行动并在 AI 生成及权威状态提交期间发出事件。
+func (s *GameService) SubmitActionStream(
+	ctx context.Context,
+	req *SubmitGameActionRequest,
+	observer ActionStreamObserver,
+) (*SubmitGameActionResult, error) {
+	if observer == nil {
+		return s.SubmitAction(ctx, req)
+	}
+	return s.submitAction(ctx, req, observer)
+}
+
+func (s *GameService) submitAction(
+	ctx context.Context,
+	req *SubmitGameActionRequest,
+	observer ActionStreamObserver,
 ) (*SubmitGameActionResult, error) {
 	action, requestID, fingerprint, err := validateGameActionRequest(req)
 	if err != nil {
@@ -98,6 +129,7 @@ func (s *GameService) SubmitAction(
 		if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, result.CurrentTurn); err != nil {
 			return nil, err
 		}
+		emitCommittedActionEvents(observer, result)
 		return result, nil
 	}
 	if room.Status != model.RoomStatusPlaying {
@@ -119,18 +151,41 @@ func (s *GameService) SubmitAction(
 		return nil, err
 	}
 
-	aiResult, err := s.aiClient.SubmitAction(ctx, &ai_client.GameActionRequest{
+	aiRequest := &ai_client.GameActionRequest{
 		RoomID:      room.ID,
 		UserID:      req.UserID,
 		Action:      action,
 		ScriptID:    room.ScriptID,
 		CharacterID: *player.CharacterID,
-	})
+	}
+	var aiResult *ai_client.GameActionResponse
+	streamedNarrative := false
+	if observer != nil {
+		if streamClient, ok := s.aiClient.(GameInferenceStreamClient); ok {
+			aiResult, err = streamClient.SubmitActionStream(ctx, aiRequest, func(event ai_client.ActionStreamEvent) error {
+				if event.Type == "narrative_chunk" && event.Content != "" {
+					streamedNarrative = true
+					observer(GameActionStreamEvent{Type: "narrative_chunk", Content: event.Content})
+				}
+				return nil
+			})
+		} else {
+			aiResult, err = s.aiClient.SubmitAction(ctx, aiRequest)
+		}
+	} else {
+		aiResult, err = s.aiClient.SubmitAction(ctx, aiRequest)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: infer game action: %v", ErrAIUnavailable, err)
 	}
 	if aiResult == nil || strings.TrimSpace(aiResult.Narrative) == "" {
 		return nil, ErrEmptyActionNarrative
+	}
+	if observer != nil && !streamedNarrative {
+		observer(GameActionStreamEvent{
+			Type:    "narrative_chunk",
+			Content: strings.TrimSpace(aiResult.Narrative),
+		})
 	}
 	effects, err := InterpretActionEffects(req.UserID, aiResult.StatusChanges)
 	if err != nil {
@@ -183,7 +238,30 @@ func (s *GameService) SubmitAction(
 	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
 		return nil, err
 	}
+	emitCommittedActionEvents(observer, committedResult)
 	return committedResult, nil
+}
+
+func emitCommittedActionEvents(observer ActionStreamObserver, result *SubmitGameActionResult) {
+	if observer == nil || result == nil {
+		return
+	}
+	if result.DiceRoll != nil {
+		observer(GameActionStreamEvent{Type: "dice_roll", Result: result})
+	}
+	if hasActionEffects(result.Effects) {
+		observer(GameActionStreamEvent{Type: "status_update", Result: result})
+	}
+	observer(GameActionStreamEvent{
+		Type:    "narrative_complete",
+		Result:  result,
+		Content: result.Narrative,
+	})
+}
+
+func hasActionEffects(effects *ActionEffects) bool {
+	return effects != nil && (len(effects.PlayerStateChanges) > 0 ||
+		len(effects.Items) > 0 || len(effects.Buffs) > 0 || len(effects.Events) > 0)
 }
 
 func validateGameActionRequest(

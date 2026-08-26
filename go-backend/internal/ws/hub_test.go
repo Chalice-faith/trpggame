@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -160,6 +161,38 @@ func TestUnknownInboundMessageReturnsError(t *testing.T) {
 		t.Fatalf("error code = %d, want 1505", data.Code)
 	}
 }
+
+func TestGameActionInboundDispatchesAuthenticatedRoomData(t *testing.T) {
+	hub := startTestHub(t)
+	client := registerTestClient(t, hub, 41, 7)
+	dispatched := make(chan GameActionData, 1)
+	hub.SetGameActionHandler(func(ctx context.Context, got *Client, request GameActionData) {
+		if ctx == nil || got != client {
+			t.Errorf("handler context/client = (%v, %p), want client %p", ctx, got, client)
+		}
+		dispatched <- request
+	})
+
+	hub.HandleInbound(client, &Message{
+		Type: MsgGameAction,
+		Data: mustJSON(GameActionData{
+			RequestID:    "550e8400-e29b-41d4-a716-446655440000",
+			ExpectedTurn: intPointer(3),
+			ActionText:   "调查书房",
+		}),
+	})
+
+	select {
+	case request := <-dispatched:
+		if request.RequestID == "" || request.ExpectedTurn == nil || *request.ExpectedTurn != 3 || request.ActionText != "调查书房" {
+			t.Fatalf("dispatched request = %#v", request)
+		}
+	case <-time.After(testRecvTimeout):
+		t.Fatal("game action handler was not called")
+	}
+}
+
+func intPointer(value int) *int { return &value }
 
 func TestRegisterSkippedForClosedClient(t *testing.T) {
 	hub := startTestHub(t)

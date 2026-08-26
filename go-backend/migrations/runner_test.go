@@ -25,6 +25,8 @@ func TestApplyRunsPendingMigrationsInOrderAndRecordsChecksums(t *testing.T) {
 			expectAutoSaveIndex(mock, false)
 			mock.ExpectExec(regexp.QuoteMeta(addAutoSaveColumnSQL)).WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectExec(regexp.QuoteMeta(addAutoSaveIndexSQL)).WillReturnResult(sqlmock.NewResult(0, 0))
+		case "009_remove_foreign_keys.sql":
+			expectNoLegacyRelationshipObjects(mock)
 		default:
 			mock.ExpectExec(regexp.QuoteMeta(string(body))).WillReturnResult(sqlmock.NewResult(0, 0))
 		}
@@ -52,6 +54,8 @@ func TestApplyBaselinesExistingUnrecordedIdempotentSchema(t *testing.T) {
 		case "008_add_auto_save_uniqueness.sql":
 			expectAutoSaveColumn(mock, true, "STORED GENERATED", "case when is_auto then round_number else null end")
 			expectAutoSaveIndex(mock, true)
+		case "009_remove_foreign_keys.sql":
+			expectNoLegacyRelationshipObjects(mock)
 		default:
 			mock.ExpectExec(regexp.QuoteMeta(string(body))).WillReturnResult(sqlmock.NewResult(0, 0))
 		}
@@ -86,6 +90,28 @@ func TestApplySkipsRecordedMigrationsAndRejectsChecksumDrift(t *testing.T) {
 		expectRunnerUnlock(mock)
 		if err := Apply(context.Background(), db); err == nil {
 			t.Fatal("checksum drift was accepted")
+		}
+		assertMigrationExpectations(t, mock)
+	})
+
+	t.Run("legacy foreign-key migrations", func(t *testing.T) {
+		db, mock := newMigrationTestDB(t)
+		records := make(map[string]string, len(orderedMigrationNames)-1)
+		for _, name := range orderedMigrationNames[:len(orderedMigrationNames)-1] {
+			records[name] = migrationChecksum(mustMigrationBody(t, name))
+		}
+		for name, checksums := range historicalMigrationChecksums {
+			for checksum := range checksums {
+				records[name] = checksum
+				break
+			}
+		}
+		expectRunnerStart(mock, records)
+		expectNoLegacyRelationshipObjects(mock)
+		expectMigrationRecord(mock, "009_remove_foreign_keys.sql", mustMigrationBody(t, "009_remove_foreign_keys.sql"))
+		expectRunnerUnlock(mock)
+		if err := Apply(context.Background(), db); err != nil {
+			t.Fatalf("Apply() error = %v", err)
 		}
 		assertMigrationExpectations(t, mock)
 	})

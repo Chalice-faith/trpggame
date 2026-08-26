@@ -77,6 +77,44 @@ func TestGameServiceSubmitActionCommitsAuthoritativeEffects(t *testing.T) {
 	}
 }
 
+func TestGameServiceSubmitActionStreamEmitsChunksAndCommittedMetadata(t *testing.T) {
+	service, _, aiClient, _ := actionServiceFixture()
+	aiClient.streamEvents = []ai_client.ActionStreamEvent{
+		{Type: "narrative_chunk", Content: "你发现"},
+		{Type: "narrative_chunk", Content: "一把钥匙。"},
+		{Type: "complete", Narrative: "你发现一把钥匙。"},
+	}
+	aiClient.streamResponse = &ai_client.GameActionResponse{
+		Narrative: "你发现一把钥匙。",
+		StatusChanges: effectChanges(effectCall("update_player_status", map[string]any{
+			"player_id": 7, "field": "san", "value": 48, "reason": "紧张",
+		})),
+	}
+
+	var events []GameActionStreamEvent
+	result, err := service.SubmitActionStream(
+		context.Background(),
+		validSubmitGameActionRequest(),
+		func(event GameActionStreamEvent) { events = append(events, event) },
+	)
+
+	if err != nil {
+		t.Fatalf("SubmitActionStream() error = %v", err)
+	}
+	if result == nil || result.CurrentTurn != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(events) != 4 || events[0].Type != "narrative_chunk" ||
+		events[1].Type != "narrative_chunk" || events[2].Type != "status_update" ||
+		events[3].Type != "narrative_complete" {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Content != "你发现" || events[3].Result == nil ||
+		events[3].Result.Narrative != "你发现一把钥匙。" {
+		t.Fatalf("event payloads = %#v", events)
+	}
+}
+
 func TestGameServiceSubmitActionReplaysCachedResultBeforeStatusCheckAndAI(t *testing.T) {
 	service, gameRepository, aiClient, runtimeRepository := actionServiceFixture()
 	gameRepository.room.Status = model.RoomStatusPaused

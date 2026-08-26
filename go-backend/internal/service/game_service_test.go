@@ -258,6 +258,9 @@ type fakeGameInferenceClient struct {
 	actionResponse *ai_client.GameActionResponse
 	actionErr      error
 	actionRequest  *ai_client.GameActionRequest
+	streamEvents   []ai_client.ActionStreamEvent
+	streamResponse *ai_client.GameActionResponse
+	streamErr      error
 }
 
 func (c *fakeGameInferenceClient) SubmitAction(
@@ -265,6 +268,23 @@ func (c *fakeGameInferenceClient) SubmitAction(
 	req *ai_client.GameActionRequest,
 ) (*ai_client.GameActionResponse, error) {
 	c.actionRequest = req
+	return c.actionResponse, c.actionErr
+}
+
+func (c *fakeGameInferenceClient) SubmitActionStream(
+	_ context.Context,
+	req *ai_client.GameActionRequest,
+	handler ai_client.ActionStreamHandler,
+) (*ai_client.GameActionResponse, error) {
+	c.actionRequest = req
+	for _, event := range c.streamEvents {
+		if err := handler(event); err != nil {
+			return nil, err
+		}
+	}
+	if c.streamResponse != nil || c.streamErr != nil {
+		return c.streamResponse, c.streamErr
+	}
 	return c.actionResponse, c.actionErr
 }
 

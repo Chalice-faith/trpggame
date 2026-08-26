@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"trpggame/internal/config"
@@ -115,5 +116,56 @@ func TestClientSubmitActionPreservesFullDiceContract(t *testing.T) {
 	if result.DiceRoll == nil || result.DiceRoll.Target != 12 ||
 		!result.DiceRoll.CriticalHit || result.DiceRoll.Reason != "侦查" {
 		t.Fatalf("dice roll = %#v", result.DiceRoll)
+	}
+}
+
+func TestClientSubmitActionStreamParsesNDJSONAndCallsHandler(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/ai/inference/action/stream" || r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte(
+			"{\"type\":\"narrative_chunk\",\"content\":\"你发现\"}\n" +
+				"{\"type\":\"narrative_chunk\",\"content\":\"一把钥匙。\"}\n" +
+				"{\"type\":\"complete\",\"narrative\":\"你发现一把钥匙。\",\"dice_roll\":null,\"status_changes\":null}\n",
+		))
+	}))
+	defer server.Close()
+
+	client := NewClient(&config.AIConfig{BaseURL: server.URL, Timeout: 5}, "test-secret")
+	var events []ActionStreamEvent
+	result, err := client.SubmitActionStream(context.Background(), &GameActionRequest{
+		RoomID: 41, UserID: 7, ScriptID: 11, CharacterID: 13, Action: "检查书房",
+	}, func(event ActionStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("SubmitActionStream() error = %v", err)
+	}
+	if result == nil || result.Narrative != "你发现一把钥匙。" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(events) != 3 || events[0].Type != "narrative_chunk" || events[2].Type != "complete" {
+		t.Fatalf("events = %#v", events)
+	}
+}
+
+func TestClientSubmitActionStreamMapsRemoteError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		_, _ = w.Write([]byte("{\"type\":\"error\",\"message\":\"推理失败\"}\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(&config.AIConfig{BaseURL: server.URL, Timeout: 5}, "test-secret")
+	_, err := client.SubmitActionStream(context.Background(), &GameActionRequest{}, func(ActionStreamEvent) error {
+		t.Fatal("error event must not reach handler")
+		return nil
+	})
+	if err == nil || !strings.Contains(err.Error(), "推理失败") {
+		t.Fatalf("error = %v, want remote error", err)
 	}
 }

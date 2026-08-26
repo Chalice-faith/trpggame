@@ -58,6 +58,16 @@ type GameInferenceClient interface {
 	) (*ai_client.GameActionResponse, error)
 }
 
+// GameInferenceStreamClient 是可选的 AI 流式能力；保留独立接口以兼容
+// 现有同步客户端和测试替身。
+type GameInferenceStreamClient interface {
+	SubmitActionStream(
+		ctx context.Context,
+		req *ai_client.GameActionRequest,
+		handler ai_client.ActionStreamHandler,
+	) (*ai_client.GameActionResponse, error)
+}
+
 // GameRuntimeRepository 描述单人游戏运行态初始化与失败清理能力。
 type GameRuntimeRepository interface {
 	InitializeSoloRoom(ctx context.Context, state *model.SoloRuntimeState) error

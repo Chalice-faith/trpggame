@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from fastapi.testclient import TestClient
@@ -52,6 +53,18 @@ class RecordingActionService:
         if self.error is not None:
             raise self.error
         return self.result
+
+    async def infer_stream(self, request: GameActionRequest):
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        yield {"type": "narrative_chunk", "content": self.result.narrative}
+        yield {
+            "type": "complete",
+            "narrative": self.result.narrative,
+            "dice_roll": self.result.dice_roll,
+            "status_changes": self.result.status_changes,
+        }
 
 
 class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -202,6 +215,45 @@ class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ActionInferenceError, "function call execution"):
             await service.infer(self._request())
 
+    async def test_stream_emits_chunks_then_authoritative_completion(self):
+        async def retriever(query: str, script_id: int) -> list[str]:
+            return ["书架藏有线索。"]
+
+        async def completer(prompt: str, system: str, functions) -> ChatCompletion:
+            return ChatCompletion(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="item-1",
+                        name="add_item",
+                        arguments='{"player_id":2,"item_name":"黄铜钥匙"}',
+                    ),
+                ),
+            )
+
+        async def narrative_stream(prompt: str, system: str):
+            yield "你发现"
+            yield "一把黄铜钥匙。"
+
+        service = ActionInferenceService(
+            retriever=retriever,
+            context_provider=FakeContextProvider(),
+            context_builder=lambda action, **context: AssembledContext(
+                "system", "user prompt", ()
+            ),
+            completion_generator=completer,
+            stream_narrative_generator=narrative_stream,
+        )
+
+        events = [event async for event in service.infer_stream(self._request())]
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["narrative_chunk", "narrative_chunk", "complete"],
+        )
+        self.assertEqual(events[-1]["narrative"], "你发现一把黄铜钥匙。")
+        self.assertEqual(events[-1]["status_changes"]["calls"][0]["name"], "add_item")
+
     @staticmethod
     def _request() -> GameActionRequest:
         return GameActionRequest(
@@ -244,6 +296,25 @@ class ActionInferenceEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["dice_roll"]["result"], 17)
         self.assertEqual(service.requests[0].action, "我检查书架")
+
+    def test_stream_endpoint_returns_ndjson_events(self):
+        service = RecordingActionService(
+            ActionInferenceResult(narrative="流式叙事。")
+        )
+        app = create_app()
+        app.dependency_overrides[get_action_inference_service] = lambda: service
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/ai/inference/action/stream",
+                json=self._request_body(),
+                headers=self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual([event["type"] for event in events], ["narrative_chunk", "complete"])
+        self.assertEqual(events[-1]["narrative"], "流式叙事。")
 
     def test_endpoint_requires_internal_secret_and_valid_action(self):
         app = create_app()

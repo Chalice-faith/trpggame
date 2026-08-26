@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"sync"
@@ -26,6 +27,9 @@ type deliverRequest struct {
 	requestID string
 }
 
+// GameActionHandler 处理已通过 JWT 与房间订阅鉴权的客户端行动。
+type GameActionHandler func(context.Context, *Client, GameActionData)
+
 // Hub 管理所有 WebSocket 连接。
 type Hub struct {
 	// 按房间分组：roomID -> *room
@@ -36,7 +40,8 @@ type Hub struct {
 	unregister chan *Client
 
 	// 服务端 → 客户端投递通道
-	deliver chan deliverRequest
+	deliver       chan deliverRequest
+	actionHandler GameActionHandler
 
 	mu   sync.RWMutex
 	stop chan struct{}
@@ -86,7 +91,19 @@ func (h *Hub) BroadcastToRoom(roomID uint, msgType MessageType, data json.RawMes
 
 // SendToUser 向房间内指定客户端发送消息。
 func (h *Hub) SendToUser(roomID, userID uint, msgType MessageType, data json.RawMessage) {
-	h.deliver <- deliverRequest{roomID: roomID, userID: userID, msgType: msgType, data: data}
+	h.SendToUserWithRequestID(roomID, userID, msgType, data, "")
+}
+
+// SendToUserWithRequestID 向指定客户端发送带行动关联 ID 的事件。
+func (h *Hub) SendToUserWithRequestID(
+	roomID, userID uint,
+	msgType MessageType,
+	data json.RawMessage,
+	requestID string,
+) {
+	h.deliver <- deliverRequest{
+		roomID: roomID, userID: userID, msgType: msgType, data: data, requestID: requestID,
+	}
 }
 
 // SendErrorToUser 向房间内指定客户端发送错误事件。
@@ -97,14 +114,41 @@ func (h *Hub) SendErrorToUser(roomID, userID uint, code int, message, requestID 
 	}
 }
 
+// SetGameActionHandler 注入游戏行动处理器。应在 Hub.Run 启动前调用。
+func (h *Hub) SetGameActionHandler(handler GameActionHandler) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.actionHandler = handler
+}
+
 // HandleInbound 处理客户端 → 服务端的非心跳消息，由 Client.readPump 调用。
 func (h *Hub) HandleInbound(c *Client, msg *Message) {
 	switch msg.Type {
 	case MsgSync:
 		h.handleSync(c, msg.Data)
+	case MsgGameAction:
+		h.handleGameAction(c, msg.Data)
 	default:
 		h.sendErrorTo(c, 1505, "unsupported message type: "+string(msg.Type))
 	}
+}
+
+func (h *Hub) handleGameAction(c *Client, data json.RawMessage) {
+	var request GameActionData
+	if err := json.Unmarshal(data, &request); err != nil ||
+		request.ExpectedTurn == nil || request.RequestID == "" || request.ActionText == "" {
+		h.SendErrorToUser(c.RoomID, c.UserID, 1506, "invalid game action", request.RequestID)
+		return
+	}
+
+	h.mu.RLock()
+	handler := h.actionHandler
+	h.mu.RUnlock()
+	if handler == nil {
+		h.SendErrorToUser(c.RoomID, c.UserID, 1507, "game action handler unavailable", request.RequestID)
+		return
+	}
+	go handler(context.Background(), c, request)
 }
 
 func (h *Hub) registerClient(client *Client) {

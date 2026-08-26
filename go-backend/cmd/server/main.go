@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,6 +27,31 @@ import (
 // roomAuthorizer 校验用户是否为房间房主，与 REST 行动链路的访问控制一致。
 type roomAuthorizer struct {
 	repo *repo.GameRepo
+}
+
+func gameActionErrorCode(err error) int {
+	switch {
+	case errors.Is(err, service.ErrInvalidGameAction):
+		return 1310
+	case errors.Is(err, service.ErrGameRoomNotFound):
+		return 1311
+	case errors.Is(err, service.ErrGamePlayerNotFound):
+		return 1312
+	case errors.Is(err, service.ErrGameRoomNotPlaying):
+		return 1313
+	case errors.Is(err, service.ErrGameActionConflict):
+		return 1314
+	case errors.Is(err, service.ErrActionRequestConflict):
+		return 1315
+	case errors.Is(err, service.ErrInsufficientItems):
+		return 1316
+	case errors.Is(err, service.ErrGameRuntimeUnavailable):
+		return 1318
+	case errors.Is(err, service.ErrInvalidActionEffects):
+		return 1319
+	default:
+		return 1317
+	}
 }
 
 func (a roomAuthorizer) Authorize(ctx context.Context, userID, roomID uint) error {
@@ -96,6 +122,78 @@ func main() {
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
+	hub.SetGameActionHandler(func(ctx context.Context, client *ws.Client, request ws.GameActionData) {
+		if request.ExpectedTurn == nil {
+			hub.SendErrorToUser(client.RoomID, client.UserID, 1506, "invalid game action", request.RequestID)
+			return
+		}
+		_, err := gameService.SubmitActionStream(
+			ctx,
+			&service.SubmitGameActionRequest{
+				UserID:       client.UserID,
+				RoomID:       client.RoomID,
+				RequestID:    request.RequestID,
+				ExpectedTurn: *request.ExpectedTurn,
+				Action:       request.ActionText,
+			},
+			func(event service.GameActionStreamEvent) {
+				switch event.Type {
+				case "narrative_chunk":
+					payload, marshalErr := json.Marshal(ws.NarrativeChunkData{
+						Content: event.Content,
+						IsFinal: false,
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgNarrativeChunk, payload, request.RequestID)
+					}
+				case "dice_roll":
+					if event.Result == nil || event.Result.DiceRoll == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(event.Result.DiceRoll)
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgDiceRoll, payload, request.RequestID)
+					}
+				case "status_update":
+					if event.Result == nil || event.Result.Effects == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(ws.StatusUpdateData{
+						PlayerID: client.UserID,
+						Changes: map[string]any{
+							"player_state_changes": event.Result.Effects.PlayerStateChanges,
+							"items":                event.Result.Effects.Items,
+							"buffs":                event.Result.Effects.Buffs,
+							"events":               event.Result.Effects.Events,
+						},
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgStatusUpdate, payload, request.RequestID)
+					}
+				case "narrative_complete":
+					if event.Result == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(ws.NarrativeCompleteData{
+						Narrative:   event.Result.Narrative,
+						CurrentTurn: event.Result.CurrentTurn,
+						Duplicate:   event.Result.Duplicate,
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgNarrativeComplete, payload, request.RequestID)
+					}
+				}
+			},
+		)
+		if err != nil {
+			code := gameActionErrorCode(err)
+			message := "AI action generation unavailable"
+			if code != 1317 {
+				message = "game action rejected"
+			}
+			hub.SendErrorToUser(client.RoomID, client.UserID, code, message, request.RequestID)
+		}
+	})
 	go hub.Run()
 
 	// 初始化路由（WebSocket 端点接入 JWT 鉴权与房间订阅校验）

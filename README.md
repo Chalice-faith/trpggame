@@ -52,7 +52,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 
 **进行中：**
 
-- 🚧 **M1.5 剩余**：WebSocket 流式事件与游戏消息推送、Vue 单人游戏页面
+- 🚧 **M1.5 剩余**：存档工具栏、完整状态面板和真实依赖联调
 
 ### Phase 2 — 多人社交 📋 *规划中*
 
@@ -334,7 +334,7 @@ docker compose config --quiet
 
 ### WebSocket
 
-连接：`ws://localhost:8080/ws?token=<JWT>`（流式推送开发中 🚧）
+连接：`ws://localhost:8080/ws?token=<JWT>&room_id=<ROOM_ID>`
 
 **客户端 → 服务端：**
 
@@ -415,7 +415,8 @@ AI 可调用的 Function Calling 函数：
 - ✅ M1.3 剧本系统（代码级验收通过，Docker 端到端验收暂缓）
 - ✅ M1.4 AI 推理核心
 - ✅ M1.5 单人游戏后端闭环
-- 🚧 M1.5 WebSocket 流式事件与游戏消息推送（下一开发入口）
+- ✅ M1.5 WebSocket 行动流式事件与 Vue 单人游戏最小闭环
+- 🚧 M1.5 存档工具栏、完整状态面板与真实依赖联调
 - 🚧 Vue 单人游戏页面
 - ⬜ M1.6 联调与验收
 
