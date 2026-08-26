@@ -133,8 +133,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
   - [x] `POST /games/:roomId/action` 同步行动提交
   - [x] 手动存档、存档列表、读档、暂停、恢复与结束
 - [x] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理（按房间 seq 单调、recent 补推缓冲、HandleInbound 分发、register/unregister 竞态加固）
-- [x] Go: `ws_handler.go` — WS 鉴权 + 消息路由（JWT + RoomAuthorizer 房间订阅校验；`subscribed` 确认、`sync`/`sync_batch` 断线补推；行动流式分发待下一步）
-- [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`（依赖 Python 流式端点，下一步）
+- [x] Go: `ws_handler.go` — WS 鉴权 + 消息路由（JWT + RoomAuthorizer 房间订阅校验；`subscribed` 确认、`sync`/`sync_batch` 断线补推；行动流式分发已接入）
+- [x] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`（代码链路完成，真实服务联调待执行）
 - [ ] Redis 数据结构落地：
   - [x] 玩家状态 HASH (`room:{id}:player:{uid}`)
   - [x] 道具 SET、BUFF HASH
@@ -144,26 +144,18 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
   - [x] 带版本快照的原子读取与恢复（恢复时清空行动缓存）
   - [x] 运行态世代隔离（暂停/读档后拒绝旧 AI 结果）
   - [x] 自动存档待持久化队列及失败重试补偿
-- [ ] Vue: `stores/game.ts` — 游戏运行态管理
-- [ ] Vue: `stores/websocket.ts` — WebSocket 连接 + 心跳 + 重连
-- [ ] Vue: `GameSoloView.vue` + `CharacterSelectPanel.vue`
-- [ ] Vue: `GamePlayView.vue`
-  - [ ] `NarrativePanel.vue` — Markdown 渲染 + `ChatBubble.vue`
-  - [ ] `ActionInput.vue` — 行动输入 + 发送
-  - [ ] `PlayerStatusSidebar.vue` — HP/MP/SAN/道具
-  - [ ] `GameToolbar.vue` — 存档/读档/骰子
-  - [ ] `DiceAnimation.vue` — 骰子动画
-- [ ] Vue: 前端路由 (`/login`, `/register`, `/dashboard`, `/game/solo/:id`, `/game/play/:id`)
+- [x] Vue: `stores/game.ts` — 游戏运行态管理、角色状态/道具/Buff 更新
+- [x] Vue: `stores/websocket.ts` — WebSocket 连接、重连、补推和行动事件消费
+- [x] Vue: `GameSoloView.vue` — 角色选择与游戏启动
+- [x] Vue: `GamePlayView.vue` — 叙事、行动输入、角色状态、存档工具栏和骰子反馈
+- [x] Vue: 前端路由 (`/login`, `/register`, `/dashboard`, `/game/solo/:id`, `/game/play/:id`)
 
 #### M1.6 联调与验收
 
-- [ ] Docker Compose 一键启动全栈
-- [ ] 注册 → 登录 → 上传 PDF → 等待解析完成 → 快速开始 → AI 生成开场 → 多轮交互 全流程走通
-- [ ] AI 流式输出在前端逐字渲染
-- [ ] 骰子检定动画正常
-- [ ] 角色状态实时更新
-- [ ] 存档/读档正常恢复
-- [ ] WebSocket 断线重连测试
+- [ ] Docker Compose 一键启动全栈并完成真实接口测试
+- [ ] 注册 → 登录 → 上传 PDF → 等待解析完成 → 快速开始 → AI 生成开场 → 多轮交互全流程验收
+- [ ] AI 流式输出、骰子反馈、角色状态、存档/读档在真实服务中验收
+- [ ] WebSocket 断线重连和补推测试
 - [ ] 性能指标验收（AI 首 Token < 3s、WS 延迟 < 200ms）
 
 ---
@@ -381,9 +373,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；WebSocket 事件信封、鉴权订阅与补推基础层完成，行动仍走 REST，准备进入流式链路
+- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；WebSocket 事件信封、鉴权订阅、补推和行动流式链路已完成，前端最小闭环已完成，等待真实服务联调
 - **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
-- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环；WebSocket Hub/Client 重写（JWT 鉴权、按房间 seq、sync 断线补推、subscribed 订阅确认）完成
+- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环；WebSocket 行动流式事件链路及 Vue 单人游戏前端（状态面板、存档工具栏、骰子反馈）完成
 - **验证状态**：Go 全量测试、`go vet ./...`、`go build ./...`、`git diff --check` 通过；`go test -race ./...` 此前在 WSL 容器通过，Windows 本机无 CGO 无法运行；真实 MySQL、Redis、Python 与 Docker 端到端联调仍暂缓
 - **提交状态**：数据库迁移执行器和 M1.5 后端生命周期、WebSocket 基础层已按模块提交，详见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：实现行动流式事件链路（Python 流式端点 → Go 流式客户端 → `narrative_chunk`/`dice_roll`/`status_update`/`narrative_complete` 推送），再进入 Vue `websocket.ts` store 与单人游戏页面
+- **下一步**：等待开发者部署并完成真实 MySQL、Redis、Python、DeepSeek、Milvus、MinIO 和 Docker Compose 接口联调，再根据结果进行 Phase 1 验收

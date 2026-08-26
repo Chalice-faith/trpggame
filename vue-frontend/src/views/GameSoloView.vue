@@ -14,6 +14,9 @@ const selectedCharacterId = ref<number | null>(null)
 const loading = ref(true)
 const starting = ref(false)
 const scriptId = computed(() => Number(route.params.id))
+const selectedCharacter = computed(() =>
+  script.value?.characters?.find((character) => character.id === selectedCharacterId.value)
+)
 
 async function loadScript() {
   if (!Number.isInteger(scriptId.value) || scriptId.value <= 0) {
@@ -38,6 +41,7 @@ async function startGame() {
   try {
     const result = await startSoloGame(scriptId.value, selectedCharacterId.value)
     gameStore.reset()
+    gameStore.setPlayerStatusFromAttributes(selectedCharacter.value?.attributes)
     gameStore.setRoom({
       id: result.room_id,
       script_id: scriptId.value,
@@ -79,6 +83,9 @@ onMounted(loadScript)
           <span>
             <strong>{{ character.name }}</strong>
             <small>{{ character.description || '暂无角色描述' }}</small>
+            <em v-if="character.id === selectedCharacterId">
+              {{ Object.keys(character.attributes || {}).length }} 项初始属性
+            </em>
           </span>
         </button>
       </div>
@@ -140,6 +147,7 @@ h1 { margin: 12px 0 8px; font-size: clamp(32px, 5vw, 48px); }
 }
 .character-card strong, .character-card small { display: block; }
 .character-card small { margin-top: 7px; color: #9999ad; line-height: 1.5; }
+.character-card em { display: block; margin-top: 8px; color: #e9a23b; font-size: 11px; font-style: normal; }
 @media (max-width: 560px) {
   .eyebrow { margin-top: 4vh; }
 }
