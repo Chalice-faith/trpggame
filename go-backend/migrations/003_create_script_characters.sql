@@ -9,8 +9,5 @@ CREATE TABLE IF NOT EXISTS script_characters (
     attributes      JSON         NOT NULL DEFAULT (JSON_OBJECT())
                     CHECK (JSON_TYPE(attributes) = 'OBJECT'),
     PRIMARY KEY (id),
-    CONSTRAINT fk_script_characters_script
-        FOREIGN KEY (script_id) REFERENCES scripts(id) ON DELETE CASCADE,
-    KEY idx_script_characters_script (script_id),
     UNIQUE KEY idx_script_characters_script_name (script_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

@@ -1,0 +1,2 @@
+-- 009_remove_foreign_keys.sql
+-- 已部署的旧库由迁移执行器按 information_schema 检查后删除历史外键及其专用索引。

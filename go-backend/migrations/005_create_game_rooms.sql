@@ -18,11 +18,5 @@ CREATE TABLE IF NOT EXISTS game_rooms (
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     ended_at        DATETIME(3),
     PRIMARY KEY (id),
-    CONSTRAINT fk_game_rooms_script
-        FOREIGN KEY (script_id) REFERENCES scripts(id),
-    CONSTRAINT fk_game_rooms_owner
-        FOREIGN KEY (owner_id) REFERENCES users(id),
-    KEY idx_game_rooms_status (status),
-    KEY idx_game_rooms_owner_created (owner_id, created_at DESC),
-    KEY idx_game_rooms_script (script_id)
+    KEY idx_game_rooms_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

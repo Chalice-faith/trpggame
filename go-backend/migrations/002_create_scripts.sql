@@ -17,7 +17,6 @@ CREATE TABLE IF NOT EXISTS scripts (
                     ON UPDATE CURRENT_TIMESTAMP(3),
     deleted_at      DATETIME(3),
     PRIMARY KEY (id),
-    CONSTRAINT fk_scripts_user FOREIGN KEY (user_id) REFERENCES users(id),
     KEY idx_scripts_user_created (user_id, created_at DESC),
     KEY idx_scripts_status (status),
     KEY idx_scripts_deleted (deleted_at)

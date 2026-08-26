@@ -14,7 +14,5 @@ CREATE TABLE IF NOT EXISTS game_saves (
     is_auto         BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (id),
-    CONSTRAINT fk_game_saves_room
-        FOREIGN KEY (room_id) REFERENCES game_rooms(id),
     KEY idx_game_saves_room_created (room_id, created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
