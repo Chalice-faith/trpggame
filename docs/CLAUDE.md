@@ -226,7 +226,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 ## 数据库索引规划
 
-迁移脚本位于 `go-backend/migrations/`，命名格式 `NNN_description.sql`：
+迁移脚本位于 `database/migrations/`，命名格式 `NNN_description.sql`：
 
 ```
 001_create_users.sql
@@ -236,8 +236,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 005_create_game_rooms.sql         # 已实现
 006_create_room_players.sql       # 已实现
 007_create_game_saves.sql         # 已实现
-008_create_messages.sql           # 规划
-009_create_friendships.sql        # Phase 2
+008_add_auto_save_uniqueness.sql # 已实现
+009_remove_foreign_keys.sql      # 已实现
 010_create_groups.sql              # Phase 2
 011_create_group_members.sql       # Phase 2
 012_create_key_events.sql          # Phase 3
@@ -363,7 +363,7 @@ cd python-ai && uvicorn app.main:app --reload --port 8000
 cd vue-frontend && npm run dev
 
 # 数据库迁移
-cd go-backend && go run cmd/migrate/main.go up
+npm run db:migrate
 
 # 查看日志
 docker compose logs -f go-backend python-ai

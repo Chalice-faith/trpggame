@@ -1,0 +1,14 @@
+{
+  "name": "trpggame-database",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "db:migrate": "node database/scripts/migrate.mjs",
+    "db:test": "node --test database/test/*.test.mjs",
+    "db:verify": "npm run db:test"
+  },
+  "dependencies": {
+    "mysql2": "^3.15.3"
+  }
+}

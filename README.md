@@ -118,7 +118,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 | **业务后端** | Go 1.22 + Gin + GORM + gorilla/websocket | 高并发、低延迟，天然适合 IM 场景 |
 | **AI 服务** | Python 3.11 + FastAPI | 生态丰富，LLM/向量/PDF 库齐全 |
 | **AI 模型** | DeepSeek-V4-Flash | 成本低、1M 上下文窗口，适合长剧本场景 |
-| **关系数据库** | MySQL 8.4 | 成熟稳定，通用迁移执行器 + advisory lock |
+| **关系数据库** | MySQL 8.4 | 成熟稳定，npm 迁移器 + advisory lock |
 | **缓存/运行态** | Redis 7 | 玩家实时状态、Function Calling 缓存、幂等缓存 |
 | **向量数据库** | Milvus 2.4 | 高性能向量检索，支持 MMR 去重 |
 | **对象存储** | MinIO | 自部署 S3 兼容文件存储 |
@@ -147,8 +147,11 @@ trpggame/
 │   │   ├── ws/                 # WebSocket Hub + Client
 │   │   ├── ai_client/          # Python AI 服务 HTTP 客户端
 │   │   └── storage/            # MinIO 存储
-│   ├── migrations/             # SQL 迁移 (001-008) + 通用迁移执行器
-│   ├── Dockerfile              # 多阶段构建
+├── database/                    # npm 数据库迁移工具
+│   ├── migrations/               # SQL 迁移 (001-009)
+│   ├── scripts/migrate.mjs       # 迁移执行入口
+│   └── lib/                      # checksum、锁与兼容迁移逻辑
+││   ├── Dockerfile              # 多阶段构建
 │   ├── go.mod
 │   └── go.sum
 │
@@ -484,7 +487,8 @@ AI 可调用的 Function Calling 函数：
 
 | 项目 | 命令 | 覆盖范围 |
 |------|------|---------|
-| Go | `go test ./...` + `go vet ./...` | Repository/Service/Handler/AI Client/迁移执行器 |
+| Go | `go test ./...` + `go vet ./...` | Repository/Service/Handler/AI Client |
+| 数据库 | `npm run db:test` | npm 迁移器、checksum、锁与特殊迁移兼容性 |
 | Python | `python -m unittest discover tests` | 42+ 测试：PDF 解析、切片、RAG、LLM、骰子、上下文组装 |
 | Vue | `npm run build` + `npm test` | TypeScript 检查 + Vitest 组件测试 |
 

@@ -21,7 +21,6 @@ import (
 	"trpggame/internal/service"
 	"trpggame/internal/storage"
 	"trpggame/internal/ws"
-	"trpggame/migrations"
 )
 
 // roomAuthorizer 校验用户是否为房间房主，与 REST 行动链路的访问控制一致。
@@ -78,13 +77,6 @@ func main() {
 		log.Fatalf("Failed to connect database: %v", err)
 	}
 	log.Println("Database connected")
-	schemaContext, cancelSchema := context.WithTimeout(context.Background(), 15*time.Second)
-	if err := migrations.Apply(schemaContext, db); err != nil {
-		cancelSchema()
-		log.Fatalf("Failed to apply required database schema: %v", err)
-	}
-	cancelSchema()
-	log.Println("Required database schema verified")
 
 	// 初始化外部依赖
 	dependencyContext, cancelDependencies := context.WithTimeout(context.Background(), 10*time.Second)
