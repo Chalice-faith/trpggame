@@ -7,6 +7,7 @@ import (
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
 	"trpggame/internal/middleware"
+	"trpggame/internal/openapi"
 )
 
 // Setup 初始化所有路由并返回 Gin Engine
@@ -22,6 +23,9 @@ func Setup(
 
 	// 全局中间件
 	r.Use(middleware.CORS())
+
+	// 公共 REST API 文档（规范与 UI 均嵌入 Go 二进制）
+	openapi.RegisterRoutes(r)
 
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)

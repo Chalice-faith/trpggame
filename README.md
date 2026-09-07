@@ -292,7 +292,7 @@ docker compose config --quiet
 
 ## 🔌 API 概述
 
-完整请求/响应字段、错误码、`curl` 示例和 WebSocket 测试步骤见：[API接口测试文档](docs/API接口测试文档.md)。
+完整请求/响应字段、错误码、`curl` 示例和 WebSocket 测试步骤见：[API接口测试文档](docs/API接口测试文档.md)。Go 服务启动后可通过 `/api/docs/index.html` 使用 Swagger UI。
 
 ### 认证模块
 

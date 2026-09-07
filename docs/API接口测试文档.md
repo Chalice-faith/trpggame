@@ -8,6 +8,8 @@
 
 这份文档用于在 Swagger UI、Postman 或 `curl` 中手工验收。所有示例均使用 JSON 字段名，不使用 Go/Python 内部字段名。
 
+机器可读的公共 Go REST 规范见：[OpenAPI 3.0.3](../go-backend/internal/openapi/openapi.yaml)。服务启动后可访问 `${GO_BASE_URL}/api/docs/index.html` 使用 Swagger UI，原始规范地址为 `${GO_BASE_URL}/api/openapi.yaml`。
+
 ## 1. 测试环境
 
 ### 1.1 地址变量

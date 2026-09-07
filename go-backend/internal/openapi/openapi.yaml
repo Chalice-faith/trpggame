@@ -1,0 +1,1482 @@
+openapi: 3.0.3
+info:
+  title: TRPG Game Public API
+  version: 1.0.0-phase1
+  license:
+    name: Project license not specified
+  description: |
+    TRPG Game Phase 1 对前端开放的 Go REST API。
+
+    所有业务响应均使用 `code` 和 `message`；除删除剧本外，成功响应还包含 `data`。
+    `code = 0` 表示业务成功。WebSocket、Python AI 和 Go 内部回调不属于本公共规范。
+servers:
+  - url: /
+    description: 当前 Swagger UI 所在服务
+tags:
+  - name: Auth
+    description: 注册、登录和令牌刷新
+  - name: Users
+    description: 当前用户资料
+  - name: Scripts
+    description: PDF 剧本上传、查询和管理
+  - name: Games
+    description: Phase 1 单人游戏生命周期
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: 注册用户
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              username: tester01
+              email: tester01@example.com
+              password: secret123
+              nickname: 测试员
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '409':
+          description: 用户名或邮箱已存在（业务码 1100）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                usernameExists:
+                  value: {code: 1100, message: username already exists}
+                emailExists:
+                  value: {code: 1100, message: email already exists}
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example: {username: tester01, password: secret123}
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          description: 用户名或密码错误（业务码 1101）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1101, message: invalid username or password}
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新访问令牌
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: 刷新成功，同时轮换 refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          description: refresh token 无效（业务码 1102）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1102, message: invalid refresh token}
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: 获取当前用户资料
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 用户不存在（业务码 1103）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1103, message: user not found}
+    put:
+      tags: [Users]
+      summary: 更新当前用户资料
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              nickname: 新昵称
+              avatar_url: https://example.com/avatar.png
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: 更新失败（业务码 1104）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1104, message: internal error}
+
+  /api/v1/scripts/upload:
+    post:
+      tags: [Scripts]
+      summary: 上传 PDF 剧本
+      description: 上传成功仅表示解析任务已受理，客户端应轮询剧本详情直到状态变为 ready 或 failed。
+      operationId: uploadScript
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF 文件；当前默认上限为 50 MiB
+                title:
+                  type: string
+                  maxLength: 200
+                  description: 可选；为空时使用文件名
+                description:
+                  type: string
+      responses:
+        '202':
+          description: 解析任务已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptUploadResponse'
+        '400':
+          description: 缺少文件（1200）或 PDF/标题校验失败（1202）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                missingFile:
+                  value: {code: 1200, message: script PDF file is required}
+                invalidPdf:
+                  value: {code: 1202, message: script file has an invalid PDF signature}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: 文件过大（业务码 1201）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1201, message: script PDF file is too large}
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts:
+    get:
+      tags: [Scripts]
+      summary: 查询当前用户的剧本列表
+      operationId: listScripts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptListResponse'
+        '400':
+          description: 分页参数无效（业务码 1204）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1204, message: invalid pagination parameters}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScriptId'
+    get:
+      tags: [Scripts]
+      summary: 获取剧本详情与预设角色
+      operationId: getScriptDetail
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptDetailResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+    delete:
+      tags: [Scripts]
+      summary: 删除剧本
+      description: 仅允许删除 ready 或 failed 状态；服务会依次清理向量、对象文件和数据库记录。
+      operationId: deleteScript
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccessResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '409':
+          $ref: '#/components/responses/ScriptStatusConflict'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ScriptId'
+    post:
+      tags: [Scripts]
+      summary: 重试失败的剧本解析
+      description: 仅允许当前用户拥有且状态为 failed 的剧本。
+      operationId: retryScript
+      responses:
+        '202':
+          description: 重试任务已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptRetryResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '409':
+          $ref: '#/components/responses/ScriptStatusConflict'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/games/solo/start:
+    post:
+      tags: [Games]
+      summary: 开始单人游戏
+      description: 剧本必须为 ready，角色必须属于该剧本。
+      operationId: startSoloGame
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSoloGameRequest'
+            example: {script_id: 9, character_id: 12}
+      responses:
+        '201':
+          description: 游戏创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartSoloGameResponse'
+        '400':
+          description: 请求无效（业务码 1300）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1300, message: invalid game request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 剧本不存在（1301）或角色不存在（1303）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                scriptNotFound:
+                  value: {code: 1301, message: script not found}
+                characterNotFound:
+                  value: {code: 1303, message: character not found in script}
+        '409':
+          description: 剧本未就绪（1302）或游戏创建冲突（1305）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                scriptNotReady:
+                  value: {code: 1302, message: script is not ready}
+                startConflict:
+                  value: {code: 1305, message: game start status conflict}
+        '503':
+          description: AI 开场叙事不可用（业务码 1304）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1304, message: AI opening generation unavailable}
+        '500':
+          description: 内部错误（业务码 1306）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1306, message: internal error}
+
+  /api/v1/games/{roomId}/action:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 同步提交玩家行动
+      description: 前端实时交互优先使用 WebSocket；本接口提供相同业务能力的同步响应。
+      operationId: submitGameAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitActionRequest'
+            example:
+              request_id: 550e8400-e29b-41d4-a716-446655440000
+              expected_turn: 0
+              action_text: 观察房间并寻找出口
+      responses:
+        '200':
+          description: 行动处理成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitActionResponse'
+        '400':
+          description: 行动请求无效（业务码 1310）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1310, message: invalid game action}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 房间不存在（1311）或玩家不存在（1312）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: 房间非 playing（1313）、回合冲突（1314）、request_id 冲突（1315）或道具不足（1316）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '502':
+          description: AI 返回非法状态变化（业务码 1319）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1319, message: AI returned invalid action effects}
+        '503':
+          description: AI 行动生成不可用（1317）或游戏运行态不可用（1318）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: 内部错误（业务码 1320）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1320, message: internal error}
+
+  /api/v1/games/{roomId}/save:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 创建手动存档
+      operationId: createManualSave
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualSaveRequest'
+            example: {save_name: 进入密室前}
+      responses:
+        '201':
+          description: 存档创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualSaveResponse'
+        '400':
+          description: 请求无效（业务码 1321）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1321, message: invalid game save request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前房间状态不可存档（业务码 1322）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1322, message: game room cannot be saved}
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1323）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1323, message: internal error}
+
+  /api/v1/games/{roomId}/saves:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 查询房间存档列表
+      operationId: listGameSaves
+      responses:
+        '200':
+          description: 查询成功；不返回 Redis 快照和消息正文
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameSaveListResponse'
+        '400':
+          description: 请求无效（业务码 1324）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1324, message: invalid game save query}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '500':
+          description: 内部错误（业务码 1325）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1325, message: internal error}
+
+  /api/v1/games/{roomId}/load:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 从存档恢复游戏
+      description: 恢复完成后房间保持 paused，需要再调用恢复接口。
+      operationId: loadGame
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoadGameRequest'
+            example: {save_id: 91}
+      responses:
+        '200':
+          description: 读档成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadGameResponse'
+        '400':
+          description: 请求无效（业务码 1332）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1332, message: invalid game load request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 房间不存在（1311）或存档不存在（1333）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: 存档损坏（1334）或当前房间状态不可读档（1335）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1336）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1336, message: internal error}
+
+  /api/v1/games/{roomId}/pause:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 暂停游戏
+      operationId: pauseGame
+      responses:
+        '200':
+          description: 暂停成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: paused}
+        '400':
+          description: 请求无效（业务码 1326）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可暂停（业务码 1327）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1328）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/v1/games/{roomId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 恢复游戏
+      operationId: resumeGame
+      responses:
+        '200':
+          description: 恢复成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: playing}
+        '400':
+          description: 请求无效（业务码 1329）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可恢复（业务码 1330）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1331）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/v1/games/{roomId}/end:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 结束游戏
+      operationId: endGame
+      responses:
+        '200':
+          description: 结束成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: ended}
+        '400':
+          description: 请求无效（业务码 1337）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可结束（业务码 1338）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1339）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ScriptId:
+      name: id
+      in: path
+      required: true
+      description: 当前用户拥有的剧本 ID
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 9
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      description: 当前用户拥有的单人房间 ID
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 41
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: 必须为正整数；超过 100 时服务端按 100 处理
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+
+  responses:
+    Unauthorized:
+      description: 缺少 JWT（1001）或 JWT 无效/过期（1002）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          examples:
+            missingToken:
+              value: {code: 1001, message: Missing authorization header}
+            invalidToken:
+              value: {code: 1002, message: Invalid or expired token}
+    InvalidScriptId:
+      description: 剧本 ID 非法（业务码 1205）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1205, message: invalid script ID}
+    ScriptNotFound:
+      description: 剧本不存在或不属于当前用户（业务码 1206）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1206, message: script not found}
+    ScriptStatusConflict:
+      description: 剧本状态不允许当前操作（业务码 1211）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1211, message: script status transition conflict}
+    ScriptInternalError:
+      description: 剧本服务内部错误（业务码 1203）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1203, message: internal error}
+    GameRoomNotFound:
+      description: 房间不存在或不属于当前用户（业务码 1311）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1311, message: game room not found}
+    GameRuntimeUnavailable:
+      description: Redis 游戏运行态不可用（业务码 1318）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1318, message: game runtime unavailable}
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          format: int32
+          minimum: 1
+        message:
+          type: string
+
+    SimpleSuccessResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 6
+          maxLength: 100
+        nickname:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+          writeOnly: true
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+
+    AuthData:
+      type: object
+      required: [user_id, username, access_token, refresh_token]
+      properties:
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+        username:
+          type: string
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/AuthData'
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+
+    User:
+      type: object
+      required: [id, username, email, nickname, avatar_url, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/User'
+
+    ScriptStatus:
+      type: string
+      enum: [uploading, parsing, ready, failed]
+
+    RoomStatus:
+      type: string
+      enum: [waiting, playing, paused, ended]
+
+    ScriptUpload:
+      type: object
+      required: [id, title, description, file_size, status, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        description:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [parsing]
+        created_at:
+          type: string
+          format: date-time
+
+    ScriptUploadResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: accepted
+        data:
+          $ref: '#/components/schemas/ScriptUpload'
+
+    ScriptSummary:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - cover_url
+        - file_size
+        - status
+        - chunk_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        description:
+          type: string
+        cover_url:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/ScriptStatus'
+        parse_error:
+          type: string
+        chunk_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScriptListData:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScriptSummary'
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+
+    ScriptListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ScriptListData'
+
+    ScriptCharacter:
+      type: object
+      required: [id, name, description, attributes]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+        description:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+
+    ScriptDetail:
+      allOf:
+        - $ref: '#/components/schemas/ScriptSummary'
+        - type: object
+          required: [characters]
+          properties:
+            characters:
+              type: array
+              items:
+                $ref: '#/components/schemas/ScriptCharacter'
+
+    ScriptDetailResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ScriptDetail'
+
+    ScriptRetryData:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [parsing]
+
+    ScriptRetryResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: accepted
+        data:
+          $ref: '#/components/schemas/ScriptRetryData'
+
+    StartSoloGameRequest:
+      type: object
+      required: [script_id, character_id]
+      properties:
+        script_id:
+          type: integer
+          format: int64
+          minimum: 1
+        character_id:
+          type: integer
+          format: int64
+          minimum: 1
+
+    StartSoloGameData:
+      type: object
+      required: [room_id, game_status, opening_narrative]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        game_status:
+          type: string
+          enum: [playing]
+        opening_narrative:
+          type: string
+          minLength: 1
+
+    StartSoloGameResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/StartSoloGameData'
+
+    SubmitActionRequest:
+      type: object
+      required: [request_id, expected_turn, action_text]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: 幂等请求 ID；相同 ID 只能对应相同请求内容
+        expected_turn:
+          type: integer
+          minimum: 0
+        action_text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    DiceRoll:
+      type: object
+      required:
+        - type
+        - result
+        - target
+        - success
+        - critical_hit
+        - critical_miss
+        - description
+        - reason
+      properties:
+        type:
+          type: string
+          enum: [D20, D100]
+        result:
+          type: integer
+          minimum: 1
+          maximum: 100
+        target:
+          type: integer
+          minimum: 1
+          maximum: 100
+        success:
+          type: boolean
+        critical_hit:
+          type: boolean
+        critical_miss:
+          type: boolean
+        description:
+          type: string
+          maxLength: 1000
+        reason:
+          type: string
+          maxLength: 500
+
+    ItemMutation:
+      type: object
+      required: [name, quantity_delta]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        quantity_delta:
+          type: integer
+          description: 正数增加，负数移除
+        description:
+          type: string
+          maxLength: 1000
+
+    BuffMutation:
+      type: object
+      required: [name, duration]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        duration:
+          type: integer
+          minimum: 1
+
+    KeyEventMutation:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+
+    ActionEffects:
+      type: object
+      required: [player_state_changes, items, buffs, events]
+      properties:
+        player_state_changes:
+          type: object
+          additionalProperties:
+            type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemMutation'
+        buffs:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuffMutation'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyEventMutation'
+
+    SubmitActionData:
+      type: object
+      required: [narrative, effects, current_turn]
+      properties:
+        narrative:
+          type: string
+          minLength: 1
+        dice_roll:
+          $ref: '#/components/schemas/DiceRoll'
+        effects:
+          $ref: '#/components/schemas/ActionEffects'
+        current_turn:
+          type: integer
+          minimum: 1
+
+    SubmitActionResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/SubmitActionData'
+
+    ManualSaveRequest:
+      type: object
+      required: [save_name]
+      properties:
+        save_name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: 去除首尾空白后不能为空，且不能包含控制字符
+
+    ManualSaveData:
+      type: object
+      required: [save_id]
+      properties:
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+
+    ManualSaveResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ManualSaveData'
+
+    GameSaveSummary:
+      type: object
+      required: [id, save_name, round_number, is_auto, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        save_name:
+          type: string
+        round_number:
+          type: integer
+          minimum: 0
+        is_auto:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    GameSaveListData:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GameSaveSummary'
+        total:
+          type: integer
+          minimum: 0
+
+    GameSaveListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/GameSaveListData'
+
+    LoadGameRequest:
+      type: object
+      required: [save_id]
+      properties:
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+
+    LoadGameData:
+      type: object
+      required: [room_id, save_id, status, turn]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [paused]
+        turn:
+          type: integer
+          minimum: 0
+
+    LoadGameResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/LoadGameData'
+
+    GameStatusData:
+      type: object
+      required: [room_id, status]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/RoomStatus'
+
+    GameStatusResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/GameStatusData'
