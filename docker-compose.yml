@@ -57,6 +57,7 @@ services:
       - TRPG_MINIO_BUCKET=trpg-scripts
       - TRPG_MINIO_USESSL=false
       - TRPG_MINIO_MAXUPLOADSIZE=52428800
+      - TRPG_WEBSOCKET_ALLOWEDORIGINS=${WEBSOCKET_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1}
       - TRPG_INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET:-dev-internal-secret-change-in-production}
     depends_on:
       migrate:

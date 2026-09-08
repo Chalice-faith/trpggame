@@ -36,5 +36,8 @@ minio:
   usessl: false
   maxuploadsize: 52428800 # 50 MiB，单位：字节
 
+websocket:
+  allowedorigins: "http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1"
+
 internal:
   shared_secret: "dev-internal-secret-change-in-production"

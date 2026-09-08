@@ -8,14 +8,18 @@ import (
 
 // Config 应用配置根结构
 type Config struct {
-	Server   ServerConfig
-	Database DatabaseConfig
-	Redis    RedisConfig
-	JWT      JWTConfig
-	AI       AIConfig
-	MinIO    MinIOConfig
-	Internal InternalConfig `mapstructure:"internal"`
+	Server    ServerConfig
+	Database  DatabaseConfig
+	Redis     RedisConfig
+	JWT       JWTConfig
+	AI        AIConfig
+	MinIO     MinIOConfig
+	WebSocket WebSocketConfig
+	Internal  InternalConfig `mapstructure:"internal"`
 }
+
+// DefaultWebSocketAllowedOrigins 是本地 Vue 与 Nginx 开发入口的默认 Origin 白名单。
+const DefaultWebSocketAllowedOrigins = "http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1"
 
 // ServerConfig HTTP 服务配置
 type ServerConfig struct {
@@ -62,6 +66,12 @@ type MinIOConfig struct {
 	Bucket        string
 	UseSSL        bool
 	MaxUploadSize int64 // 字节
+}
+
+// WebSocketConfig WebSocket 握手安全配置。
+// AllowedOrigins 保留逗号分隔的原始值，由 realtime 包统一解析和校验。
+type WebSocketConfig struct {
+	AllowedOrigins string
 }
 
 // InternalConfig 服务间内部接口配置。
@@ -133,6 +143,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("minio.bucket", "trpg-scripts")
 	v.SetDefault("minio.usessl", false)
 	v.SetDefault("minio.maxuploadsize", int64(50<<20)) // 50 MiB
+
+	// WebSocket
+	v.SetDefault("websocket.allowedorigins", DefaultWebSocketAllowedOrigins)
 
 	// Internal API
 	v.SetDefault("internal.shared_secret", "dev-internal-secret-change-in-production")

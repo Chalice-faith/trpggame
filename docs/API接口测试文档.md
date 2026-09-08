@@ -19,7 +19,8 @@
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `GO_BASE_URL` | `http://127.0.0.1:8080` | Go REST API |
-| `GO_WS_URL` | `ws://127.0.0.1:8080/ws` | Go WebSocket |
+| `GO_WS_URL` | `ws://127.0.0.1:8080/ws` | Go 游戏 WebSocket |
+| `IM_WS_URL` | `ws://127.0.0.1:8080/ws/im` | Phase 2 IM WebSocket（M2.0-C 前不可用） |
 | `AI_BASE_URL` | `http://127.0.0.1:8000` | Python AI 内部 API |
 
 PowerShell 初始化：
@@ -27,6 +28,7 @@ PowerShell 初始化：
 ```powershell
 $GO_BASE_URL = "http://127.0.0.1:8080"
 $GO_WS_URL = "ws://127.0.0.1:8080/ws"
+$IM_WS_URL = "ws://127.0.0.1:8080/ws/im"
 $AI_BASE_URL = "http://127.0.0.1:8000"
 $INTERNAL_SECRET = "<与 INTERNAL_SHARED_SECRET 相同的值>"
 $ACCESS_TOKEN = "<登录返回的 access_token>"
@@ -54,6 +56,7 @@ $REFRESH_TOKEN = "<登录返回的 refresh_token>"
 - Go 公开接口：注册、登录、刷新 Token 不需要鉴权。
 - Go 用户、剧本和游戏接口：请求头 `Authorization: Bearer <access_token>`。
 - Go WebSocket：浏览器不能可靠地设置 Authorization 请求头，使用查询参数 `?token=<access_token>&room_id=<room_id>`。
+- Phase 2 IM WebSocket 预留 `?token=<access_token>`，M2.0-C 注册路由前不能作为可用接口验收。
 - Python AI 和 Go 内部回调：请求头 `X-Internal-Secret: <INTERNAL_SHARED_SECRET>`，仅服务间调用，不能暴露给浏览器。
 
 ### 1.4 常见鉴权错误
@@ -363,7 +366,7 @@ curl.exe -sS -X POST "$GO_BASE_URL/api/v1/internal/scripts/$SCRIPT_ID/status" `
 
 成功：`200`。主要失败：`400/1205` ID 非法、`1210` 状态载荷非法；`401/1212` 内部密钥错误；`404/1206` 剧本不存在；`409/1211` 状态冲突；`500/1203` 业务内部错误或 `500/1213` 内部鉴权未配置。
 
-## 4. Go WebSocket API
+## 4. Go 游戏 WebSocket API
 
 连接地址：
 
@@ -372,6 +375,8 @@ ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 ```
 
 连接成功后，服务端第一条消息为 `subscribed`。业务投递事件包含房间 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳和 `subscribed` 不占用该序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后用 `sync` 补推 `seq` 大于本地值的消息。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
+
+M2.0-A 已新增 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 的严格解析与测试，但尚未接入现有游戏路由；Origin 拒绝逻辑和预留错误码 `1508` 将在 M2.0-B 启用。
 
 ### 4.1 消息外壳
 
@@ -446,7 +451,7 @@ ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 }
 ```
 
-WebSocket 专用错误码：`1500` 缺少 token、`1501` token 无效、`1502` room_id 非法、`1503` 无房间访问权、`1504` sync 请求非法、`1505` 不支持的消息类型、`1506` 行动载荷非法、`1507` 行动处理器不可用。行动业务错误沿用 `1310`–`1319`，未知错误为 `1317`。
+WebSocket 专用错误码：`1500` 缺少 token、`1501` token 无效、`1502` room_id 非法、`1503` 无房间访问权、`1504` sync 请求非法、`1505` 不支持的消息类型、`1506` 行动载荷非法、`1507` 行动处理器不可用。`1508` 已预留给 Origin 拒绝，但 M2.0-B 前尚未启用。行动业务错误沿用 `1310`–`1319`，未知错误为 `1317`。
 
 ### 4.4 浏览器控制台冒烟测试
 
@@ -467,6 +472,32 @@ ws.onopen = () => {
   }));
 };
 ```
+
+### 4.5 Phase 2 IM WebSocket 预留契约
+
+M2.0-A 只提供消息类型和严格解码器，`/ws/im` 尚未注册。后续连接地址：
+
+```text
+${IM_WS_URL}?token=<ACCESS_TOKEN>
+```
+
+客户端基础信封：
+
+```json
+{"type":"ping","request_id":"550e8400-e29b-41d4-a716-446655440000","data":{}}
+```
+
+服务端基础信封：
+
+```json
+{
+  "type":"connected",
+  "timestamp":1788796800000,
+  "data":{"user_id":7,"connection_id":"550e8400-e29b-41d4-a716-446655440000"}
+}
+```
+
+IM 握手预留 `1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许；协议预留 `1703` 信封解析失败、`1704` 字段校验失败、`1705` 类型未支持、`1706` 处理器未注入、`1707` 内部投递失败。这些错误码在 `/ws/im` 注册后才计入接口验收。
 
 ## 5. Python AI 内部 API
 
@@ -578,5 +609,5 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
 - `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- `chat_message` 等 WebSocket 消息类型已定义，但当前 Phase 1 端到端处理重点是 `ping`、`sync` 和 `game_action`，不要将未接通消息计入本阶段验收。
+- 游戏通道中的 `chat_message` 仍未接通；Phase 2 将使用独立 `/ws/im` 通道。M2.0-A 仅完成基础信封和配置，不能把 IM 连接或聊天计为已完成。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。

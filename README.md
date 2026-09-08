@@ -456,6 +456,7 @@ AI 可调用的 Function Calling 函数：
 | `MYSQL_USER` | 业务账号 | `trpg` |
 | `MYSQL_PASSWORD` | 业务账号密码 | - |
 | `INTERNAL_SHARED_SECRET` | Go ↔ Python 内部回调密钥 | - |
+| `WEBSOCKET_ALLOWED_ORIGINS` | 浏览器 WebSocket Origin 白名单 | 本地 Vue 与 Nginx 地址 |
 
 ### Go 后端（docker-compose 注入）
 
@@ -469,6 +470,7 @@ AI 可调用的 Function Calling 函数：
 | `TRPG_MINIO_*` | MinIO 连接配置 | 见 docker-compose.yml |
 | `TRPG_AI_BASEURL` | Python AI 服务地址 | `http://python-ai:8000` |
 | `TRPG_AI_TIMEOUT` | AI 请求超时 | `60` |
+| `TRPG_WEBSOCKET_ALLOWEDORIGINS` | WebSocket Origin 白名单（M2.0-B 接入路由） | 本地 Vue 与 Nginx 地址 |
 | `TRPG_INTERNAL_SHARED_SECRET` | 内部回调密钥 | `dev-internal-secret-change-in-production` |
 
 ### Python AI（docker-compose 注入）
