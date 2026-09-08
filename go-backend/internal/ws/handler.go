@@ -2,23 +2,23 @@ package ws
 
 import (
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/gorilla/websocket"
 
-	"trpggame/internal/middleware"
+	"trpggame/internal/realtime"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin: func(r *http.Request) bool {
-		return true // 开发环境允许所有来源
-	},
-}
+const (
+	wsErrorMissingToken     = 1500
+	wsErrorInvalidToken     = 1501
+	wsErrorInvalidRoomID    = 1502
+	wsErrorRoomAccessDenied = 1503
+	wsErrorOriginNotAllowed = 1508
+)
 
 // RoomAuthorizer 校验用户是否有权订阅某房间。实现方通常在 main 中基于游戏仓储注入。
 type RoomAuthorizer interface {
@@ -31,32 +31,38 @@ type RoomAuthorizer interface {
 //
 //	GET /ws?token=<jwt>&room_id=<id>
 //
-// 错误码：1500 缺失 token、1501 token 校验失败、1502 非法 room_id、1503 无房间访问权。
-func HandleWebSocket(hub *Hub, secret string, authz RoomAuthorizer) gin.HandlerFunc {
+// 错误码：1500 缺失 token、1501 token 校验失败、1502 非法 room_id、1503 无房间访问权、1508 Origin 不允许。
+func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet, authz RoomAuthorizer) gin.HandlerFunc {
+	upgrader := realtime.NewUpgrader(origins)
+
 	return func(c *gin.Context) {
-		token := c.Query("token")
-		if token == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"code": 1500, "message": "missing token"})
+		if origins == nil || !origins.Allows(c.Request) {
+			c.JSON(http.StatusForbidden, gin.H{"code": wsErrorOriginNotAllowed, "message": "origin not allowed"})
 			return
 		}
 
-		claims, err := middleware.ValidateToken(token, secret)
+		claims, err := realtime.AuthenticateQueryToken(c.Query("token"), secret)
 		if err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"code": 1501, "message": "invalid token"})
+			var authError *realtime.AuthError
+			if errors.As(err, &authError) && authError.Failure == realtime.AuthMissingToken {
+				c.JSON(http.StatusUnauthorized, gin.H{"code": wsErrorMissingToken, "message": "missing token"})
+				return
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"code": wsErrorInvalidToken, "message": "invalid token"})
 			return
 		}
 
 		roomIDStr := c.Query("room_id")
 		value, parseErr := strconv.ParseUint(roomIDStr, 10, 64)
 		if parseErr != nil || value == 0 || uint64(uint(value)) != value {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1502, "message": "invalid room_id"})
+			c.JSON(http.StatusBadRequest, gin.H{"code": wsErrorInvalidRoomID, "message": "invalid room_id"})
 			return
 		}
 		roomID := uint(value)
 
 		if err := authz.Authorize(c.Request.Context(), claims.UserID, roomID); err != nil {
 			log.Printf("[WS] User %d denied access to room %d: %v", claims.UserID, roomID, err)
-			c.JSON(http.StatusForbidden, gin.H{"code": 1503, "message": "room access denied"})
+			c.JSON(http.StatusForbidden, gin.H{"code": wsErrorRoomAccessDenied, "message": "room access denied"})
 			return
 		}
 

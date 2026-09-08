@@ -376,7 +376,7 @@ ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 
 连接成功后，服务端第一条消息为 `subscribed`。业务投递事件包含房间 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳和 `subscribed` 不占用该序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后用 `sync` 补推 `seq` 大于本地值的消息。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
 
-M2.0-A 已新增 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 的严格解析与测试，但尚未接入现有游戏路由；Origin 拒绝逻辑和预留错误码 `1508` 将在 M2.0-B 启用。
+游戏 WebSocket 已启用 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 白名单。浏览器 Origin 必须精确匹配配置；无 Origin 的原生客户端仍可继续 JWT 鉴权。不允许的 Origin 优先返回 `403 / 1508 / origin not allowed`，不会暴露 Token 或房间状态。
 
 ### 4.1 消息外壳
 
@@ -451,7 +451,7 @@ M2.0-A 已新增 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 的严格解析与测试，但�
 }
 ```
 
-WebSocket 专用错误码：`1500` 缺少 token、`1501` token 无效、`1502` room_id 非法、`1503` 无房间访问权、`1504` sync 请求非法、`1505` 不支持的消息类型、`1506` 行动载荷非法、`1507` 行动处理器不可用。`1508` 已预留给 Origin 拒绝，但 M2.0-B 前尚未启用。行动业务错误沿用 `1310`–`1319`，未知错误为 `1317`。
+WebSocket 专用错误码：`1500` 缺少 token、`1501` token 无效、`1502` room_id 非法、`1503` 无房间访问权、`1504` sync 请求非法、`1505` 不支持的消息类型、`1506` 行动载荷非法、`1507` 行动处理器不可用、`1508` Origin 不允许。行动业务错误沿用 `1310`–`1319`，未知错误为 `1317`。
 
 ### 4.4 浏览器控制台冒烟测试
 

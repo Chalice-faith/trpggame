@@ -16,6 +16,7 @@ import (
 	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
+	"trpggame/internal/realtime"
 	"trpggame/internal/repo"
 	"trpggame/internal/router"
 	"trpggame/internal/service"
@@ -69,6 +70,10 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+	allowedOrigins, err := realtime.ParseAllowedOrigins(cfg.WebSocket.AllowedOrigins)
+	if err != nil {
+		log.Fatalf("Invalid WebSocket allowed origins: %v", err)
 	}
 
 	// 初始化数据库连接
@@ -189,7 +194,7 @@ func main() {
 	go hub.Run()
 
 	// 初始化路由（WebSocket 端点接入 JWT 鉴权与房间订阅校验）
-	wsHandler := ws.HandleWebSocket(hub, cfg.JWT.Secret, roomAuthorizer{repo: gameRepo})
+	wsHandler := ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{repo: gameRepo})
 	r := router.Setup(
 		cfg,
 		db,

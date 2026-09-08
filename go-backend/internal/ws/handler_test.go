@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
@@ -13,9 +15,11 @@ import (
 	"github.com/gorilla/websocket"
 
 	"trpggame/internal/middleware"
+	"trpggame/internal/realtime"
 )
 
 const testJWTSecret = "ws-test-secret"
+const testAllowedOrigin = "https://game.example.com"
 
 // fakeAuthorizer 允许指定的 (roomID, userID) 订阅。
 type fakeAuthorizer struct {
@@ -33,15 +37,25 @@ func (f fakeAuthorizer) Authorize(_ context.Context, userID, roomID uint) error 
 	return errors.New("denied")
 }
 
-func newTestWSServer(t *testing.T, authz RoomAuthorizer) (string, *Hub) {
+func newTestWSEngine(t *testing.T, authz RoomAuthorizer) (*gin.Engine, *Hub) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	hub := NewHub()
 	go hub.Run()
 	t.Cleanup(hub.Stop)
+	origins, err := realtime.ParseAllowedOrigins(testAllowedOrigin)
+	if err != nil {
+		t.Fatalf("ParseAllowedOrigins() error = %v", err)
+	}
 
 	engine := gin.New()
-	engine.GET("/ws", HandleWebSocket(hub, testJWTSecret, authz))
+	engine.GET("/ws", HandleWebSocket(hub, testJWTSecret, origins, authz))
+	return engine, hub
+}
+
+func newTestWSServer(t *testing.T, authz RoomAuthorizer) (string, *Hub) {
+	t.Helper()
+	engine, hub := newTestWSEngine(t, authz)
 	server := httptest.NewServer(engine)
 	t.Cleanup(server.Close)
 
@@ -49,8 +63,11 @@ func newTestWSServer(t *testing.T, authz RoomAuthorizer) (string, *Hub) {
 	return wsURL, hub
 }
 
-// dialWS 发起 WebSocket 升级。失败时返回 HTTP 状态码。
-func dialWS(t *testing.T, wsURL, token, roomID string) (*websocket.Conn, int, error) {
+func dialWSResponse(
+	t *testing.T,
+	wsURL, token, roomID string,
+	header http.Header,
+) (*websocket.Conn, *http.Response, error) {
 	t.Helper()
 	query := url.Values{}
 	if token != "" {
@@ -63,7 +80,13 @@ func dialWS(t *testing.T, wsURL, token, roomID string) (*websocket.Conn, int, er
 	if encoded := query.Encode(); encoded != "" {
 		u += "?" + encoded
 	}
-	conn, resp, err := websocket.DefaultDialer.Dial(u, nil)
+	return websocket.DefaultDialer.Dial(u, header)
+}
+
+// dialWS 发起 WebSocket 升级。失败时返回 HTTP 状态码。
+func dialWS(t *testing.T, wsURL, token, roomID string) (*websocket.Conn, int, error) {
+	t.Helper()
+	conn, resp, err := dialWSResponse(t, wsURL, token, roomID, nil)
 	if err != nil {
 		if resp != nil {
 			return nil, resp.StatusCode, err
@@ -73,20 +96,63 @@ func dialWS(t *testing.T, wsURL, token, roomID string) (*websocket.Conn, int, er
 	return conn, 0, nil
 }
 
+type handshakeErrorResponse struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func assertHandshakeErrorBody(
+	t *testing.T,
+	body io.Reader,
+	wantCode int,
+	wantMessage string,
+) {
+	t.Helper()
+	var response handshakeErrorResponse
+	if err := json.NewDecoder(body).Decode(&response); err != nil {
+		t.Fatalf("decode handshake error: %v", err)
+	}
+	if response.Code != wantCode || response.Message != wantMessage {
+		t.Fatalf("handshake error = %#v, want code=%d message=%q", response, wantCode, wantMessage)
+	}
+}
+
+func assertHandshakeError(
+	t *testing.T,
+	wsURL, token, roomID, origin string,
+	wantStatus, wantCode int,
+	wantMessage string,
+) {
+	t.Helper()
+	header := http.Header{}
+	if origin != "" {
+		header.Set("Origin", origin)
+	}
+	conn, response, err := dialWSResponse(t, wsURL, token, roomID, header)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if err == nil {
+		t.Fatal("WebSocket upgrade unexpectedly succeeded")
+	}
+	if response == nil {
+		t.Fatalf("WebSocket upgrade returned no HTTP response: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != wantStatus {
+		t.Fatalf("status = %d, want %d", response.StatusCode, wantStatus)
+	}
+	assertHandshakeErrorBody(t, response.Body, wantCode, wantMessage)
+}
+
 func TestHandleWebSocketRejectsMissingToken(t *testing.T) {
 	wsURL, _ := newTestWSServer(t, fakeAuthorizer{})
-	_, status, err := dialWS(t, wsURL, "", "41")
-	if err == nil || status != 401 {
-		t.Fatalf("missing token: status = %d, err = %v, want 401", status, err)
-	}
+	assertHandshakeError(t, wsURL, "", "41", "", http.StatusUnauthorized, wsErrorMissingToken, "missing token")
 }
 
 func TestHandleWebSocketRejectsInvalidToken(t *testing.T) {
 	wsURL, _ := newTestWSServer(t, fakeAuthorizer{})
-	_, status, err := dialWS(t, wsURL, "not-a-jwt", "41")
-	if err == nil || status != 401 {
-		t.Fatalf("invalid token: status = %d, err = %v, want 401", status, err)
-	}
+	assertHandshakeError(t, wsURL, "not-a-jwt", "41", "", http.StatusUnauthorized, wsErrorInvalidToken, "invalid token")
 }
 
 func TestHandleWebSocketRejectsInvalidRoomID(t *testing.T) {
@@ -95,10 +161,7 @@ func TestHandleWebSocketRejectsInvalidRoomID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	_, status, err := dialWS(t, wsURL, token, "abc")
-	if err == nil || status != 400 {
-		t.Fatalf("invalid room_id: status = %d, err = %v, want 400", status, err)
-	}
+	assertHandshakeError(t, wsURL, token, "abc", "", http.StatusBadRequest, wsErrorInvalidRoomID, "invalid room_id")
 }
 
 func TestHandleWebSocketRejectsUnauthorizedRoom(t *testing.T) {
@@ -107,10 +170,7 @@ func TestHandleWebSocketRejectsUnauthorizedRoom(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	_, status, err := dialWS(t, wsURL, token, "42")
-	if err == nil || status != 403 {
-		t.Fatalf("unauthorized room: status = %d, err = %v, want 403", status, err)
-	}
+	assertHandshakeError(t, wsURL, token, "42", "", http.StatusForbidden, wsErrorRoomAccessDenied, "room access denied")
 }
 
 func TestHandleWebSocketRejectsOnAuthorizerError(t *testing.T) {
@@ -119,10 +179,66 @@ func TestHandleWebSocketRejectsOnAuthorizerError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	_, status, err := dialWS(t, wsURL, token, "41")
-	if err == nil || status != 403 {
-		t.Fatalf("authorizer error: status = %d, err = %v, want 403", status, err)
+	assertHandshakeError(t, wsURL, token, "41", "", http.StatusForbidden, wsErrorRoomAccessDenied, "room access denied")
+}
+
+func TestHandleWebSocketAcceptsAllowedOrigin(t *testing.T) {
+	wsURL, _ := newTestWSServer(t, fakeAuthorizer{allowed: map[uint]map[uint]bool{41: {7: true}}})
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
 	}
+	header := http.Header{"Origin": []string{testAllowedOrigin}}
+	conn, response, err := dialWSResponse(t, wsURL, token, "41", header)
+	if err != nil {
+		status := 0
+		if response != nil {
+			status = response.StatusCode
+		}
+		t.Fatalf("dial allowed origin: status = %d, err = %v", status, err)
+	}
+	defer conn.Close()
+}
+
+func TestHandleWebSocketRejectsDisallowedOriginsBeforeAuth(t *testing.T) {
+	wsURL, _ := newTestWSServer(t, fakeAuthorizer{})
+	tests := []struct {
+		name   string
+		origin string
+	}{
+		{name: "unknown", origin: "https://other.example.com"},
+		{name: "null", origin: "null"},
+		{name: "comma separated", origin: testAllowedOrigin + ", https://other.example.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertHandshakeError(
+				t,
+				wsURL,
+				"",
+				"41",
+				tt.origin,
+				http.StatusForbidden,
+				wsErrorOriginNotAllowed,
+				"origin not allowed",
+			)
+		})
+	}
+}
+
+func TestHandleWebSocketRejectsMultipleOriginHeaders(t *testing.T) {
+	engine, _ := newTestWSEngine(t, fakeAuthorizer{})
+	request := httptest.NewRequest(http.MethodGet, "/ws", nil)
+	request.Header.Add("Origin", testAllowedOrigin)
+	request.Header.Add("Origin", "https://other.example.com")
+	recorder := httptest.NewRecorder()
+
+	engine.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusForbidden)
+	}
+	assertHandshakeErrorBody(t, recorder.Body, wsErrorOriginNotAllowed, "origin not allowed")
 }
 
 func TestHandleWebSocketSubscribesAndAcceptsSync(t *testing.T) {
