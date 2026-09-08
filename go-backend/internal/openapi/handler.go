@@ -1,6 +1,7 @@
 package openapi
 
 import (
+	"bytes"
 	_ "embed"
 	"net/http"
 
@@ -16,6 +17,11 @@ const (
 
 //go:embed openapi.yaml
 var specification []byte
+
+// Specification 返回内嵌 OpenAPI 规范的副本。
+func Specification() []byte {
+	return bytes.Clone(specification)
+}
 
 // RegisterRoutes 注册公共 OpenAPI 规范与 Swagger UI。
 // 规范文件随 Go 二进制嵌入，不依赖运行目录或外部 CDN。

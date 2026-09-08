@@ -8,6 +8,19 @@ permissions:
   contents: read
 
 jobs:
+  openapi:
+    name: OpenAPI validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run api:lint
+
   go:
     name: Go tests
     runs-on: ubuntu-latest
