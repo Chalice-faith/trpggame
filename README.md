@@ -470,7 +470,7 @@ AI 可调用的 Function Calling 函数：
 | `TRPG_MINIO_*` | MinIO 连接配置 | 见 docker-compose.yml |
 | `TRPG_AI_BASEURL` | Python AI 服务地址 | `http://python-ai:8000` |
 | `TRPG_AI_TIMEOUT` | AI 请求超时 | `60` |
-| `TRPG_WEBSOCKET_ALLOWEDORIGINS` | 游戏 WebSocket Origin 白名单 | 本地 Vue 与 Nginx 地址 |
+| `TRPG_WEBSOCKET_ALLOWEDORIGINS` | 游戏与 IM WebSocket Origin 白名单 | 本地 Vue 与 Nginx 地址 |
 | `TRPG_INTERNAL_SHARED_SECRET` | 内部回调密钥 | `dev-internal-secret-change-in-production` |
 
 ### Python AI（docker-compose 注入）

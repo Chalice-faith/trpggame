@@ -14,6 +14,22 @@ import (
 
 const MaxTextMessageSize = 8192
 
+const (
+	ErrorCodeMissingToken           = 1700
+	ErrorCodeInvalidToken           = 1701
+	ErrorCodeOriginNotAllowed       = 1702
+	ErrorCodeMalformedMessage       = 1703
+	ErrorCodeInvalidMessage         = 1704
+	ErrorCodeUnsupportedMessageType = 1705
+)
+
+const CloseCodeConnectionReplaced = 4001
+
+const (
+	CloseReasonConnectionReplaced = "connection_replaced"
+	CloseReasonServiceUnavailable = "service unavailable"
+)
+
 var (
 	ErrMalformedClientMessage = errors.New("malformed IM client message")
 	ErrInvalidClientMessage   = errors.New("invalid IM client message")
@@ -58,6 +74,35 @@ type ErrorData struct {
 
 type ConnectionReplacedData struct {
 	Reason string `json:"reason"`
+}
+
+// MarshalServerMessage 编码一个由服务端生成的 IM 消息信封。
+func MarshalServerMessage(
+	messageType MessageType,
+	requestID string,
+	timestamp int64,
+	data any,
+) ([]byte, error) {
+	var rawData json.RawMessage
+	switch value := data.(type) {
+	case nil:
+	case json.RawMessage:
+		if len(bytes.TrimSpace(value)) > 0 {
+			rawData = append(json.RawMessage(nil), value...)
+		}
+	default:
+		encoded, err := json.Marshal(data)
+		if err != nil {
+			return nil, fmt.Errorf("marshal IM message data: %w", err)
+		}
+		rawData = encoded
+	}
+	return json.Marshal(ServerMessage{
+		Type:      messageType,
+		RequestID: requestID,
+		Timestamp: timestamp,
+		Data:      rawData,
+	})
 }
 
 // DecodeClientMessage 严格解码并校验一个客户端信封。

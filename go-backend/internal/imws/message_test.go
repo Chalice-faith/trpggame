@@ -65,19 +65,38 @@ func TestDecodeClientMessageRejectsInvalidEnvelope(t *testing.T) {
 }
 
 func TestServerMessageJSONContract(t *testing.T) {
-	data, err := json.Marshal(ServerMessage{
-		Type:      MsgConnected,
-		Timestamp: 1788796800000,
-		Data: json.RawMessage(
-			`{"user_id":7,"connection_id":"550e8400-e29b-41d4-a716-446655440000"}`,
-		),
-	})
+	data, err := MarshalServerMessage(
+		MsgConnected,
+		"",
+		1788796800000,
+		ConnectedData{UserID: 7, ConnectionID: "550e8400-e29b-41d4-a716-446655440000"},
+	)
 	if err != nil {
 		t.Fatalf("json.Marshal() error = %v", err)
 	}
 	want := `{"type":"connected","timestamp":1788796800000,"data":{"user_id":7,"connection_id":"550e8400-e29b-41d4-a716-446655440000"}}`
 	if string(data) != want {
 		t.Fatalf("JSON = %s, want %s", data, want)
+	}
+}
+
+func TestMarshalServerMessageOmitsEmptyOptionalFields(t *testing.T) {
+	data, err := MarshalServerMessage(MsgPong, "", 1788796800000, nil)
+	if err != nil {
+		t.Fatalf("MarshalServerMessage() error = %v", err)
+	}
+	if string(data) != `{"type":"pong","timestamp":1788796800000}` {
+		t.Fatalf("JSON = %s", data)
+	}
+}
+
+func TestMarshalServerMessageOmitsNilRawData(t *testing.T) {
+	data, err := MarshalServerMessage(MsgPong, "", 1788796800000, json.RawMessage(nil))
+	if err != nil {
+		t.Fatalf("MarshalServerMessage() error = %v", err)
+	}
+	if string(data) != `{"type":"pong","timestamp":1788796800000}` {
+		t.Fatalf("JSON = %s", data)
 	}
 }
 

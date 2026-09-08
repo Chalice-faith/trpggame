@@ -37,7 +37,7 @@ func TestPublicRESTRoutesMatchOpenAPIContract(t *testing.T) {
 			Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 		},
 		nil,
-		nil,
+		WebSocketHandlers{},
 		nil,
 		nil,
 		handler.NewGameHandler(&routerGameStartService{}),

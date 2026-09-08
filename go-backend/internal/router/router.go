@@ -10,16 +10,28 @@ import (
 	"trpggame/internal/openapi"
 )
 
+// WebSocketHandlers 由 main 组装，Router 只负责注册对应路径。
+type WebSocketHandlers struct {
+	Game gin.HandlerFunc
+	IM   gin.HandlerFunc
+}
+
+var websocketLogSkipPaths = []string{"/ws", "/ws/im"}
+
 // Setup 初始化所有路由并返回 Gin Engine
 func Setup(
 	cfg *config.Config,
 	db *gorm.DB,
-	wsHandler gin.HandlerFunc,
+	wsHandlers WebSocketHandlers,
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
 	gameHandler *handler.GameHandler,
 ) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+	r.Use(
+		gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: websocketLogSkipPaths}),
+		gin.Recovery(),
+	)
 
 	// 全局中间件
 	r.Use(middleware.CORS())
@@ -30,9 +42,12 @@ func Setup(
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)
 
-	// WebSocket 端点（JWT + 房间订阅鉴权由 main 组装后传入）
-	if wsHandler != nil {
-		r.GET("/ws", wsHandler)
+	// WebSocket 端点（鉴权与连接依赖由 main 组装后传入）
+	if wsHandlers.Game != nil {
+		r.GET("/ws", wsHandlers.Game)
+	}
+	if wsHandlers.IM != nil {
+		r.GET("/ws/im", wsHandlers.IM)
 	}
 
 	// API v1

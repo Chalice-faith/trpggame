@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +26,77 @@ type routerGameStartService struct {
 	resumeRequest *service.ResumeGameRequest
 	loadRequest   *service.LoadGameRequest
 	endRequest    *service.EndGameRequest
+}
+
+func TestSetupRegistersIndependentWebSocketRoutes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cfg := &config.Config{
+		JWT:      config.JWTConfig{Secret: "router-test-secret", AccessTokenTTL: 15},
+		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
+	}
+	engine := Setup(
+		cfg,
+		nil,
+		WebSocketHandlers{
+			Game: func(c *gin.Context) { c.String(http.StatusOK, "game") },
+			IM:   func(c *gin.Context) { c.String(http.StatusOK, "im") },
+		},
+		nil,
+		nil,
+		nil,
+	)
+
+	for _, tt := range []struct {
+		path string
+		body string
+	}{
+		{path: "/ws", body: "game"},
+		{path: "/ws/im", body: "im"},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != http.StatusOK || recorder.Body.String() != tt.body {
+			t.Fatalf("GET %s = status %d body %q", tt.path, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
+func TestSetupDoesNotLogWebSocketQueryTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	previousWriter := gin.DefaultWriter
+	var output bytes.Buffer
+	gin.DefaultWriter = &output
+	t.Cleanup(func() { gin.DefaultWriter = previousWriter })
+
+	cfg := &config.Config{
+		JWT:      config.JWTConfig{Secret: "router-test-secret", AccessTokenTTL: 15},
+		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
+	}
+	handlerFunc := func(c *gin.Context) { c.Status(http.StatusUnauthorized) }
+	engine := Setup(
+		cfg,
+		nil,
+		WebSocketHandlers{Game: handlerFunc, IM: handlerFunc},
+		nil,
+		nil,
+		nil,
+	)
+
+	const secretToken = "must-not-appear-in-logs"
+	for _, path := range []string{"/ws", "/ws/im"} {
+		request := httptest.NewRequest(http.MethodGet, path+"?token="+secretToken, nil)
+		engine.ServeHTTP(httptest.NewRecorder(), request)
+	}
+	if strings.Contains(output.String(), secretToken) {
+		t.Fatalf("WebSocket token leaked into access log: %s", output.String())
+	}
+
+	restRequest := httptest.NewRequest(http.MethodGet, "/api/openapi.yaml?probe=rest", nil)
+	engine.ServeHTTP(httptest.NewRecorder(), restRequest)
+	if !strings.Contains(output.String(), "probe=rest") {
+		t.Fatalf("REST access log was unexpectedly disabled: %s", output.String())
+	}
 }
 
 func (s *routerGameStartService) EndGame(
@@ -118,7 +190,7 @@ func TestSetupRegistersAuthenticatedSoloStartRoute(t *testing.T) {
 	engine := Setup(
 		cfg,
 		nil,
-		nil,
+		WebSocketHandlers{},
 		nil,
 		nil,
 		handler.NewGameHandler(gameService),
@@ -171,7 +243,7 @@ func TestSetupRegistersAuthenticatedSubmitActionRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 	body := `{"request_id":"550e8400-e29b-41d4-a716-446655440000","expected_turn":3,"action_text":"调查书房"}`
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/v1/games/41/action", bytes.NewBufferString(body))
@@ -209,7 +281,7 @@ func TestSetupRegistersAuthenticatedManualSaveRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 	body := `{"save_name":"进入书房前"}`
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/v1/games/41/save", bytes.NewBufferString(body))
@@ -246,7 +318,7 @@ func TestSetupRegistersAuthenticatedListSavesRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 
 	unauthorized := httptest.NewRequest(http.MethodGet, "/api/v1/games/41/saves", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
@@ -280,7 +352,7 @@ func TestSetupRegistersAuthenticatedPauseGameRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/v1/games/41/pause", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
@@ -314,7 +386,7 @@ func TestSetupRegistersAuthenticatedResumeGameRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/v1/games/41/resume", nil)
 	unauthorizedRecorder := httptest.NewRecorder()
@@ -348,7 +420,7 @@ func TestSetupRegistersAuthenticatedLoadGameRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 
 	unauthorized := httptest.NewRequest(
 		http.MethodPost, "/api/v1/games/41/load", bytes.NewBufferString(`{"save_id":91}`),
@@ -388,7 +460,7 @@ func TestSetupRegistersAuthenticatedEndGameRoute(t *testing.T) {
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
 	gameService := &routerGameStartService{}
-	engine := Setup(cfg, nil, nil, nil, nil, handler.NewGameHandler(gameService))
+	engine := Setup(cfg, nil, WebSocketHandlers{}, nil, nil, handler.NewGameHandler(gameService))
 
 	unauthorized := httptest.NewRequest(http.MethodPost, "/api/v1/games/41/end", nil)
 	unauthorizedRecorder := httptest.NewRecorder()

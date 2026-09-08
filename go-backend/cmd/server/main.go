@@ -16,6 +16,7 @@ import (
 	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
+	"trpggame/internal/imws"
 	"trpggame/internal/realtime"
 	"trpggame/internal/repo"
 	"trpggame/internal/router"
@@ -192,13 +193,18 @@ func main() {
 		}
 	})
 	go hub.Run()
+	imHub := imws.NewHub()
+	go imHub.Run()
 
-	// 初始化路由（WebSocket 端点接入 JWT 鉴权与房间订阅校验）
-	wsHandler := ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{repo: gameRepo})
+	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
+	wsHandlers := router.WebSocketHandlers{
+		Game: ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{repo: gameRepo}),
+		IM:   imws.HandleWebSocket(imHub, cfg.JWT.Secret, allowedOrigins),
+	}
 	r := router.Setup(
 		cfg,
 		db,
-		wsHandler,
+		wsHandlers,
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
@@ -222,6 +228,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// 关闭 WebSocket Hub
+	imHub.Stop()
 	hub.Stop()
 
 	log.Println("Server stopped")
