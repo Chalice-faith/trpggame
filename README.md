@@ -195,6 +195,7 @@ trpggame/
     ├── API接口测试文档.md       # Swagger 风格 REST / WebSocket / AI 接口测试文档
     ├── 未完成事项.md           # Phase 1 待办、责任方与完成标准
     ├── Phase2规划设计.md       # 多人社交阶段范围、架构与开发顺序
+    ├── M2.0实施方案.md         # Phase 2 契约与实时通信基础实施步骤
     ├── 开发暂停交接.md         # 开发交接与恢复说明
     ├── 开发问题记录.md         # 开发问题记录
     └── CLAUDE.md               # AI 开发辅助文档
