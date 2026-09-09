@@ -2,9 +2,13 @@ package imws
 
 import (
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 )
+
+const imHubTestTimeout = 5 * time.Second
 
 func startTestHub(t *testing.T) *Hub {
 	t.Helper()
@@ -183,8 +187,25 @@ func TestHubStopIsIdempotentAndClosesClients(t *testing.T) {
 		t.Fatal("register client")
 	}
 
-	hub.Stop()
-	hub.Stop()
+	const callers = 20
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(callers)
+	for range callers {
+		go func() {
+			defer waitGroup.Done()
+			hub.Stop()
+		}()
+	}
+	stopped := make(chan struct{})
+	go func() {
+		waitGroup.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(imHubTestTimeout):
+		t.Fatal("concurrent Stop calls did not return")
+	}
 
 	select {
 	case <-client.done:
@@ -196,5 +217,157 @@ func TestHubStopIsIdempotentAndClosesClients(t *testing.T) {
 	}
 	if hub.SendToUser(7, ServerMessage{Type: MsgPong, Timestamp: 1234}) {
 		t.Fatal("SendToUser() succeeded after Stop")
+	}
+}
+
+func TestHubHandlesConcurrentUsersAcrossRepeatedRounds(t *testing.T) {
+	hub := startTestHub(t)
+	const (
+		users  = 64
+		rounds = 100
+	)
+
+	for round := range rounds {
+		errorsFound := make(chan error, users)
+		var waitGroup sync.WaitGroup
+		waitGroup.Add(users)
+		for index := range users {
+			go func() {
+				defer waitGroup.Done()
+				userID := uint(index + 1)
+				client := testClient(
+					hub,
+					userID,
+					fmt.Sprintf("connection-%d-%d", round, index),
+					4,
+				)
+				if !hub.Register(client) {
+					errorsFound <- fmt.Errorf("round %d user %d: register failed", round, userID)
+					return
+				}
+				connected, err := receiveServerMessageResult(client.send)
+				if err != nil || connected.Type != MsgConnected {
+					errorsFound <- fmt.Errorf(
+						"round %d user %d: connected = %q, err = %v",
+						round,
+						userID,
+						connected.Type,
+						err,
+					)
+					return
+				}
+				if !hub.SendToUser(userID, ServerMessage{Type: MsgPong}) {
+					errorsFound <- fmt.Errorf("round %d user %d: delivery failed", round, userID)
+					return
+				}
+				delivered, err := receiveServerMessageResult(client.send)
+				if err != nil || delivered.Type != MsgPong {
+					errorsFound <- fmt.Errorf(
+						"round %d user %d: delivered = %q, err = %v",
+						round,
+						userID,
+						delivered.Type,
+						err,
+					)
+					return
+				}
+				hub.Unregister(client)
+			}()
+		}
+		waitGroup.Wait()
+		close(errorsFound)
+		for err := range errorsFound {
+			t.Error(err)
+		}
+		if t.Failed() {
+			return
+		}
+	}
+}
+
+func TestHubSameUserTakeoverStormKeepsLatestConnection(t *testing.T) {
+	hub := startTestHub(t)
+	const replacements = 50
+	clients := make([]*Client, 0, replacements)
+
+	for index := range replacements {
+		client := testClient(hub, 7, fmt.Sprintf("connection-%d", index), 4)
+		if !hub.Register(client) {
+			t.Fatalf("register replacement %d", index)
+		}
+		if connected := receiveServerMessage(t, client.send); connected.Type != MsgConnected {
+			t.Fatalf("replacement %d first message = %q", index, connected.Type)
+		}
+		if index > 0 {
+			select {
+			case command := <-clients[index-1].closeCommand:
+				if command.code != CloseCodeConnectionReplaced {
+					t.Fatalf("replacement %d close code = %d", index, command.code)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("replacement %d did not close previous connection", index)
+			}
+		}
+		clients = append(clients, client)
+	}
+
+	for index := len(clients) - 2; index >= 0; index-- {
+		hub.Unregister(clients[index])
+		clients[index].closeNow()
+	}
+	latest := clients[len(clients)-1]
+	if !hub.SendToUser(7, ServerMessage{Type: MsgPong, Timestamp: 1234}) {
+		t.Fatal("latest connection was lost after out-of-order unregisters")
+	}
+	if message := receiveServerMessage(t, latest.send); message.Type != MsgPong {
+		t.Fatalf("latest connection received %q, want pong", message.Type)
+	}
+}
+
+func TestHubRegisterDeliverAndUnregisterRaceWithStopDoesNotBlock(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	const callers = 64
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(callers)
+	for index := range callers {
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			client := testClient(hub, uint(index+1), fmt.Sprintf("connection-%d", index), 4)
+			if hub.Register(client) {
+				hub.SendToUser(client.UserID, ServerMessage{Type: MsgPong})
+				hub.Unregister(client)
+			}
+		}()
+	}
+	close(start)
+	go hub.Stop()
+
+	finished := make(chan struct{})
+	go func() {
+		waitGroup.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(imHubTestTimeout):
+		t.Fatal("Hub methods blocked while racing with Stop")
+	}
+	hub.Stop()
+}
+
+func receiveServerMessageResult(channel <-chan []byte) (ServerMessage, error) {
+	select {
+	case payload := <-channel:
+		var message ServerMessage
+		if err := json.Unmarshal(payload, &message); err != nil {
+			return ServerMessage{}, err
+		}
+		return message, nil
+	case <-time.After(time.Second):
+		return ServerMessage{}, fmt.Errorf("timed out waiting for server message")
 	}
 }

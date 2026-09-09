@@ -26,6 +26,26 @@ type closeCommand struct {
 	reason  string
 }
 
+// clientOptions 是单个连接创建时冻结的时序与容量配置。
+// 生产连接始终使用 defaultClientOptions；测试可为独立连接传入毫秒级配置。
+type clientOptions struct {
+	writeWait      time.Duration
+	pongWait       time.Duration
+	pingPeriod     time.Duration
+	maxMessageSize int64
+	sendBufferSize int
+}
+
+func defaultClientOptions() clientOptions {
+	return clientOptions{
+		writeWait:      writeWait,
+		pongWait:       pongWait,
+		pingPeriod:     pingPeriod,
+		maxMessageSize: MaxTextMessageSize,
+		sendBufferSize: sendBufferSize,
+	}
+}
+
 // Client 代表一个用户级 IM WebSocket 连接。
 type Client struct {
 	Hub          *Hub
@@ -37,22 +57,45 @@ type Client struct {
 	closeCommand chan closeCommand
 	done         chan struct{}
 	closeOnce    sync.Once
+	options      clientOptions
 }
 
 // NewClient 创建带有不可复用 connection_id 的 IM Client。
 func NewClient(hub *Hub, conn *websocket.Conn, userID uint) *Client {
-	return newClient(hub, conn, userID, uuid.NewString(), sendBufferSize)
+	return newClientWithOptions(hub, conn, userID, defaultClientOptions())
 }
 
 func newClient(hub *Hub, conn *websocket.Conn, userID uint, connectionID string, bufferSize int) *Client {
+	options := defaultClientOptions()
+	options.sendBufferSize = bufferSize
+	return newClientWithConnectionID(hub, conn, userID, connectionID, options)
+}
+
+func newClientWithOptions(
+	hub *Hub,
+	conn *websocket.Conn,
+	userID uint,
+	options clientOptions,
+) *Client {
+	return newClientWithConnectionID(hub, conn, userID, uuid.NewString(), options)
+}
+
+func newClientWithConnectionID(
+	hub *Hub,
+	conn *websocket.Conn,
+	userID uint,
+	connectionID string,
+	options clientOptions,
+) *Client {
 	return &Client{
 		Hub:          hub,
 		Conn:         conn,
 		UserID:       userID,
 		ConnectionID: connectionID,
-		send:         make(chan []byte, bufferSize),
+		send:         make(chan []byte, options.sendBufferSize),
 		closeCommand: make(chan closeCommand, closeCommandCap),
 		done:         make(chan struct{}),
+		options:      options,
 	}
 }
 
@@ -64,10 +107,10 @@ func (c *Client) readPump() {
 		}
 	}()
 
-	c.Conn.SetReadLimit(MaxTextMessageSize)
-	_ = c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetReadLimit(c.options.maxMessageSize)
+	_ = c.Conn.SetReadDeadline(time.Now().Add(c.options.pongWait))
 	c.Conn.SetPongHandler(func(string) error {
-		return c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+		return c.Conn.SetReadDeadline(time.Now().Add(c.options.pongWait))
 	})
 
 	for {
@@ -127,7 +170,7 @@ func (c *Client) readPump() {
 }
 
 func (c *Client) writePump() {
-	ticker := time.NewTicker(pingPeriod)
+	ticker := time.NewTicker(c.options.pingPeriod)
 	defer func() {
 		ticker.Stop()
 		c.closeNow()
@@ -145,7 +188,7 @@ func (c *Client) writePump() {
 					return
 				}
 			}
-			deadline := time.Now().Add(writeWait)
+			deadline := time.Now().Add(c.options.writeWait)
 			_ = c.Conn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(command.code, command.reason),
@@ -153,7 +196,7 @@ func (c *Client) writePump() {
 			)
 			return
 		case <-ticker.C:
-			deadline := time.Now().Add(writeWait)
+			deadline := time.Now().Add(c.options.writeWait)
 			if err := c.Conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 				return
 			}
@@ -164,7 +207,7 @@ func (c *Client) writePump() {
 }
 
 func (c *Client) writeText(payload []byte) error {
-	if err := c.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(c.options.writeWait)); err != nil {
 		return err
 	}
 	return c.Conn.WriteMessage(websocket.TextMessage, payload)
@@ -213,7 +256,7 @@ func (c *Client) requestClose(command closeCommand) {
 }
 
 func (c *Client) waitForClose() {
-	timer := time.NewTimer(writeWait)
+	timer := time.NewTimer(c.options.writeWait)
 	defer timer.Stop()
 	select {
 	case <-c.done:

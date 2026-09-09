@@ -3,9 +3,20 @@ package imws
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
+
+func heartbeatTestOptions() clientOptions {
+	return clientOptions{
+		writeWait:      100 * time.Millisecond,
+		pongWait:       150 * time.Millisecond,
+		pingPeriod:     25 * time.Millisecond,
+		maxMessageSize: MaxTextMessageSize,
+		sendBufferSize: 16,
+	}
+}
 
 func TestClientHandlesPingAndProtocolErrors(t *testing.T) {
 	wsURL, _ := newTestIMServer(t)
@@ -94,5 +105,169 @@ func TestClientRejectsOversizedMessages(t *testing.T) {
 	_, _, err = conn.ReadMessage()
 	if !websocket.IsCloseError(err, websocket.CloseMessageTooBig) {
 		t.Fatalf("close error = %v, want code %d", err, websocket.CloseMessageTooBig)
+	}
+}
+
+func TestClientDisconnectsAfterMissingPong(t *testing.T) {
+	wsURL, hub := newTestIMServerWithOptions(t, heartbeatTestOptions())
+	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readServerMessage(t, conn)
+
+	// 继续读取控制帧，但故意不回复 Pong。
+	conn.SetPingHandler(func(string) error { return nil })
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("connection stayed open without Pong")
+	}
+	waitForUserDisconnected(t, hub, 7)
+}
+
+func TestClientPongExtendsReadDeadline(t *testing.T) {
+	wsURL, hub := newTestIMServerWithOptions(t, heartbeatTestOptions())
+	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readServerMessage(t, conn)
+
+	pingSeen := make(chan struct{}, 8)
+	defaultPingHandler := conn.PingHandler()
+	conn.SetPingHandler(func(data string) error {
+		select {
+		case pingSeen <- struct{}{}:
+		default:
+		}
+		return defaultPingHandler(data)
+	})
+
+	messageResult := make(chan ServerMessage, 1)
+	errorResult := make(chan error, 1)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	go func() {
+		_, payload, readErr := conn.ReadMessage()
+		if readErr != nil {
+			errorResult <- readErr
+			return
+		}
+		var message ServerMessage
+		if unmarshalErr := json.Unmarshal(payload, &message); unmarshalErr != nil {
+			errorResult <- unmarshalErr
+			return
+		}
+		messageResult <- message
+	}()
+
+	for index := 0; index < 3; index++ {
+		select {
+		case <-pingSeen:
+		case err := <-errorResult:
+			t.Fatalf("connection closed while replying to Ping: %v", err)
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for Ping %d", index+1)
+		}
+	}
+	if !hub.SendToUser(7, ServerMessage{Type: MsgPong, Timestamp: 1234}) {
+		t.Fatal("current connection was removed despite replying to Ping")
+	}
+	select {
+	case message := <-messageResult:
+		if message.Type != MsgPong || message.Timestamp != 1234 {
+			t.Fatalf("delivered message = %#v", message)
+		}
+	case err := <-errorResult:
+		t.Fatalf("read delivered message: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out reading message after Pong heartbeats")
+	}
+}
+
+func TestClientNormalAndAbruptDisconnectRemoveCurrentConnection(t *testing.T) {
+	tests := []struct {
+		name       string
+		disconnect func(*websocket.Conn) error
+	}{
+		{
+			name: "normal close",
+			disconnect: func(conn *websocket.Conn) error {
+				return conn.WriteControl(
+					websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "done"),
+					time.Now().Add(time.Second),
+				)
+			},
+		},
+		{
+			name: "abrupt TCP close",
+			disconnect: func(conn *websocket.Conn) error {
+				return conn.UnderlyingConn().Close()
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wsURL, hub := newTestIMServer(t)
+			conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+			if err != nil {
+				t.Fatalf("dial: %v", err)
+			}
+			defer conn.Close()
+			_ = readServerMessage(t, conn)
+
+			if err := test.disconnect(conn); err != nil {
+				t.Fatalf("disconnect: %v", err)
+			}
+			waitForUserDisconnected(t, hub, 7)
+		})
+	}
+}
+
+func TestClientHubStopClosesActiveConnection(t *testing.T) {
+	wsURL, hub := newTestIMServer(t)
+	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readServerMessage(t, conn)
+
+	stopped := make(chan struct{})
+	go func() {
+		hub.Stop()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Hub Stop did not return")
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatal("active connection remained open after Hub Stop")
+	}
+	if hub.SendToUser(7, ServerMessage{Type: MsgPong}) {
+		t.Fatal("Hub delivered after Stop")
+	}
+}
+
+func waitForUserDisconnected(t *testing.T, hub *Hub, userID uint) {
+	t.Helper()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		if !hub.SendToUser(userID, ServerMessage{Type: MsgPong}) {
+			return
+		}
+		select {
+		case <-ticker.C:
+		case <-timer.C:
+			t.Fatal("current connection was not removed after disconnect")
+		}
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,6 +20,7 @@ import (
 
 const testJWTSecret = "imws-test-secret"
 const testAllowedOrigin = "https://game.example.com"
+const testWebSocketReadTimeout = 3 * time.Second
 
 type handshakeErrorResponse struct {
 	Code    int    `json:"code"`
@@ -26,6 +28,10 @@ type handshakeErrorResponse struct {
 }
 
 func newTestIMEngine(t *testing.T) (*gin.Engine, *Hub) {
+	return newTestIMEngineWithOptions(t, defaultClientOptions())
+}
+
+func newTestIMEngineWithOptions(t *testing.T, options clientOptions) (*gin.Engine, *Hub) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	origins, err := realtime.ParseAllowedOrigins(testAllowedOrigin)
@@ -37,13 +43,17 @@ func newTestIMEngine(t *testing.T) (*gin.Engine, *Hub) {
 	t.Cleanup(hub.Stop)
 
 	engine := gin.New()
-	engine.GET("/ws/im", HandleWebSocket(hub, testJWTSecret, origins))
+	engine.GET("/ws/im", handleWebSocketWithOptions(hub, testJWTSecret, origins, options))
 	return engine, hub
 }
 
 func newTestIMServer(t *testing.T) (string, *Hub) {
+	return newTestIMServerWithOptions(t, defaultClientOptions())
+}
+
+func newTestIMServerWithOptions(t *testing.T, options clientOptions) (string, *Hub) {
 	t.Helper()
-	engine, hub := newTestIMEngine(t)
+	engine, hub := newTestIMEngineWithOptions(t, options)
 	server := httptest.NewServer(engine)
 	t.Cleanup(server.Close)
 	return "ws" + strings.TrimPrefix(server.URL, "http"), hub
@@ -73,6 +83,7 @@ func dialIM(
 
 func readServerMessage(t *testing.T, conn *websocket.Conn) ServerMessage {
 	t.Helper()
+	_ = conn.SetReadDeadline(time.Now().Add(testWebSocketReadTimeout))
 	_, payload, err := conn.ReadMessage()
 	if err != nil {
 		t.Fatalf("ReadMessage() error = %v", err)
@@ -275,5 +286,48 @@ func TestHandleWebSocketClosesWhenHubIsStopped(t *testing.T) {
 	_, _, err = conn.ReadMessage()
 	if !websocket.IsCloseError(err, websocket.CloseTryAgainLater) {
 		t.Fatalf("close error = %v, want code %d", err, websocket.CloseTryAgainLater)
+	}
+}
+
+func TestHandleWebSocketTakeoverStormLeavesLatestConnectionUsable(t *testing.T) {
+	wsURL, _ := newTestIMServer(t)
+	token := generateTestToken(t, 7)
+	const connections = 50
+
+	var previous *websocket.Conn
+	for index := range connections {
+		current, _, err := dialIM(t, wsURL, token, nil)
+		if err != nil {
+			t.Fatalf("dial connection %d: %v", index, err)
+		}
+		if message := readServerMessage(t, current); message.Type != MsgConnected {
+			_ = current.Close()
+			t.Fatalf("connection %d first message = %q", index, message.Type)
+		}
+		if previous != nil {
+			if message := readServerMessage(t, previous); message.Type != MsgConnectionReplaced {
+				_ = current.Close()
+				t.Fatalf("connection %d replacement message = %q", index-1, message.Type)
+			}
+			_, _, closeErr := previous.ReadMessage()
+			if !websocket.IsCloseError(closeErr, CloseCodeConnectionReplaced) {
+				_ = current.Close()
+				t.Fatalf("connection %d close error = %v", index-1, closeErr)
+			}
+			_ = previous.Close()
+		}
+		previous = current
+	}
+	defer previous.Close()
+
+	requestID := "550e8400-e29b-41d4-a716-446655440000"
+	if err := previous.WriteMessage(
+		websocket.TextMessage,
+		[]byte(`{"type":"ping","request_id":"`+requestID+`"}`),
+	); err != nil {
+		t.Fatalf("write ping to latest connection: %v", err)
+	}
+	if pong := readServerMessage(t, previous); pong.Type != MsgPong || pong.RequestID != requestID {
+		t.Fatalf("latest connection pong = %#v", pong)
 	}
 }

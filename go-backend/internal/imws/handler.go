@@ -14,6 +14,15 @@ import (
 
 // HandleWebSocket 处理用户级 IM WebSocket 升级请求。
 func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet) gin.HandlerFunc {
+	return handleWebSocketWithOptions(hub, secret, origins, defaultClientOptions())
+}
+
+func handleWebSocketWithOptions(
+	hub *Hub,
+	secret string,
+	origins *realtime.OriginSet,
+	options clientOptions,
+) gin.HandlerFunc {
 	upgrader := realtime.NewUpgrader(origins)
 
 	return func(c *gin.Context) {
@@ -45,9 +54,9 @@ func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet) gin.H
 			return
 		}
 
-		client := NewClient(hub, conn, claims.UserID)
+		client := newClientWithOptions(hub, conn, claims.UserID, options)
 		if hub == nil || !hub.Register(client) {
-			deadline := time.Now().Add(writeWait)
+			deadline := time.Now().Add(options.writeWait)
 			_ = conn.WriteControl(
 				websocket.CloseMessage,
 				websocket.FormatCloseMessage(websocket.CloseTryAgainLater, CloseReasonServiceUnavailable),
