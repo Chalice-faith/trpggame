@@ -1,10 +1,10 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.0-C
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.0-D
 >
-> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-08 核对）。
+> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-09 核对）。
 >
-> 状态：接口字段和错误码已按源码整理；真实 Docker、MySQL、Redis、MinIO、Milvus、DeepSeek 联调尚未在本机执行。
+> 状态：接口字段和错误码已按源码整理；M2.0-D 自动化回归结果见 [M2.0 验收记录](./M2.0验收记录.md)，真实 Docker 服务、MySQL、Redis、MinIO、Milvus、DeepSeek 和浏览器联调尚未执行。
 
 这份文档用于在 Swagger UI、Postman 或 `curl` 中手工验收。所有示例均使用 JSON 字段名，不使用 Go/Python 内部字段名。
 

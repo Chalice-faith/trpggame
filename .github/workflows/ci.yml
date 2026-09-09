@@ -33,8 +33,12 @@ jobs:
         with:
           go-version-file: go-backend/go.mod
           cache-dependency-path: go-backend/go.sum
-      - run: go test ./...
-      - run: go vet ./...
+      - name: Run Go tests
+        run: go test ./...
+      - name: Race test realtime packages
+        run: go test -race -count=1 ./internal/realtime ./internal/ws ./internal/imws ./internal/router
+      - name: Run Go vet
+        run: go vet ./...
 
   python:
     name: Python tests
