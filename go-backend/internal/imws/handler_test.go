@@ -177,6 +177,10 @@ func TestHandleWebSocketConnectsWithAllowedOrMissingOrigin(t *testing.T) {
 
 func TestHandleWebSocketRejectsHandshakeErrors(t *testing.T) {
 	wsURL, _ := newTestIMServer(t)
+	expiredToken, err := middleware.GenerateToken(7, "investigator", testJWTSecret, -1)
+	if err != nil {
+		t.Fatalf("generate expired token: %v", err)
+	}
 	tests := []struct {
 		name        string
 		token       string
@@ -187,6 +191,7 @@ func TestHandleWebSocketRejectsHandshakeErrors(t *testing.T) {
 	}{
 		{name: "missing token", wantStatus: http.StatusUnauthorized, wantCode: ErrorCodeMissingToken, wantMessage: "missing token"},
 		{name: "invalid token", token: "not-a-jwt", wantStatus: http.StatusUnauthorized, wantCode: ErrorCodeInvalidToken, wantMessage: "invalid token"},
+		{name: "expired token", token: expiredToken, wantStatus: http.StatusUnauthorized, wantCode: ErrorCodeInvalidToken, wantMessage: "invalid token"},
 		{name: "unknown origin before auth", origin: "https://other.example.com", wantStatus: http.StatusForbidden, wantCode: ErrorCodeOriginNotAllowed, wantMessage: "origin not allowed"},
 		{name: "null origin before auth", origin: "null", wantStatus: http.StatusForbidden, wantCode: ErrorCodeOriginNotAllowed, wantMessage: "origin not allowed"},
 		{name: "comma origin before auth", origin: testAllowedOrigin + ", https://other.example.com", wantStatus: http.StatusForbidden, wantCode: ErrorCodeOriginNotAllowed, wantMessage: "origin not allowed"},

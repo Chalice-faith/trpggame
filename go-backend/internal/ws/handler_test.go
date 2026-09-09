@@ -156,13 +156,26 @@ func TestHandleWebSocketRejectsInvalidToken(t *testing.T) {
 	assertHandshakeError(t, wsURL, "not-a-jwt", "41", "", http.StatusUnauthorized, wsErrorInvalidToken, "invalid token")
 }
 
+func TestHandleWebSocketRejectsExpiredTokenWithoutLeakingValidationDetails(t *testing.T) {
+	wsURL, _ := newTestWSServer(t, fakeAuthorizer{})
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, -1)
+	if err != nil {
+		t.Fatalf("generate expired token: %v", err)
+	}
+	assertHandshakeError(t, wsURL, token, "41", "", http.StatusUnauthorized, wsErrorInvalidToken, "invalid token")
+}
+
 func TestHandleWebSocketRejectsInvalidRoomID(t *testing.T) {
 	wsURL, _ := newTestWSServer(t, fakeAuthorizer{})
 	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
 	if err != nil {
 		t.Fatalf("generate token: %v", err)
 	}
-	assertHandshakeError(t, wsURL, token, "abc", "", http.StatusBadRequest, wsErrorInvalidRoomID, "invalid room_id")
+	for _, roomID := range []string{"", "0", "abc", "-1"} {
+		t.Run("room_id="+roomID, func(t *testing.T) {
+			assertHandshakeError(t, wsURL, token, roomID, "", http.StatusBadRequest, wsErrorInvalidRoomID, "invalid room_id")
+		})
+	}
 }
 
 func TestHandleWebSocketRejectsUnauthorizedRoom(t *testing.T) {

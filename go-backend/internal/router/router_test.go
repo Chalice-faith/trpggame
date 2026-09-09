@@ -73,7 +73,13 @@ func TestSetupDoesNotLogWebSocketQueryTokens(t *testing.T) {
 		JWT:      config.JWTConfig{Secret: "router-test-secret", AccessTokenTTL: 15},
 		Internal: config.InternalConfig{SharedSecret: "internal-test-secret"},
 	}
-	handlerFunc := func(c *gin.Context) { c.Status(http.StatusUnauthorized) }
+	handlerFunc := func(c *gin.Context) {
+		if c.Query("result") == "success" {
+			c.Status(http.StatusNoContent)
+			return
+		}
+		c.Status(http.StatusUnauthorized)
+	}
 	engine := Setup(
 		cfg,
 		nil,
@@ -83,13 +89,33 @@ func TestSetupDoesNotLogWebSocketQueryTokens(t *testing.T) {
 		nil,
 	)
 
-	const secretToken = "must-not-appear-in-logs"
-	for _, path := range []string{"/ws", "/ws/im"} {
-		request := httptest.NewRequest(http.MethodGet, path+"?token="+secretToken, nil)
-		engine.ServeHTTP(httptest.NewRecorder(), request)
+	for _, test := range []struct {
+		name   string
+		path   string
+		query  string
+		status int
+	}{
+		{name: "game failure", path: "/ws", query: "token=game-failure-secret", status: http.StatusUnauthorized},
+		{name: "game success", path: "/ws", query: "token=game-success-secret&result=success", status: http.StatusNoContent},
+		{name: "IM failure", path: "/ws/im", query: "token=im-failure-secret", status: http.StatusUnauthorized},
+		{name: "IM success", path: "/ws/im", query: "token=im-success-secret&result=success", status: http.StatusNoContent},
+	} {
+		recorder := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, test.path+"?"+test.query, nil)
+		engine.ServeHTTP(recorder, request)
+		if recorder.Code != test.status {
+			t.Fatalf("%s status = %d, want %d", test.name, recorder.Code, test.status)
+		}
 	}
-	if strings.Contains(output.String(), secretToken) {
-		t.Fatalf("WebSocket token leaked into access log: %s", output.String())
+	for _, secretToken := range []string{
+		"game-failure-secret",
+		"game-success-secret",
+		"im-failure-secret",
+		"im-success-secret",
+	} {
+		if strings.Contains(output.String(), secretToken) {
+			t.Fatalf("WebSocket token %q leaked into access log: %s", secretToken, output.String())
+		}
 	}
 
 	restRequest := httptest.NewRequest(http.MethodGet, "/api/openapi.yaml?probe=rest", nil)
