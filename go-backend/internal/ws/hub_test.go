@@ -3,8 +3,13 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
+
+	"trpggame/internal/realtime"
 )
 
 const testRecvTimeout = 3 * time.Second
@@ -22,7 +27,9 @@ func startTestHub(t *testing.T) *Hub {
 func registerTestClient(t *testing.T, hub *Hub, roomID, userID uint) *Client {
 	t.Helper()
 	client := NewClient(hub, nil, userID, roomID)
-	hub.register <- client
+	if !hub.Register(client) {
+		t.Fatal("Register() = false")
+	}
 
 	subscribed := recvMessage(t, client)
 	if subscribed.Type != MsgSubscribed {
@@ -198,10 +205,13 @@ func TestRegisterSkippedForClosedClient(t *testing.T) {
 	hub := startTestHub(t)
 
 	client := NewClient(hub, nil, 7, 41)
-	client.closed.Store(true) // 模拟连接在 register 入队后已结束
-	hub.registerClient(client)
-	hub.unregisterClient(client)
+	client.closeNow()
+	if hub.Register(client) {
+		t.Fatal("closed client must not be registered")
+	}
 
+	hub.mu.RLock()
+	defer hub.mu.RUnlock()
 	if _, ok := hub.rooms[41]; ok {
 		t.Fatal("closed client must not be registered into the room")
 	}
@@ -211,9 +221,11 @@ func TestRegisterThenUnregisterCleansUpRoom(t *testing.T) {
 	hub := startTestHub(t)
 
 	client := NewClient(hub, nil, 7, 41)
-	hub.register <- client
+	if !hub.Register(client) {
+		t.Fatal("Register() = false")
+	}
 	_ = recvMessage(t, client) // 等待订阅确认，确保 register 已处理
-	hub.unregister <- client
+	hub.Unregister(client)
 
 	deadline := time.After(testRecvTimeout)
 	for {
@@ -230,6 +242,161 @@ func TestRegisterThenUnregisterCleansUpRoom(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}
+}
+
+func TestRegisterAssignsCanonicalConnectionID(t *testing.T) {
+	hub := startTestHub(t)
+	client := registerTestClient(t, hub, 41, 7)
+
+	parsed, err := uuid.Parse(client.ConnectionID)
+	if err != nil || parsed.String() != client.ConnectionID {
+		t.Fatalf("connection ID = %q, want canonical UUID", client.ConnectionID)
+	}
+}
+
+func TestLatestConnectionReplacesOldWithoutDelayedUnregisterRemovingNew(t *testing.T) {
+	hub := startTestHub(t)
+	oldClient := registerTestClient(t, hub, 41, 7)
+	newClient := registerTestClient(t, hub, 41, 7)
+
+	select {
+	case command := <-oldClient.closeCommand:
+		if command.code != realtime.CloseCodeConnectionReplaced ||
+			command.reason != realtime.CloseReasonConnectionReplaced {
+			t.Fatalf("replacement close command = %#v", command)
+		}
+	case <-time.After(testRecvTimeout):
+		t.Fatal("old connection did not receive replacement close command")
+	}
+
+	hub.Unregister(oldClient)
+	hub.SendToUser(41, 7, MsgSystem, json.RawMessage(`{"current":true}`))
+	if message := recvMessage(t, newClient); message.Type != MsgSystem || message.Seq != 1 {
+		t.Fatalf("new client message = %#v, want system seq=1", message)
+	}
+	recvNone(t, oldClient)
+}
+
+func TestReplacedConnectionCannotSubmitActionOrSync(t *testing.T) {
+	hub := startTestHub(t)
+	oldClient := registerTestClient(t, hub, 41, 7)
+	newClient := registerTestClient(t, hub, 41, 7)
+	<-oldClient.closeCommand
+
+	dispatched := make(chan *Client, 1)
+	hub.SetGameActionHandler(func(_ context.Context, client *Client, _ GameActionData) {
+		dispatched <- client
+	})
+	action := &Message{
+		Type: MsgGameAction,
+		Data: mustJSON(GameActionData{
+			RequestID:    "550e8400-e29b-41d4-a716-446655440000",
+			ExpectedTurn: intPointer(3),
+			ActionText:   "调查书房",
+		}),
+	}
+	hub.HandleInbound(oldClient, action)
+	select {
+	case client := <-dispatched:
+		t.Fatalf("replaced client dispatched action through %p", client)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	hub.HandleInbound(oldClient, &Message{Type: MsgSync})
+	recvNone(t, oldClient)
+
+	hub.HandleInbound(newClient, action)
+	select {
+	case client := <-dispatched:
+		if client != newClient {
+			t.Fatalf("action client = %p, want %p", client, newClient)
+		}
+	case <-time.After(testRecvTimeout):
+		t.Fatal("current client action was not dispatched")
+	}
+}
+
+func TestHubStopIsConcurrentSafeAndPublicMethodsReturn(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+	client := registerTestClient(t, hub, 41, 7)
+
+	const callers = 20
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(callers)
+	for range callers {
+		go func() {
+			defer waitGroup.Done()
+			hub.Stop()
+		}()
+	}
+	stopped := make(chan struct{})
+	go func() {
+		waitGroup.Wait()
+		close(stopped)
+	}()
+	select {
+	case <-stopped:
+	case <-time.After(testRecvTimeout):
+		t.Fatal("concurrent Stop calls did not return")
+	}
+
+	select {
+	case <-client.done:
+	default:
+		t.Fatal("client remained open after Stop")
+	}
+	if hub.Register(NewClient(hub, nil, 8, 41)) {
+		t.Fatal("Register() succeeded after Stop")
+	}
+
+	returned := make(chan struct{})
+	go func() {
+		hub.BroadcastToRoom(41, MsgSystem, json.RawMessage(`{}`))
+		hub.SendToUser(41, 7, MsgSystem, json.RawMessage(`{}`))
+		hub.Unregister(client)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("public methods blocked after Stop")
+	}
+}
+
+func TestHubStopRacingWithRegisterDeliverAndUnregisterDoesNotBlock(t *testing.T) {
+	hub := NewHub()
+	go hub.Run()
+
+	const clients = 64
+	start := make(chan struct{})
+	var waitGroup sync.WaitGroup
+	waitGroup.Add(clients)
+	for index := range clients {
+		go func() {
+			defer waitGroup.Done()
+			<-start
+			client := NewClient(hub, nil, uint(index+1), 41)
+			if hub.Register(client) {
+				hub.SendToUser(41, client.UserID, MsgSystem, json.RawMessage(`{}`))
+				hub.Unregister(client)
+			}
+		}()
+	}
+	close(start)
+	go hub.Stop()
+
+	finished := make(chan struct{})
+	go func() {
+		waitGroup.Wait()
+		close(finished)
+	}()
+	select {
+	case <-finished:
+	case <-time.After(testRecvTimeout):
+		t.Fatal("Hub methods blocked while racing with Stop")
+	}
+	hub.Stop()
 }
 
 func TestAppendRecentTrimsToCapacity(t *testing.T) {

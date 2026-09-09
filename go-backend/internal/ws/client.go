@@ -3,10 +3,14 @@ package ws
 import (
 	"encoding/json"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+
+	"trpggame/internal/realtime"
 )
 
 const (
@@ -24,27 +28,42 @@ const (
 
 	// 发送缓冲区大小
 	sendBufferSize = 256
+
+	closeCommandCapacity = 1
 )
+
+type clientCloseCommand struct {
+	code   int
+	reason string
+}
 
 // Client 代表一个 WebSocket 连接
 type Client struct {
-	Hub    *Hub
-	Conn   *websocket.Conn
-	UserID uint
-	RoomID uint
-	Send   chan []byte
-	isAlive atomic.Bool
-	closed  atomic.Bool // 连接已结束；防止 unregister 先于 register 处理时残留死连接
+	Hub          *Hub
+	Conn         *websocket.Conn
+	UserID       uint
+	RoomID       uint
+	ConnectionID string
+	Send         chan []byte
+
+	closeCommand chan clientCloseCommand
+	done         chan struct{}
+	closeOnce    sync.Once
+	isAlive      atomic.Bool
+	closed       atomic.Bool
 }
 
 // NewClient 创建新的 WebSocket 客户端
 func NewClient(hub *Hub, conn *websocket.Conn, userID, roomID uint) *Client {
 	c := &Client{
-		Hub:    hub,
-		Conn:   conn,
-		UserID: userID,
-		RoomID: roomID,
-		Send:   make(chan []byte, sendBufferSize),
+		Hub:          hub,
+		Conn:         conn,
+		UserID:       userID,
+		RoomID:       roomID,
+		ConnectionID: uuid.NewString(),
+		Send:         make(chan []byte, sendBufferSize),
+		closeCommand: make(chan clientCloseCommand, closeCommandCapacity),
+		done:         make(chan struct{}),
 	}
 	c.isAlive.Store(true)
 	return c
@@ -53,9 +72,10 @@ func NewClient(hub *Hub, conn *websocket.Conn, userID, roomID uint) *Client {
 // readPump 从 WebSocket 连接读取消息并分发
 func (c *Client) readPump() {
 	defer func() {
-		c.closed.Store(true)
-		c.Hub.unregister <- c
-		c.Conn.Close()
+		c.closeNow()
+		if c.Hub != nil {
+			c.Hub.Unregister(c)
+		}
 	}()
 
 	c.Conn.SetReadLimit(maxMessageSize)
@@ -69,7 +89,12 @@ func (c *Client) readPump() {
 	for {
 		_, raw, err := c.Conn.ReadMessage()
 		if err != nil {
-			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+			if websocket.IsUnexpectedCloseError(
+				err,
+				websocket.CloseGoingAway,
+				websocket.CloseNormalClosure,
+				realtime.CloseCodeConnectionReplaced,
+			) {
 				log.Printf("[WS] Read error: %v", err)
 			}
 			break
@@ -89,15 +114,16 @@ func (c *Client) readPump() {
 		if msg.Type == MsgPing {
 			pong := &Message{Type: MsgPong, Timestamp: time.Now().UnixMilli()}
 			pongData, _ := json.Marshal(pong)
-			select {
-			case c.Send <- pongData:
-			default:
+			if c.Hub != nil {
+				c.Hub.sendToClient(c, pongData)
 			}
 			continue
 		}
 
 		// 其他客户端消息交给 Hub 分发（例如 sync 重连补推）；服务端事件由 Hub 主动推送，不回显。
-		c.Hub.HandleInbound(c, &msg)
+		if c.Hub != nil {
+			c.Hub.HandleInbound(c, &msg)
+		}
 	}
 }
 
@@ -106,29 +132,99 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.Conn.Close()
+		c.closeNow()
 	}()
 
 	for {
+		// 接管关闭优先于积压的业务消息，避免旧连接在替换后继续收到投递。
 		select {
-		case message, ok := <-c.Send:
-			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if !ok {
-				// Hub 关闭了通道
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			if err := c.Conn.WriteMessage(websocket.TextMessage, message); err != nil {
+		case command := <-c.closeCommand:
+			c.writeClose(command)
+			return
+		default:
+		}
+		select {
+		case message := <-c.Send:
+			if err := c.writeText(message); err != nil {
 				log.Printf("[WS] Write error: %v", err)
 				return
 			}
-
+		case command := <-c.closeCommand:
+			c.writeClose(command)
+			return
 		case <-ticker.C:
-			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
-			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			deadline := time.Now().Add(writeWait)
+			if err := c.Conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
 				return
 			}
+		case <-c.done:
+			return
 		}
+	}
+}
+
+func (c *Client) writeClose(command clientCloseCommand) {
+	deadline := time.Now().Add(writeWait)
+	_ = c.Conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(command.code, command.reason),
+		deadline,
+	)
+}
+
+func (c *Client) writeText(payload []byte) error {
+	if err := c.Conn.SetWriteDeadline(time.Now().Add(writeWait)); err != nil {
+		return err
+	}
+	return c.Conn.WriteMessage(websocket.TextMessage, payload)
+}
+
+func (c *Client) enqueue(payload []byte) bool {
+	select {
+	case <-c.done:
+		return false
+	default:
+	}
+	select {
+	case c.Send <- payload:
+		return true
+	case <-c.done:
+		return false
+	default:
+		return false
+	}
+}
+
+func (c *Client) requestClose(command clientCloseCommand) {
+	select {
+	case <-c.done:
+		return
+	default:
+	}
+	select {
+	case c.closeCommand <- command:
+	case <-c.done:
+	default:
+		c.closeNow()
+	}
+}
+
+func (c *Client) closeNow() {
+	c.closeOnce.Do(func() {
+		c.closed.Store(true)
+		c.isAlive.Store(false)
+		close(c.done)
+		if c.Conn != nil {
+			_ = c.Conn.Close()
+		}
+	})
+}
+
+func (c *Client) isClosed() bool {
+	select {
+	case <-c.done:
+		return true
+	default:
+		return c.closed.Load()
 	}
 }

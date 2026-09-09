@@ -6,8 +6,10 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 
 	"trpggame/internal/realtime"
 )
@@ -73,7 +75,19 @@ func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet, authz
 		}
 
 		client := NewClient(hub, conn, claims.UserID, roomID)
-		hub.register <- client
+		if hub == nil || !hub.Register(client) {
+			deadline := time.Now().Add(writeWait)
+			_ = conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(
+					websocket.CloseTryAgainLater,
+					realtime.CloseReasonServiceUnavailable,
+				),
+				deadline,
+			)
+			client.closeNow()
+			return
+		}
 
 		go client.writePump()
 		go client.readPump()

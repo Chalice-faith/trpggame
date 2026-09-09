@@ -10,6 +10,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+
+	"trpggame/internal/realtime"
 )
 
 const MaxTextMessageSize = 8192
@@ -23,11 +25,11 @@ const (
 	ErrorCodeUnsupportedMessageType = 1705
 )
 
-const CloseCodeConnectionReplaced = 4001
-
 const (
-	CloseReasonConnectionReplaced = "connection_replaced"
-	CloseReasonServiceUnavailable = "service unavailable"
+	// 保留 IM 包内别名，兼容已有调用点；权威值由 realtime 包统一定义。
+	CloseCodeConnectionReplaced   = realtime.CloseCodeConnectionReplaced
+	CloseReasonConnectionReplaced = realtime.CloseReasonConnectionReplaced
+	CloseReasonServiceUnavailable = realtime.CloseReasonServiceUnavailable
 )
 
 var (

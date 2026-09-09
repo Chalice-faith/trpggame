@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -303,4 +304,99 @@ func TestHandleWebSocketSubscribesAndAcceptsSync(t *testing.T) {
 	if batch.NextSeq != 1 || len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 {
 		t.Fatalf("sync_batch = %#v, want [seq=1] next=1", batch)
 	}
+}
+
+func TestHandleWebSocketLatestConnectionReplacesOld(t *testing.T) {
+	wsURL, hub := newTestWSServer(t, fakeAuthorizer{
+		allowed: map[uint]map[uint]bool{41: {7: true}},
+	})
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+
+	oldConnection, status, err := dialWS(t, wsURL, token, "41")
+	if err != nil {
+		t.Fatalf("dial old connection: status = %d, err = %v", status, err)
+	}
+	defer oldConnection.Close()
+	if message := readGameServerMessage(t, oldConnection); message.Type != MsgSubscribed {
+		t.Fatalf("old first message = %q, want subscribed", message.Type)
+	}
+
+	newConnection, status, err := dialWS(t, wsURL, token, "41")
+	if err != nil {
+		t.Fatalf("dial new connection: status = %d, err = %v", status, err)
+	}
+	defer newConnection.Close()
+	if message := readGameServerMessage(t, newConnection); message.Type != MsgSubscribed {
+		t.Fatalf("new first message = %q, want subscribed", message.Type)
+	}
+
+	_ = oldConnection.SetReadDeadline(time.Now().Add(testRecvTimeout))
+	_, _, err = oldConnection.ReadMessage()
+	if !websocket.IsCloseError(err, realtime.CloseCodeConnectionReplaced) {
+		t.Fatalf(
+			"old connection close error = %v, want code %d",
+			err,
+			realtime.CloseCodeConnectionReplaced,
+		)
+	}
+
+	hub.SendToUser(41, 7, MsgSystem, json.RawMessage(`{"current":true}`))
+	message := readGameServerMessage(t, newConnection)
+	if message.Type != MsgSystem || message.Seq != 1 {
+		t.Fatalf("new connection message = %#v, want system seq=1", message)
+	}
+}
+
+func TestHandleWebSocketClosesUpgradedConnectionWhenHubStopped(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	hub := NewHub()
+	go hub.Run()
+	hub.Stop()
+	origins, err := realtime.ParseAllowedOrigins(testAllowedOrigin)
+	if err != nil {
+		t.Fatalf("ParseAllowedOrigins() error = %v", err)
+	}
+	engine := gin.New()
+	engine.GET("/ws", HandleWebSocket(
+		hub,
+		testJWTSecret,
+		origins,
+		fakeAuthorizer{allowed: map[uint]map[uint]bool{41: {7: true}}},
+	))
+	server := httptest.NewServer(engine)
+	defer server.Close()
+
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
+	if err != nil {
+		t.Fatalf("generate token: %v", err)
+	}
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	connection, status, err := dialWS(t, wsURL, token, "41")
+	if err != nil {
+		t.Fatalf("dial stopped hub: status = %d, err = %v", status, err)
+	}
+	defer connection.Close()
+
+	_ = connection.SetReadDeadline(time.Now().Add(testRecvTimeout))
+	_, _, err = connection.ReadMessage()
+	if !websocket.IsCloseError(err, websocket.CloseTryAgainLater) {
+		t.Fatalf("close error = %v, want code %d", err, websocket.CloseTryAgainLater)
+	}
+}
+
+func readGameServerMessage(t *testing.T, connection *websocket.Conn) Message {
+	t.Helper()
+	_ = connection.SetReadDeadline(time.Now().Add(testRecvTimeout))
+	_, payload, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read server message: %v", err)
+	}
+	var message Message
+	if err := json.Unmarshal(payload, &message); err != nil {
+		t.Fatalf("unmarshal server message: %v", err)
+	}
+	return message
 }
