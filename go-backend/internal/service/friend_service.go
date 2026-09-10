@@ -60,6 +60,7 @@ type FriendshipUpdatedEvent struct {
 	FriendshipID uint                   `json:"friendship_id"`
 	UserLowID    uint                   `json:"user_low_id"`
 	UserHighID   uint                   `json:"user_high_id"`
+	RequestedBy  uint                   `json:"requested_by"`
 	Status       model.FriendshipStatus `json:"status"`
 	UpdatedAt    time.Time              `json:"updated_at"`
 }
@@ -388,7 +389,7 @@ func (s *FriendService) publish(ctx context.Context, friendship *model.Friendshi
 	}
 	err := s.publisher.PublishFriendshipUpdated(ctx, FriendshipUpdatedEvent{
 		FriendshipID: friendship.ID, UserLowID: friendship.UserLowID, UserHighID: friendship.UserHighID,
-		Status: friendship.Status, UpdatedAt: friendship.UpdatedAt,
+		RequestedBy: friendship.RequestedBy, Status: friendship.Status, UpdatedAt: friendship.UpdatedAt,
 	})
 	if err != nil {
 		log.Printf("publish friendship update: %v", err)

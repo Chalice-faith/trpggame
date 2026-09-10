@@ -32,6 +32,10 @@ func newTestIMEngine(t *testing.T) (*gin.Engine, *Hub) {
 }
 
 func newTestIMEngineWithOptions(t *testing.T, options clientOptions) (*gin.Engine, *Hub) {
+	return newTestIMEngineWithObserver(t, options, nil)
+}
+
+func newTestIMEngineWithObserver(t *testing.T, options clientOptions, observer PresenceObserver) (*gin.Engine, *Hub) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	origins, err := realtime.ParseAllowedOrigins(testAllowedOrigin)
@@ -39,6 +43,7 @@ func newTestIMEngineWithOptions(t *testing.T, options clientOptions) (*gin.Engin
 		t.Fatalf("ParseAllowedOrigins() error = %v", err)
 	}
 	hub := NewHub()
+	hub.SetPresenceObserver(observer)
 	go hub.Run()
 	t.Cleanup(hub.Stop)
 
@@ -52,8 +57,12 @@ func newTestIMServer(t *testing.T) (string, *Hub) {
 }
 
 func newTestIMServerWithOptions(t *testing.T, options clientOptions) (string, *Hub) {
+	return newTestIMServerWithObserver(t, options, nil)
+}
+
+func newTestIMServerWithObserver(t *testing.T, options clientOptions, observer PresenceObserver) (string, *Hub) {
 	t.Helper()
-	engine, hub := newTestIMEngineWithOptions(t, options)
+	engine, hub := newTestIMEngineWithObserver(t, options, observer)
 	server := httptest.NewServer(engine)
 	t.Cleanup(server.Close)
 	return "ws" + strings.TrimPrefix(server.URL, "http"), hub

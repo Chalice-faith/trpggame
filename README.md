@@ -60,7 +60,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 - ✅ **M2.0-B**：游戏 WebSocket 接入公共握手组件
 - ✅ **M2.0-C**：独立 `/ws/im` 通道、Ping/Pong 和单连接接管基础
 - ✅ **M2.0-D**：D1—D4 已完成并提交；GitHub Actions CI #27（含 targeted race）通过，真实部署验收待执行
-- 🚧 **M2.1**：好友持久化、用户搜索与 REST 已完成；在线状态和 Vue 界面尚未开始
+- 🚧 **M2.1**：好友后端、Redis 在线状态与实时事件已完成；Vue 界面和最终验收尚未开始
 - 📋 **M2.2—M2.4**：聊天、群组和多人跑团尚未开始
 
 ### Phase 3 — 体验增强 📋 *规划中*
@@ -151,7 +151,7 @@ trpggame/
 │   │   ├── ai_client/          # Python AI 服务 HTTP 客户端
 │   │   └── storage/            # MinIO 存储
 ├── database/                    # npm 数据库迁移工具
-│   ├── migrations/               # SQL 迁移 (001-009)
+│   ├── migrations/               # SQL 迁移 (001-010)
 │   ├── scripts/migrate.mjs       # 迁移执行入口
 │   └── lib/                      # checksum、锁与兼容迁移逻辑
 ││   ├── Dockerfile              # 多阶段构建
@@ -442,7 +442,8 @@ AI 可调用的 Function Calling 函数：
 - ✅ M2.0-D 并发、异常关闭、竞态与收尾验证（D1—D4 已提交，GitHub Actions CI #27 含 targeted race 全部通过）
 - ✅ M2.1-A 好友与在线状态契约、状态机和 presence 设计已冻结
 - ✅ M2.1-B 好友迁移、持久化、REST、OpenAPI 与 MySQL 8.4 并发验证
-- ⬜ M2.1-C/D 在线状态、Vue 与验收
+- ✅ M2.1-C Redis 在线租约、IM 生命周期观察与实时事件
+- ⬜ M2.1-D Vue 与验收收尾
 - ⬜ M2.2 IM 聊天系统
 - ⬜ M2.3 群组系统
 - ⬜ M2.4 多人游戏房间

@@ -170,6 +170,18 @@ func (failingPresence) Statuses(context.Context, []uint) (map[uint]PresenceStatu
 	return nil, errors.New("redis unavailable")
 }
 
+type recordingFriendshipPublisher struct {
+	mu     sync.Mutex
+	events []FriendshipUpdatedEvent
+}
+
+func (p *recordingFriendshipPublisher) PublishFriendshipUpdated(_ context.Context, event FriendshipUpdatedEvent) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.events = append(p.events, event)
+	return nil
+}
+
 func friendTestService(presence PresenceProvider) (*FriendService, *memoryFriendRepo) {
 	repository := newMemoryFriendRepo()
 	users := memoryFriendUsers{users: map[uint]model.User{
@@ -340,5 +352,34 @@ func TestFriendServiceSearchResponseDoesNotExposeEmail(t *testing.T) {
 	}
 	if strings.Contains(string(body), "email") || strings.Contains(string(body), "password") {
 		t.Fatalf("private fields leaked: %s", body)
+	}
+}
+
+func TestFriendServicePublishesOnlyEffectiveRelationshipChanges(t *testing.T) {
+	repository := newMemoryFriendRepo()
+	users := memoryFriendUsers{users: map[uint]model.User{
+		1: {ID: 1, Username: "alice"}, 2: {ID: 2, Username: "bob"},
+	}}
+	publisher := &recordingFriendshipPublisher{}
+	svc := NewFriendService(repository, users, nil, publisher)
+	ctx := context.Background()
+	request, err := svc.SendRequest(ctx, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = svc.SendRequest(ctx, 1, 2)
+	_, _ = svc.SendRequest(ctx, 2, 1)
+	_, _ = svc.RespondRequest(ctx, 2, request.ID, true)
+	if err := svc.DeleteFriend(ctx, 1, 2); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.events) != 3 {
+		t.Fatalf("events = %#v", publisher.events)
+	}
+	want := []model.FriendshipStatus{model.FriendshipStatusPending, model.FriendshipStatusAccepted, model.FriendshipStatusRemoved}
+	for index, status := range want {
+		if publisher.events[index].Status != status || publisher.events[index].RequestedBy != 1 {
+			t.Fatalf("event %d = %#v", index, publisher.events[index])
+		}
 	}
 }

@@ -10,6 +10,39 @@ import (
 
 const imHubTestTimeout = 5 * time.Second
 
+type observedPresenceEvent struct {
+	kind         string
+	userID       uint
+	connectionID string
+}
+
+type recordingPresenceObserver struct{ events chan observedPresenceEvent }
+
+func newRecordingPresenceObserver() *recordingPresenceObserver {
+	return &recordingPresenceObserver{events: make(chan observedPresenceEvent, 32)}
+}
+
+func (o *recordingPresenceObserver) OnConnected(userID uint, connectionID string) {
+	o.events <- observedPresenceEvent{kind: "connected", userID: userID, connectionID: connectionID}
+}
+func (o *recordingPresenceObserver) OnRefreshed(userID uint, connectionID string) {
+	o.events <- observedPresenceEvent{kind: "refreshed", userID: userID, connectionID: connectionID}
+}
+func (o *recordingPresenceObserver) OnDisconnected(userID uint, connectionID string) {
+	o.events <- observedPresenceEvent{kind: "disconnected", userID: userID, connectionID: connectionID}
+}
+
+func receivePresenceEvent(t *testing.T, observer *recordingPresenceObserver) observedPresenceEvent {
+	t.Helper()
+	select {
+	case event := <-observer.events:
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for presence event")
+		return observedPresenceEvent{}
+	}
+}
+
 func startTestHub(t *testing.T) *Hub {
 	t.Helper()
 	hub := NewHub()
@@ -106,6 +139,81 @@ func TestHubReplacesConnectionWithoutOldUnregisterDeletingNew(t *testing.T) {
 	}
 	if message := receiveServerMessage(t, newClient.send); message.Type != MsgPong {
 		t.Fatalf("new client received %q, want pong", message.Type)
+	}
+}
+
+func TestHubPresenceObserverOnlySeesCurrentConnectionLifecycle(t *testing.T) {
+	observer := newRecordingPresenceObserver()
+	hub := NewHub()
+	hub.SetPresenceObserver(observer)
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+	oldClient := testClient(hub, 7, "old", 4)
+	newClient := testClient(hub, 7, "new", 4)
+
+	if !hub.Register(oldClient) {
+		t.Fatal("register old")
+	}
+	_ = receiveServerMessage(t, oldClient.send)
+	if event := receivePresenceEvent(t, observer); event.kind != "connected" || event.connectionID != "old" {
+		t.Fatalf("old connected event = %#v", event)
+	}
+	if !hub.Register(newClient) {
+		t.Fatal("register new")
+	}
+	_ = receiveServerMessage(t, newClient.send)
+	if event := receivePresenceEvent(t, observer); event.kind != "connected" || event.connectionID != "new" {
+		t.Fatalf("new connected event = %#v", event)
+	}
+
+	hub.Unregister(oldClient)
+	if hub.RefreshPresence(oldClient) {
+		t.Fatal("old connection refreshed presence")
+	}
+	if !hub.RefreshPresence(newClient) {
+		t.Fatal("current connection did not refresh presence")
+	}
+	if event := receivePresenceEvent(t, observer); event.kind != "refreshed" || event.connectionID != "new" {
+		t.Fatalf("refresh event = %#v", event)
+	}
+	select {
+	case event := <-observer.events:
+		t.Fatalf("old connection emitted lifecycle event: %#v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	hub.Unregister(newClient)
+	if event := receivePresenceEvent(t, observer); event.kind != "disconnected" || event.connectionID != "new" {
+		t.Fatalf("disconnect event = %#v", event)
+	}
+}
+
+func TestHubPresenceObserverSeesSlowRemovalAndStop(t *testing.T) {
+	observer := newRecordingPresenceObserver()
+	hub := NewHub()
+	hub.SetPresenceObserver(observer)
+	go hub.Run()
+	slow := testClient(hub, 7, "slow", 1)
+	if !hub.Register(slow) {
+		t.Fatal("register slow")
+	}
+	_ = receivePresenceEvent(t, observer)
+	if hub.SendToUser(7, ServerMessage{Type: MsgPong}) {
+		t.Fatal("slow delivery succeeded")
+	}
+	if event := receivePresenceEvent(t, observer); event.kind != "disconnected" || event.connectionID != "slow" {
+		t.Fatalf("slow disconnect = %#v", event)
+	}
+
+	current := testClient(hub, 8, "current", 4)
+	if !hub.Register(current) {
+		t.Fatal("register current")
+	}
+	_ = receiveServerMessage(t, current.send)
+	_ = receivePresenceEvent(t, observer)
+	hub.Stop()
+	if event := receivePresenceEvent(t, observer); event.kind != "disconnected" || event.connectionID != "current" {
+		t.Fatalf("stop disconnect = %#v", event)
 	}
 }
 

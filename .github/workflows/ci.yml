@@ -36,7 +36,7 @@ jobs:
       - name: Run Go tests
         run: go test ./...
       - name: Race test realtime packages
-        run: go test -race -count=1 ./internal/realtime ./internal/ws ./internal/imws ./internal/router
+        run: go test -race -count=1 ./internal/repo ./internal/service ./internal/realtime ./internal/ws ./internal/imws ./internal/router
       - name: Run Go vet
         run: go vet ./...
 

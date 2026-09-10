@@ -123,3 +123,13 @@ func (r *FriendRepo) FindRelationshipsWithPeers(ctx context.Context, userID uint
 		Find(&rows).Error
 	return rows, err
 }
+
+// ListAcceptedPeerIDs 返回当前用户所有已接受好友的用户 ID。
+func (r *FriendRepo) ListAcceptedPeerIDs(ctx context.Context, userID uint) ([]uint, error) {
+	var peerIDs []uint
+	err := r.db.WithContext(ctx).Model(&model.Friendship{}).
+		Select("CASE WHEN user_low_id = ? THEN user_high_id ELSE user_low_id END", userID).
+		Where("status = ? AND (user_low_id = ? OR user_high_id = ?)", model.FriendshipStatusAccepted, userID, userID).
+		Order("id").Scan(&peerIDs).Error
+	return peerIDs, err
+}

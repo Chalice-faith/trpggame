@@ -103,6 +103,18 @@ func TestFriendRepoListFriendsOnlyReturnsAcceptedParticipantRows(t *testing.T) {
 	assertSQLExpectations(t, mock)
 }
 
+func TestFriendRepoListsAcceptedPeerIDsForPresenceAuthorization(t *testing.T) {
+	repository, mock := newMockFriendRepo(t)
+	mock.ExpectQuery("SELECT CASE WHEN user_low_id = \\? THEN user_high_id ELSE user_low_id END FROM `friendships` WHERE status = \\? AND \\(user_low_id = \\? OR user_high_id = \\?\\) ORDER BY id").
+		WithArgs(uint(7), model.FriendshipStatusAccepted, uint(7), uint(7)).
+		WillReturnRows(sqlmock.NewRows([]string{"peer_id"}).AddRow(8).AddRow(9))
+	peerIDs, err := repository.ListAcceptedPeerIDs(context.Background(), 7)
+	if err != nil || len(peerIDs) != 2 || peerIDs[0] != 8 || peerIDs[1] != 9 {
+		t.Fatalf("ListAcceptedPeerIDs() = (%#v, %v)", peerIDs, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
 func newMockFriendRepo(t *testing.T) (*FriendRepo, sqlmock.Sqlmock) {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New()

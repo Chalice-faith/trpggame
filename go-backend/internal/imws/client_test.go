@@ -109,13 +109,17 @@ func TestClientRejectsOversizedMessages(t *testing.T) {
 }
 
 func TestClientDisconnectsAfterMissingPong(t *testing.T) {
-	wsURL, hub := newTestIMServerWithOptions(t, heartbeatTestOptions())
+	observer := newRecordingPresenceObserver()
+	wsURL, hub := newTestIMServerWithObserver(t, heartbeatTestOptions(), observer)
 	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close()
 	_ = readServerMessage(t, conn)
+	if event := receivePresenceEvent(t, observer); event.kind != "connected" {
+		t.Fatalf("connected event = %#v", event)
+	}
 
 	// 继续读取控制帧，但故意不回复 Pong。
 	conn.SetPingHandler(func(string) error { return nil })
@@ -124,6 +128,9 @@ func TestClientDisconnectsAfterMissingPong(t *testing.T) {
 		t.Fatal("connection stayed open without Pong")
 	}
 	waitForUserDisconnected(t, hub, 7)
+	if event := receivePresenceEvent(t, observer); event.kind != "disconnected" || event.userID != 7 {
+		t.Fatalf("timeout disconnect event = %#v", event)
+	}
 }
 
 func TestClientPongExtendsReadDeadline(t *testing.T) {
@@ -183,6 +190,26 @@ func TestClientPongExtendsReadDeadline(t *testing.T) {
 		t.Fatalf("read delivered message: %v", err)
 	case <-time.After(time.Second):
 		t.Fatal("timed out reading message after Pong heartbeats")
+	}
+}
+
+func TestClientProtocolPongRefreshesCurrentPresence(t *testing.T) {
+	observer := newRecordingPresenceObserver()
+	wsURL, _ := newTestIMServerWithObserver(t, defaultClientOptions(), observer)
+	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readServerMessage(t, conn)
+	if event := receivePresenceEvent(t, observer); event.kind != "connected" {
+		t.Fatalf("connected event = %#v", event)
+	}
+	if err := conn.WriteControl(websocket.PongMessage, nil, time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("write Pong: %v", err)
+	}
+	if event := receivePresenceEvent(t, observer); event.kind != "refreshed" || event.userID != 7 {
+		t.Fatalf("refresh event = %#v", event)
 	}
 }
 

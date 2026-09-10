@@ -47,6 +47,8 @@ const (
 	MsgConnected          MessageType = "connected"
 	MsgError              MessageType = "error"
 	MsgConnectionReplaced MessageType = "connection_replaced"
+	MsgPresence           MessageType = "presence"
+	MsgFriendshipUpdated  MessageType = "friendship_updated"
 )
 
 // ClientMessage 是客户端发送到 IM 通道的严格信封。

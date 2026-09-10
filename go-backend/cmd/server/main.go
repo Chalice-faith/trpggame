@@ -119,8 +119,6 @@ func main() {
 	gameHandler := handler.NewGameHandler(gameService)
 	userRepo := repo.NewUserRepo(db)
 	friendRepo := repo.NewFriendRepo(db)
-	friendService := service.NewFriendService(friendRepo, userRepo, service.OfflinePresenceProvider{}, nil)
-	friendHandler := handler.NewFriendHandler(friendService)
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
@@ -197,8 +195,23 @@ func main() {
 		}
 	})
 	go hub.Run()
+	presenceRepo, err := repo.NewPresenceRepo(redisClient, repo.DefaultPresenceTTL)
+	if err != nil {
+		log.Fatalf("Failed to initialize presence repository: %v", err)
+	}
 	imHub := imws.NewHub()
+	presenceCoordinator := service.NewPresenceCoordinator(presenceRepo, friendRepo, imHub)
+	imHub.SetPresenceObserver(presenceCoordinator)
+	go presenceCoordinator.Run()
 	go imHub.Run()
+	friendshipPublisher := service.NewRealtimeFriendshipPublisher(userRepo, imHub)
+	friendService := service.NewFriendService(
+		friendRepo,
+		userRepo,
+		service.NewRedisPresenceProvider(presenceRepo),
+		friendshipPublisher,
+	)
+	friendHandler := handler.NewFriendHandler(friendService)
 
 	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
 	wsHandlers := router.WebSocketHandlers{
@@ -234,6 +247,7 @@ func main() {
 
 	// 关闭 WebSocket Hub
 	imHub.Stop()
+	presenceCoordinator.Stop()
 	hub.Stop()
 
 	log.Println("Server stopped")
