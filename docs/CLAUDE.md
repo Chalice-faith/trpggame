@@ -166,11 +166,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.1 好友系统
 
+- [x] M2.1-A：状态机、REST/WS、Redis presence 与前端边界设计冻结
 - [ ] MySQL 迁移：`friendships` 表
 - [ ] Go: `friend_repo.go` + `friend_service.go` + `friend_handler.go`
-- [ ] REST 端点：好友申请/接受/拒绝/列表/删除
-- [ ] Vue: `FriendListView.vue`
-- [ ] WebSocket 在线状态推送（`presence` 消息类型）
+- [ ] REST 端点：用户搜索、好友申请/接受/拒绝/列表/删除
+- [ ] Redis connection ID 租约与 IM `PresenceObserver`
+- [ ] Vue: `FriendsView.vue` + 全局 IM Store
+- [ ] WebSocket 在线状态与关系变化推送（`presence`、`friendship_updated`）
 
 #### M2.2 IM 聊天系统
 
@@ -301,6 +303,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | `error` | 错误消息 | 1 |
 | `sync_batch` | 离线消息补推 | 1 |
 | `presence` | 在线状态 | 2 |
+| `friendship_updated` | 好友申请或关系变化 | 2 |
 | `chat_message` | 聊天消息 | 2 |
 | `turn_start` | 回合开始 | 2 |
 | `turn_skip` | 回合跳过 | 2 |
