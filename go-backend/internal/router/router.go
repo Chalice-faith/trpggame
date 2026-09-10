@@ -26,6 +26,7 @@ func Setup(
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
 	gameHandler *handler.GameHandler,
+	friendHandlers ...*handler.FriendHandler,
 ) *gin.Engine {
 	r := gin.New()
 	r.Use(
@@ -41,6 +42,10 @@ func Setup(
 
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)
+	friendHandler := handler.NewFriendHandler(nil)
+	if len(friendHandlers) > 0 && friendHandlers[0] != nil {
+		friendHandler = friendHandlers[0]
+	}
 
 	// WebSocket 端点（鉴权与连接依赖由 main 组装后传入）
 	if wsHandlers.Game != nil {
@@ -76,6 +81,21 @@ func Setup(
 			{
 				users.GET("/me", userHandler.GetProfile)
 				users.PUT("/me", userHandler.UpdateProfile)
+				users.GET("/search", friendHandler.SearchUsers)
+			}
+
+			friendRequests := authorized.Group("/friend-requests")
+			{
+				friendRequests.POST("", friendHandler.SendRequest)
+				friendRequests.GET("", friendHandler.ListRequests)
+				friendRequests.POST("/:requestId/accept", friendHandler.AcceptRequest)
+				friendRequests.POST("/:requestId/reject", friendHandler.RejectRequest)
+			}
+
+			friends := authorized.Group("/friends")
+			{
+				friends.GET("", friendHandler.ListFriends)
+				friends.DELETE("/:friendUserId", friendHandler.DeleteFriend)
 			}
 
 			// 剧本 (Phase 1 M1.3 实现)

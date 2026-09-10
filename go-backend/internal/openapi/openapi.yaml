@@ -1,11 +1,11 @@
 openapi: 3.0.3
 info:
   title: TRPG Game Public API
-  version: 1.0.0-phase1
+  version: 2.1.0-m2.1
   license:
     name: Project license not specified
   description: |
-    TRPG Game Phase 1 对前端开放的 Go REST API。
+    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系接口。
 
     所有业务响应均使用 `code` 和 `message`；除删除剧本外，成功响应还包含 `data`。
     `code = 0` 表示业务成功。WebSocket、Python AI 和 Go 内部回调不属于本公共规范。
@@ -16,7 +16,9 @@ tags:
   - name: Auth
     description: 注册、登录和令牌刷新
   - name: Users
-    description: 当前用户资料
+    description: 当前用户资料与用户搜索
+  - name: Friends
+    description: 好友申请、好友关系与在线状态快照
   - name: Scripts
     description: PDF 剧本上传、查询和管理
   - name: Games
@@ -193,6 +195,164 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
               example: {code: 1104, message: internal error}
+
+  /api/v1/users/search:
+    get:
+      tags: [Users, Friends]
+      summary: 搜索可添加的用户
+      operationId: searchUsers
+      parameters:
+        - name: keyword
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 50}
+          description: 精确用户 ID/用户名，或不少于 2 字符的昵称前缀
+      responses:
+        '200':
+          description: 搜索成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserSearchResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests:
+    post:
+      tags: [Friends]
+      summary: 发送好友申请
+      operationId: sendFriendRequest
+      description: 重复同向申请、反向自动接受和已是好友均幂等返回当前权威关系。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SendFriendRequest'}
+      responses:
+        '200':
+          description: 当前关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400':
+          description: 参数无效（1600）或不能添加自己（1602）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 目标用户不存在（1601）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 好友关系状态冲突（1605）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+    get:
+      tags: [Friends]
+      summary: 查询好友申请
+      operationId: listFriendRequests
+      parameters:
+        - name: direction
+          in: query
+          schema: {type: string, enum: [incoming, outgoing], default: incoming}
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending, rejected], default: pending}
+        - {$ref: '#/components/parameters/FriendCursor'}
+        - {$ref: '#/components/parameters/FriendRequestLimit'}
+      responses:
+        '200':
+          description: 申请列表
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests/{requestId}/accept:
+    post:
+      tags: [Friends]
+      summary: 接受好友申请
+      operationId: acceptFriendRequest
+      parameters:
+        - {$ref: '#/components/parameters/FriendRequestId'}
+      responses:
+        '200':
+          description: 当前权威关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/FriendForbidden'}
+        '404': {$ref: '#/components/responses/FriendRequestNotFound'}
+        '409': {$ref: '#/components/responses/FriendStateConflict'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests/{requestId}/reject:
+    post:
+      tags: [Friends]
+      summary: 拒绝好友申请
+      operationId: rejectFriendRequest
+      parameters:
+        - {$ref: '#/components/parameters/FriendRequestId'}
+      responses:
+        '200':
+          description: 当前权威关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/FriendForbidden'}
+        '404': {$ref: '#/components/responses/FriendRequestNotFound'}
+        '409': {$ref: '#/components/responses/FriendStateConflict'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friends:
+    get:
+      tags: [Friends]
+      summary: 查询好友列表
+      operationId: listFriends
+      parameters:
+        - {$ref: '#/components/parameters/FriendCursor'}
+        - {$ref: '#/components/parameters/FriendLimit'}
+      responses:
+        '200':
+          description: 按稳定关系 ID 倒序分页的好友列表
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friends/{friendUserId}:
+    delete:
+      tags: [Friends]
+      summary: 删除好友
+      operationId: deleteFriend
+      parameters:
+        - {$ref: '#/components/parameters/FriendUserId'}
+      responses:
+        '200':
+          description: 删除成功或重复删除
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SimpleSuccessResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 好友关系不存在（1606）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
 
   /api/v1/scripts/upload:
     post:
@@ -788,6 +948,32 @@ components:
         type: integer
         minimum: 1
         default: 20
+    FriendRequestId:
+      name: requestId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    FriendUserId:
+      name: friendUserId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    FriendCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页最后一条关系的 ID；下一页查询更小的 ID
+      schema: {type: string, pattern: '^[1-9][0-9]*$'}
+    FriendRequestLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    FriendLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
 
   responses:
     Unauthorized:
@@ -843,6 +1029,42 @@ components:
           schema:
             $ref: '#/components/schemas/ApiError'
           example: {code: 1318, message: game runtime unavailable}
+    InvalidFriendRequest:
+      description: 好友请求参数无效（业务码 1600）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1600, message: invalid friend request}
+    InvalidFriendQuery:
+      description: 搜索、分页或游标参数无效（业务码 1607）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1607, message: invalid pagination or cursor}
+    FriendRequestNotFound:
+      description: 好友申请不存在（业务码 1603）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1603, message: friend request not found}
+    FriendForbidden:
+      description: 无权处理好友申请（业务码 1604）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1604, message: friend operation forbidden}
+    FriendStateConflict:
+      description: 好友关系状态冲突（业务码 1605）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1605, message: friendship state conflict}
+    FriendInternalError:
+      description: 好友模块内部错误（业务码 1699）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1699, message: internal error}
 
   schemas:
     ApiError:
@@ -866,6 +1088,118 @@ components:
         message:
           type: string
           example: ok
+
+    PublicUser:
+      type: object
+      required: [id, username, nickname, avatar_url]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        username: {type: string}
+        nickname: {type: string}
+        avatar_url: {type: string}
+
+    FriendshipSummary:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [pending, accepted, rejected]}
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+          description: 仅 pending 关系返回
+
+    UserSearchItem:
+      type: object
+      required: [user, friendship]
+      properties:
+        user: {$ref: '#/components/schemas/PublicUser'}
+        friendship:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/FriendshipSummary'}
+
+    UserSearchResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              maxItems: 20
+              items: {$ref: '#/components/schemas/UserSearchItem'}
+
+    SendFriendRequest:
+      type: object
+      required: [target_user_id]
+      properties:
+        target_user_id: {type: integer, format: int64, minimum: 1}
+
+    FriendRequestItem:
+      type: object
+      required: [id, status, direction, requested_by, peer, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [pending, accepted, rejected]}
+        direction: {type: string, enum: [incoming, outgoing, friend]}
+        requested_by: {type: integer, format: int64, minimum: 1}
+        peer: {$ref: '#/components/schemas/PublicUser'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        responded_at: {type: string, format: date-time, nullable: true}
+
+    FriendRequestResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/FriendRequestItem'}
+
+    FriendRequestPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/FriendRequestItem'}
+            next_cursor: {type: string, nullable: true}
+
+    FriendItem:
+      type: object
+      required: [id, peer, presence, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        peer: {$ref: '#/components/schemas/PublicUser'}
+        presence: {type: string, enum: [online, offline, unknown]}
+        updated_at: {type: string, format: date-time}
+
+    FriendPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/FriendItem'}
+            next_cursor: {type: string, nullable: true}
 
     RegisterRequest:
       type: object

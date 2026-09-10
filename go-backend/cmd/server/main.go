@@ -117,6 +117,10 @@ func main() {
 	}
 	gameService := service.NewGameService(gameRepo, scriptRepo, aiClient, gameStateRepo)
 	gameHandler := handler.NewGameHandler(gameService)
+	userRepo := repo.NewUserRepo(db)
+	friendRepo := repo.NewFriendRepo(db)
+	friendService := service.NewFriendService(friendRepo, userRepo, service.OfflinePresenceProvider{}, nil)
+	friendHandler := handler.NewFriendHandler(friendService)
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
@@ -208,6 +212,7 @@ func main() {
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
+		friendHandler,
 	)
 
 	// 启动服务器

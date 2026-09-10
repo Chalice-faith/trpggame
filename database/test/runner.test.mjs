@@ -12,6 +12,7 @@ function connection({ applied = [], locked = 1 } = {}) {
       if (sql.startsWith('SELECT GET_LOCK')) return [[{ locked }]];
       if (sql.startsWith('SELECT RELEASE_LOCK')) return [[{ released: 1 }]];
       if (sql.includes('information_schema.TABLE_CONSTRAINTS')) return [[{ count: 0 }]];
+      if (sql.includes('information_schema.TABLES')) return [[{ count: 0 }]];
       if (sql.includes('information_schema.STATISTICS')) {
         if (values.length === 2) return [[{ count: 0 }]];
         return [[]];

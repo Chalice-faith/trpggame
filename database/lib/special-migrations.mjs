@@ -89,3 +89,34 @@ export async function removeLegacyForeignKeys(connection) {
     if (await schemaObjectExists(connection, indexQuery, table, name)) await connection.query(`ALTER TABLE \`${table}\` DROP INDEX \`${name}\``);
   }
 }
+
+const friendshipTableQuery = `
+SELECT COUNT(*) AS count
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'friendships'`;
+
+const userNicknameIndexQuery = `
+SELECT NON_UNIQUE, SEQ_IN_INDEX, COLUMN_NAME
+FROM information_schema.STATISTICS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND TABLE_NAME = 'users'
+  AND INDEX_NAME = 'idx_users_nickname_id_deleted'
+ORDER BY SEQ_IN_INDEX`;
+
+// ensureFriendships 将建表与 users 搜索索引作为同一版本迁移执行，同时保持
+// mysql2 的 multipleStatements=false 安全设置。
+export async function ensureFriendships(connection, migrationSQL) {
+  const [tableRows] = await connection.execute(friendshipTableQuery);
+  if (tableRows[0].count === 0) await connection.query(migrationSQL);
+
+  const [indexRows] = await connection.execute(userNicknameIndexQuery);
+  if (indexRows.length > 0) {
+    const expected = ['nickname', 'id', 'deleted_at'];
+    const actual = indexRows.map((row) => row.COLUMN_NAME);
+    if (indexRows.some((row) => row.NON_UNIQUE !== 1) || actual.join(',') !== expected.join(',')) {
+      throw new Error('idx_users_nickname_id_deleted has an incompatible definition');
+    }
+    return;
+  }
+  await connection.query('ALTER TABLE users ADD INDEX idx_users_nickname_id_deleted (nickname, id, deleted_at)');
+}
