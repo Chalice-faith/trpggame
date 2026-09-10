@@ -5,6 +5,7 @@ import { useAuthStore } from '@/stores/auth'
 const LoginView = () => import('@/views/LoginView.vue')
 const RegisterView = () => import('@/views/RegisterView.vue')
 const DashboardView = () => import('@/views/DashboardView.vue')
+const FriendsView = () => import('@/views/FriendsView.vue')
 const ScriptDetailView = () => import('@/views/ScriptDetailView.vue')
 const GameSoloView = () => import('@/views/GameSoloView.vue')
 const GamePlayView = () => import('@/views/GamePlayView.vue')
@@ -30,6 +31,12 @@ const routes: RouteRecordRaw[] = [
     path: '/dashboard',
     name: 'Dashboard',
     component: DashboardView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/friends',
+    name: 'Friends',
+    component: FriendsView,
     meta: { requiresAuth: true }
   },
   {

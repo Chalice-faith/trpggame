@@ -14,6 +14,7 @@ import {
   Plus,
   Refresh,
   SwitchButton,
+  UserFilled,
   UploadFilled,
   View
 } from '@element-plus/icons-vue'
@@ -254,6 +255,7 @@ onBeforeUnmount(() => {
 
       <div class="account">
         <span class="account-name">{{ authStore.user?.nickname || authStore.user?.username }}</span>
+        <el-button text :icon="UserFilled" @click="router.push('/friends')">好友</el-button>
         <el-button text :icon="SwitchButton" @click="handleLogout">退出</el-button>
       </div>
     </header>

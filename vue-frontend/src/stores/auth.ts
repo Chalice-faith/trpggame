@@ -36,17 +36,15 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function login(username: string, password: string) {
     const res = await api.post('/api/v1/auth/login', { username, password })
-    const { access_token, refresh_token, user_id, username: uname } = res.data.data
+    const { access_token, refresh_token } = res.data.data
     setTokens(access_token, refresh_token)
-    user.value = { id: user_id, username: uname } as User
     await fetchProfile()
   }
 
   async function register(username: string, email: string, password: string) {
     const res = await api.post('/api/v1/auth/register', { username, email, password })
-    const { access_token, refresh_token, user_id, username: uname } = res.data.data
+    const { access_token, refresh_token } = res.data.data
     setTokens(access_token, refresh_token)
-    user.value = { id: user_id, username: uname } as User
     await fetchProfile()
   }
 
@@ -55,16 +53,18 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = res.data.data
   }
 
-  async function refreshAccessToken() {
-    if (!refreshToken.value) return
+  async function refreshAccessToken(): Promise<boolean> {
+    if (!refreshToken.value) return false
     try {
       const res = await api.post('/api/v1/auth/refresh', {
         refresh_token: refreshToken.value
       })
       const { access_token, refresh_token } = res.data.data
       setTokens(access_token, refresh_token)
+      return true
     } catch {
       logout()
+      return false
     }
   }
 

@@ -1,10 +1,10 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.0-D
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.1-D
 >
-> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-09 核对）。
+> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-10 核对）。
 >
-> 状态：接口字段和错误码已按源码整理；M2.0-D 自动化回归结果见 [M2.0 验收记录](./M2.0验收记录.md)，真实 Docker 服务、MySQL、Redis、MinIO、Milvus、DeepSeek 和浏览器联调尚未执行。
+> 状态：接口字段和错误码已按源码整理；M2.1 自动化回归结果见 [M2.1 验收记录](./M2.1验收记录.md)，真实 Docker 服务和双账号浏览器联调尚未执行。
 
 这份文档用于在 Swagger UI、Postman 或 `curl` 中手工验收。所有示例均使用 JSON 字段名，不使用 Go/Python 内部字段名。
 
@@ -32,7 +32,9 @@ $IM_WS_URL = "ws://127.0.0.1:8080/ws/im"
 $AI_BASE_URL = "http://127.0.0.1:8000"
 $INTERNAL_SECRET = "<与 INTERNAL_SHARED_SECRET 相同的值>"
 $ACCESS_TOKEN = "<登录返回的 access_token>"
+$ACCESS_TOKEN_B = "<第二个账号的 access_token>"
 $REFRESH_TOKEN = "<登录返回的 refresh_token>"
+$USER_ID_B = "<第二个账号的 user_id>"
 ```
 
 ### 1.2 通用响应格式（Go）
@@ -71,11 +73,13 @@ $REFRESH_TOKEN = "<登录返回的 refresh_token>"
 
 1. `POST /api/v1/auth/register` 创建测试用户。
 2. `POST /api/v1/auth/login` 保存 `access_token` 和 `refresh_token`。
-3. `POST /api/v1/scripts/upload` 上传一个真实 PDF，记录 `script_id`。
-4. 轮询 `GET /api/v1/scripts/{id}`，直到 `status=ready`，并记录一个 `character.id`。
-5. `POST /api/v1/games/solo/start` 创建单人房间，记录 `room_id`。
-6. 连接 `GET /ws?token=...&room_id=...`，先验证 `subscribed`，再发送 `game_action`。
-7. 验证行动事件顺序、存档、读档、暂停、恢复和结束。
+3. 再创建账号 B，用账号 A 搜索 B、发送申请，使用 B 接受申请。
+4. 两个账号分别连接 `/ws/im`，验证好友关系与 online/offline 实时事件。
+5. `POST /api/v1/scripts/upload` 上传一个真实 PDF，记录 `script_id`。
+6. 轮询 `GET /api/v1/scripts/{id}`，直到 `status=ready`，并记录一个 `character.id`。
+7. `POST /api/v1/games/solo/start` 创建单人房间，记录 `room_id`。
+8. 连接 `GET /ws?token=...&room_id=...`，先验证 `subscribed`，再发送 `game_action`。
+9. 验证行动事件顺序、存档、读档、暂停、恢复和结束。
 
 仅验证鉴权或参数校验时，可以跳过真实 PDF、AI 和 Redis。
 
@@ -345,7 +349,71 @@ curl.exe -sS -X POST "$GO_BASE_URL/api/v1/games/$ROOM_ID/end" `
 
 成功：`200`，`data` 为 `{room_id, status:"ended"}`。主要失败：`400/1337`；`404/1311`；`409/1338`；`503/1318`；`500/1339`。
 
-### 3.4 Go 内部回调（仅 Python → Go）
+### 3.4 好友
+
+以下接口都需要 Access Token。搜索结果和好友对象只公开 `id, username, nickname, avatar_url`，不会返回邮箱。
+
+#### GET `/api/v1/users/search?keyword=...` — 搜索用户
+
+`keyword` 可为用户 ID、用户名或昵称，去除首尾空格后长度为 1–50；最多返回 20 项，并排除当前账号和软删除账号。
+
+```powershell
+curl.exe -sS "$GO_BASE_URL/api/v1/users/search?keyword=$USER_ID_B" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+成功：`200`，`data.items` 每项为 `{user, friendship}`。`friendship` 无关系时为 `null`；已有关系时含 `{id,status,direction?}`，`direction` 只在 pending 时为 `incoming` 或 `outgoing`。
+
+#### POST `/api/v1/friend-requests` — 发送好友申请
+
+```powershell
+curl.exe -sS -X POST "$GO_BASE_URL/api/v1/friend-requests" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"target_user_id\":$USER_ID_B}"
+```
+
+成功：`200`，`data` 为申请对象 `{id,status,direction,requested_by,peer,created_at,updated_at,responded_at?}`。记录 `data.id` 为 `$REQUEST_ID`。重复同向请求保持幂等；反向 pending 请求会按状态机合并，不会创建第二条关系。
+
+#### GET `/api/v1/friend-requests` — 查询申请
+
+```powershell
+curl.exe -sS "$GO_BASE_URL/api/v1/friend-requests?direction=incoming&status=pending&limit=20" `
+  -H "Authorization: Bearer $ACCESS_TOKEN_B"
+```
+
+`direction` 为 `incoming` 或 `outgoing`，`status` 为 `pending`、`accepted` 或 `rejected`；默认查询 incoming pending。成功：`200`，`data={items,next_cursor?}`。下一页把 `next_cursor` 原样传入 `cursor`；`limit` 为 1–100。
+
+#### POST `/api/v1/friend-requests/{requestId}/accept|reject` — 响应申请
+
+```powershell
+curl.exe -sS -X POST "$GO_BASE_URL/api/v1/friend-requests/$REQUEST_ID/accept" `
+  -H "Authorization: Bearer $ACCESS_TOKEN_B"
+```
+
+只有收到申请的一方可以响应 pending 关系。成功：`200`，返回更新后的申请对象；接受后 `status=accepted`。将路径末尾改为 `reject` 可拒绝。
+
+#### GET `/api/v1/friends` — 查询好友与在线状态
+
+```powershell
+curl.exe -sS "$GO_BASE_URL/api/v1/friends?limit=50" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+成功：`200`，`data={items,next_cursor?}`，每项为 `{id,peer,presence,updated_at}`。`presence` 为 `online`、`offline` 或 `unknown`；Redis 查询降级时返回 unknown。REST 按关系 ID 稳定分页，客户端可对已加载项做在线优先排序。
+
+#### DELETE `/api/v1/friends/{friendUserId}` — 删除好友
+
+```powershell
+curl.exe -sS -X DELETE "$GO_BASE_URL/api/v1/friends/$USER_ID_B" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+成功：`200`，`{"code":0,"message":"ok"}`。关系软删除后双方均不再是好友，可重新发起申请。
+
+好友接口主要失败：`400/1600` 请求非法、`404/1601` 目标不存在、`400/1602` 不能添加自己、`404/1603` 申请不存在、`403/1604` 无操作权限、`409/1605` 状态冲突、`404/1606` 好友关系不存在、`400/1607` 分页非法、`500/1699` 内部错误。
+
+### 3.5 Go 内部回调（仅 Python → Go）
 
 #### POST `/api/v1/internal/scripts/{id}/status`
 
@@ -475,7 +543,7 @@ ws.onopen = () => {
 
 ### 4.5 Phase 2 IM WebSocket
 
-M2.0-C 已注册用户级 IM 实时通道，连接地址：
+用户级 IM 实时通道连接地址：
 
 ```text
 ${IM_WS_URL}?token=<ACCESS_TOKEN>
@@ -497,7 +565,7 @@ ${IM_WS_URL}?token=<ACCESS_TOKEN>
 }
 ```
 
-当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或 Ping 载荷校验失败、`1705` 类型未支持。`1706`、`1707` 保留到业务消息接入后启用。
+当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或 Ping 载荷校验失败、`1705` 类型未支持。`1706`、`1707` 保留到聊天消息接入后启用。
 
 连接成功后的第一条消息必须为 `connected`。同一账号建立第二条 IM 连接时，旧连接先收到：
 
@@ -522,7 +590,29 @@ im.onopen = () => im.send(JSON.stringify({
 im.onclose = (event) => console.log(event.code, event.reason);
 ```
 
-M2.0-C 只支持 `ping`。`chat_message`、好友、群聊、presence 和离线同步尚未实现，发送这些类型会返回 `error / 1705`。
+好友状态变化时，双方在线连接会收到权威关系刷新提示：
+
+```json
+{
+  "type":"friendship_updated",
+  "timestamp":1789056000000,
+  "data":{
+    "friendship_id":31,
+    "status":"accepted",
+    "requested_by":7,
+    "peer":{"id":8,"username":"player08","nickname":"调查员","avatar_url":""},
+    "updated_at":"2026-09-10T10:00:00Z"
+  }
+}
+```
+
+好友的 IM 连接上线或下线时会收到：
+
+```json
+{"type":"presence","timestamp":1789056000000,"data":{"user_id":8,"status":"online"}}
+```
+
+`friendship_updated` 的 `status` 可为 `pending`、`accepted`、`rejected`、`removed`；收到后应重新查询受影响的 REST 列表。`presence` 在 M2.1 推送中只使用 online/offline，unknown 只用于 REST 查询降级。客户端仍只允许主动发送 `ping`；`chat_message`、群聊和离线同步尚未实现，发送未支持类型会返回 `error / 1705`。
 
 安全要求：服务端默认访问日志不记录 `/ws` 与 `/ws/im` 的查询串，接口测试和问题反馈中也不要复制包含真实 Token 的完整连接地址。
 
@@ -632,9 +722,17 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 - [ ] 手动存档、列表、读档、暂停、恢复、结束状态正确。
 - [ ] 断线重连后 `sync` 能补齐缺失 `seq`，不会重复应用事件。
 
+### 6.4 好友与在线状态
+
+- [ ] 使用两个真实账号完成搜索、申请、接受、拒绝、删除与删除后重加。
+- [ ] 两个账号同时连接 `/ws/im`，验证 online/offline 实时变化。
+- [ ] 关系变化触发 `friendship_updated`，刷新 REST 后双方列表一致。
+- [ ] 同账号第二页面接管连接，旧页面收到事件并以 4001 关闭，且不再重连。
+- [ ] 关闭 Redis 时好友 REST 将 presence 降级为 unknown，不泄露非好友状态。
+
 ## 7. 当前已知边界
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
 - `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- 游戏通道中的 `chat_message` 仍未接通；独立 `/ws/im` 已提供连接、接管和 Ping/Pong 基础，但好友、聊天、群组及离线同步仍未实现。
+- 游戏通道中的 `chat_message` 仍未接通；独立 `/ws/im` 已提供连接、接管、好友关系事件与在线状态，聊天、群组及离线同步仍未实现。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。
