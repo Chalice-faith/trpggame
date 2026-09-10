@@ -171,7 +171,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] Go: `friend_repo.go` + `friend_service.go` + `friend_handler.go`
 - [x] REST 端点：用户搜索、好友申请/接受/拒绝/列表/删除
 - [x] Redis connection ID 租约与 IM `PresenceObserver`
-- [ ] Vue: `FriendsView.vue` + 全局 IM Store
+- [x] Vue: `FriendsView.vue` + 全局 IM Store
 - [x] WebSocket 在线状态与关系变化推送（`presence`、`friendship_updated`）
 
 #### M2.2 IM 聊天系统
