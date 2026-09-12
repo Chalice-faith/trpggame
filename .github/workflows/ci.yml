@@ -71,8 +71,8 @@ jobs:
       - run: npm ci
       - run: npm run db:test
 
-  friend-mysql:
-    name: Friend concurrency (MySQL 8.4)
+  social-mysql:
+    name: Social persistence (MySQL 8.4)
     runs-on: ubuntu-latest
     services:
       mysql:
@@ -109,9 +109,9 @@ jobs:
           TRPG_MIGRATIONS_DATABASE: trpggame
           TRPG_MIGRATIONS_USER: trpg
           TRPG_MIGRATIONS_PASSWORD: trpg123
-      - name: Run friendship concurrency integration tests
+      - name: Run social persistence integration tests
         working-directory: go-backend
-        run: go test -tags=integration -count=1 ./internal/service -run TestFriendServiceMySQL84Concurrency
+        run: go test -tags=integration -count=1 ./internal/service -run 'Test(Friend|Chat)ServiceMySQL84Concurrency'
         env:
           TRPG_TEST_MYSQL_DSN: "trpg:trpg123@tcp(127.0.0.1:3306)/trpggame?charset=utf8mb4&parseTime=True&loc=UTC"
 

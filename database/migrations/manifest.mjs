@@ -9,6 +9,9 @@ export const orderedMigrationNames = [
   '008_add_auto_save_uniqueness.sql',
   '009_remove_foreign_keys.sql',
   '010_create_friendships.sql',
+  '011_create_conversations.sql',
+  '012_create_conversation_members.sql',
+  '013_create_messages.sql',
 ];
 
 export const historicalMigrationChecksums = new Map([

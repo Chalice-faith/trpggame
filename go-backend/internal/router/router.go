@@ -16,6 +16,12 @@ type WebSocketHandlers struct {
 	IM   gin.HandlerFunc
 }
 
+// RESTHandlers 收拢由 main 组装的业务 Handler；省略时仍注册路由，便于契约和鉴权测试。
+type RESTHandlers struct {
+	Friend *handler.FriendHandler
+	Chat   *handler.ChatHandler
+}
+
 var websocketLogSkipPaths = []string{"/ws", "/ws/im"}
 
 // Setup 初始化所有路由并返回 Gin Engine
@@ -26,7 +32,7 @@ func Setup(
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
 	gameHandler *handler.GameHandler,
-	friendHandlers ...*handler.FriendHandler,
+	restHandlers ...RESTHandlers,
 ) *gin.Engine {
 	r := gin.New()
 	r.Use(
@@ -43,8 +49,14 @@ func Setup(
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)
 	friendHandler := handler.NewFriendHandler(nil)
-	if len(friendHandlers) > 0 && friendHandlers[0] != nil {
-		friendHandler = friendHandlers[0]
+	chatHandler := handler.NewChatHandler(nil)
+	if len(restHandlers) > 0 {
+		if restHandlers[0].Friend != nil {
+			friendHandler = restHandlers[0].Friend
+		}
+		if restHandlers[0].Chat != nil {
+			chatHandler = restHandlers[0].Chat
+		}
 	}
 
 	// WebSocket 端点（鉴权与连接依赖由 main 组装后传入）
@@ -96,6 +108,14 @@ func Setup(
 			{
 				friends.GET("", friendHandler.ListFriends)
 				friends.DELETE("/:friendUserId", friendHandler.DeleteFriend)
+			}
+
+			conversations := authorized.Group("/conversations")
+			{
+				conversations.POST("/direct", chatHandler.CreateDirect)
+				conversations.GET("", chatHandler.ListConversations)
+				conversations.GET("/:conversationId/messages", chatHandler.ListMessages)
+				conversations.POST("/:conversationId/read", chatHandler.MarkRead)
 			}
 
 			// 剧本 (Phase 1 M1.3 实现)

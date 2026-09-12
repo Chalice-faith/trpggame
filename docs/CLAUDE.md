@@ -177,8 +177,9 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 #### M2.2 IM 聊天系统
 
 - [x] M2.2-A：私聊、发送幂等、会话 seq、已读水位与断线恢复设计冻结
-- [ ] Go: `chat_service.go` — 私聊会话与消息持久化
-- [ ] Go: `chat_handler.go` — 消息 REST 端点（历史消息拉取）
+- [x] MySQL 迁移：`conversations` + `conversation_members` + `messages`
+- [x] Go: `chat_repo.go` + `chat_service.go` — 私聊会话、连续 seq 与发送幂等
+- [x] Go: `chat_handler.go` — 会话创建/列表、历史消息和已读水位 REST
 - [ ] WebSocket `chat_message` 类型双向通信
 - [ ] MySQL 会话 seq + `im_sync` 断线补推
 - [ ] Vue: `stores/chat.ts` — 聊天状态管理
@@ -377,9 +378,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成代码级收尾，M2.2-A 私聊与可靠消息设计已冻结
-- **文档状态**：Phase 2 规划、M2.0—M2.2 实施方案、未完成事项、技术设计及暂停交接已同步；M2.2-B 尚未开始
-- **代码状态**：M2.1 已完成好友持久化与 REST、Redis presence、IM 好友事件和 Vue 好友闭环；M2.2 尚无迁移或生产代码
-- **验证状态**：M2.1 实现对应 GitHub Actions CI #32 的 7 个作业通过；真实依赖、M2.0 部署及 M2.1 双账号浏览器验收仍未执行
+- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成代码级收尾，M2.2-A、M2.2-B 已完成
+- **文档状态**：Phase 2 规划、M2.0—M2.2 实施方案、未完成事项、技术设计及暂停交接已同步；M2.2-C 尚未开始
+- **代码状态**：M2.2 已完成 011—013 迁移、私聊会话/消息持久化、连续 seq、发送幂等、历史/已读 REST 和 OpenAPI；尚未接 WebSocket 聊天业务
+- **验证状态**：M2.2-B 已通过 Go 全量测试、OpenAPI、迁移测试和临时 MySQL 8.4 空库/结构/并发验证；真实依赖与浏览器验收仍未执行
 - **提交状态**：M2.0、M2.1 已按评审块提交，详细记录见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：等待开发者确认后进入 M2.2-B，按冻结方案实现 011—013 迁移、私聊持久化、REST、OpenAPI 与 MySQL 8.4 并发测试
+- **下一步**：等待开发者确认后进入 M2.2-C，接入 `chat_message`/`chat_ack`、`conversation_updated`、`im_sync`/`im_sync_batch` 和 32 KiB IM 文本帧

@@ -1,11 +1,11 @@
 openapi: 3.0.3
 info:
   title: TRPG Game Public API
-  version: 2.1.0-m2.1
+  version: 2.2.0-m2.2-b
   license:
     name: Project license not specified
   description: |
-    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系接口。
+    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系和 M2.2-B 私聊持久化接口。
 
     所有业务响应均使用 `code` 和 `message`；除删除剧本外，成功响应还包含 `data`。
     `code = 0` 表示业务成功。WebSocket、Python AI 和 Go 内部回调不属于本公共规范。
@@ -19,6 +19,8 @@ tags:
     description: 当前用户资料与用户搜索
   - name: Friends
     description: 好友申请、好友关系与在线状态快照
+  - name: Conversations
+    description: 私聊会话、历史消息与当前用户已读水位
   - name: Scripts
     description: PDF 剧本上传、查询和管理
   - name: Games
@@ -353,6 +355,95 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ApiError'}
         '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/conversations/direct:
+    post:
+      tags: [Conversations]
+      summary: 获取或创建好友私聊
+      operationId: createDirectConversation
+      description: 双方并发调用仍返回同一个会话；删除好友后保留旧会话，但不能通过本接口恢复发送权限。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateDirectConversationRequest'}
+      responses:
+        '200':
+          description: 当前用户视角的私聊摘要
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/FriendshipRequired'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations:
+    get:
+      tags: [Conversations]
+      summary: 查询当前用户的私聊会话
+      operationId: listConversations
+      parameters:
+        - {$ref: '#/components/parameters/ConversationCursor'}
+        - {$ref: '#/components/parameters/ConversationLimit'}
+      responses:
+        '200':
+          description: 按最近活动时间和会话 ID 倒序排列的会话页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations/{conversationId}/messages:
+    get:
+      tags: [Conversations]
+      summary: 查询私聊历史消息
+      operationId: listConversationMessages
+      description: 数据库向旧消息查询，响应 items 始终按 seq 升序。
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+        - name: before_seq
+          in: query
+          required: false
+          description: 只返回 seq 小于该值的消息；省略时返回最新一页
+          schema: {type: integer, format: int64, minimum: 1}
+        - {$ref: '#/components/parameters/MessageLimit'}
+      responses:
+        '200':
+          description: 历史消息页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePageResponse'}
+        '400': {$ref: '#/components/responses/InvalidMessageQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/ConversationNotFound'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations/{conversationId}/read:
+    post:
+      tags: [Conversations]
+      summary: 单调推进当前用户的已读水位
+      operationId: markConversationRead
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarkConversationReadRequest'}
+      responses:
+        '200':
+          description: 当前权威已读水位与未读数
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReadResultResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/ConversationNotFound'}
+        '409': {$ref: '#/components/responses/ReadSequenceConflict'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
 
   /api/v1/scripts/upload:
     post:
@@ -974,6 +1065,27 @@ components:
       in: query
       required: false
       schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    ConversationCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 服务端生成的 opaque base64url 游标，客户端不得解析或构造
+      schema: {type: string, minLength: 1, maxLength: 64}
+    ConversationLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    MessageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
 
   responses:
     Unauthorized:
@@ -1065,6 +1177,42 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ApiError'}
           example: {code: 1699, message: internal error}
+    InvalidConversationRequest:
+      description: 会话请求、ID、分页参数或游标无效（业务码 1708）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1708, message: invalid conversation request}
+    ConversationNotFound:
+      description: 会话不存在或当前用户不是成员（业务码 1709）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1709, message: conversation not found}
+    FriendshipRequired:
+      description: 当前双方不是已接受好友（业务码 1710）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1710, message: friendship required}
+    InvalidMessageQuery:
+      description: 历史消息分页参数无效（业务码 1713）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1713, message: invalid message query}
+    ReadSequenceConflict:
+      description: 已读水位超过会话当前 seq（业务码 1714）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1714, message: read sequence conflict}
+    ChatUnavailable:
+      description: 会话或消息服务内部错误（业务码 1716）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1716, message: chat unavailable}
 
   schemas:
     ApiError:
@@ -1200,6 +1348,110 @@ components:
               type: array
               items: {$ref: '#/components/schemas/FriendItem'}
             next_cursor: {type: string, nullable: true}
+
+    CreateDirectConversationRequest:
+      type: object
+      required: [peer_user_id]
+      additionalProperties: false
+      properties:
+        peer_user_id: {type: integer, format: int64, minimum: 1}
+
+    Message:
+      type: object
+      required: [id, conversation_id, seq, sender, client_message_id, message_type, content, metadata, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        conversation_id: {type: integer, format: int64, minimum: 1}
+        seq: {type: integer, format: int64, minimum: 1}
+        sender:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/PublicUser'}
+        client_message_id: {type: string, format: uuid}
+        message_type: {type: string, enum: [text, system]}
+        content: {type: string, maxLength: 4000}
+        metadata: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    Conversation:
+      type: object
+      required: [id, type, peer, can_send, last_seq, last_read_seq, unread_count, last_message, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        type: {type: string, enum: [direct]}
+        peer: {$ref: '#/components/schemas/PublicUser'}
+        can_send: {type: boolean}
+        last_seq: {type: integer, format: int64, minimum: 0}
+        last_read_seq: {type: integer, format: int64, minimum: 0}
+        unread_count: {type: integer, format: int64, minimum: 0}
+        last_message:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/Message'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    ConversationResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/Conversation'}
+
+    ConversationPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Conversation'}
+            next_cursor: {type: string, nullable: true}
+
+    MessagePageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_before_seq, has_more]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Message'}
+            next_before_seq: {type: integer, format: int64, minimum: 0}
+            has_more: {type: boolean}
+
+    MarkConversationReadRequest:
+      type: object
+      required: [last_read_seq]
+      additionalProperties: false
+      properties:
+        last_read_seq: {type: integer, format: int64, minimum: 0}
+
+    ReadResultResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [conversation_id, last_read_seq, unread_count]
+          properties:
+            conversation_id: {type: integer, format: int64, minimum: 1}
+            last_read_seq: {type: integer, format: int64, minimum: 0}
+            unread_count: {type: integer, format: int64, minimum: 0}
 
     RegisterRequest:
       type: object

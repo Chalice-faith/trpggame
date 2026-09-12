@@ -212,6 +212,9 @@ func main() {
 		friendshipPublisher,
 	)
 	friendHandler := handler.NewFriendHandler(friendService)
+	chatRepo := repo.NewChatRepo(db)
+	chatService := service.NewChatService(chatRepo, userRepo)
+	chatHandler := handler.NewChatHandler(chatService)
 
 	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
 	wsHandlers := router.WebSocketHandlers{
@@ -225,7 +228,7 @@ func main() {
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
-		friendHandler,
+		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler},
 	)
 
 	// 启动服务器
