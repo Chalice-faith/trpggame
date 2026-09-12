@@ -176,12 +176,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.2 IM 聊天系统
 
-- [ ] Go: `chat_service.go` — 私聊/群聊/消息持久化
+- [x] M2.2-A：私聊、发送幂等、会话 seq、已读水位与断线恢复设计冻结
+- [ ] Go: `chat_service.go` — 私聊会话与消息持久化
 - [ ] Go: `chat_handler.go` — 消息 REST 端点（历史消息拉取）
 - [ ] WebSocket `chat_message` 类型双向通信
-- [ ] 离线消息 Redis 队列 + 重连补推
+- [ ] MySQL 会话 seq + `im_sync` 断线补推
 - [ ] Vue: `stores/chat.ts` — 聊天状态管理
-- [ ] Vue: `ChatPanel.vue` + `GroupChatView.vue`
+- [ ] Vue: `ChatView.vue` — 会话列表与私聊面板
 
 #### M2.3 群组系统
 
@@ -376,9 +377,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中；WebSocket 事件信封、鉴权订阅、补推和行动流式链路已完成，前端最小闭环已完成，等待真实服务联调
-- **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
-- **代码状态**：M1.5 已完成通用 MySQL 迁移、Redis 运行态/快照、快速开始、同步行动、手动/自动存档、存档列表、读档、暂停、恢复与结束 REST 闭环；WebSocket 行动流式事件链路及 Vue 单人游戏前端（状态面板、存档工具栏、骰子反馈）完成
-- **验证状态**：Go 全量测试、`go vet ./...`、`go build ./...`、`git diff --check` 通过；`go test -race ./...` 此前在 WSL 容器通过，Windows 本机无 CGO 无法运行；真实 MySQL、Redis、Python 与 Docker 端到端联调仍暂缓
-- **提交状态**：数据库迁移执行器和 M1.5 后端生命周期、WebSocket 基础层已按模块提交，详见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：等待开发者部署并完成真实 MySQL、Redis、Python、DeepSeek、Milvus、MinIO 和 Docker Compose 接口联调，再根据结果进行 Phase 1 验收
+- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成代码级收尾，M2.2-A 私聊与可靠消息设计已冻结
+- **文档状态**：Phase 2 规划、M2.0—M2.2 实施方案、未完成事项、技术设计及暂停交接已同步；M2.2-B 尚未开始
+- **代码状态**：M2.1 已完成好友持久化与 REST、Redis presence、IM 好友事件和 Vue 好友闭环；M2.2 尚无迁移或生产代码
+- **验证状态**：M2.1 实现对应 GitHub Actions CI #32 的 7 个作业通过；真实依赖、M2.0 部署及 M2.1 双账号浏览器验收仍未执行
+- **提交状态**：M2.0、M2.1 已按评审块提交，详细记录见 [开发暂停交接.md](./开发暂停交接.md)
+- **下一步**：等待开发者确认后进入 M2.2-B，按冻结方案实现 011—013 迁移、私聊持久化、REST、OpenAPI 与 MySQL 8.4 并发测试
