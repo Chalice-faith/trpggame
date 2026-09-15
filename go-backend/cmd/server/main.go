@@ -215,6 +215,9 @@ func main() {
 	chatRepo := repo.NewChatRepo(db)
 	chatService := service.NewChatService(chatRepo, userRepo)
 	chatHandler := handler.NewChatHandler(chatService)
+	groupRepo := repo.NewGroupRepo(db)
+	groupService := service.NewGroupService(groupRepo)
+	groupHandler := handler.NewGroupHandler(groupService)
 	chatRealtime := service.NewChatRealtime(chatService, imHub)
 	imHub.SetInboundHandler(chatRealtime)
 
@@ -230,7 +233,7 @@ func main() {
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
-		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler},
+		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler, Group: groupHandler},
 	)
 
 	// 启动服务器

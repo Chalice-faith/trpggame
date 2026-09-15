@@ -24,8 +24,15 @@ type ConversationRecord struct {
 	LastReadSeq      uint64
 	ActivityAt       time.Time
 	Peer             model.User
+	Group            *GroupConversationRecord
 	FriendshipStatus model.FriendshipStatus
 	LastMessage      *model.Message
+}
+
+type GroupConversationRecord struct {
+	Group           model.Group
+	CurrentUserRole model.GroupRole
+	MemberCount     int
 }
 
 type SendMessageResult struct {
@@ -36,8 +43,8 @@ type SendMessageResult struct {
 type conversationRecordRow struct {
 	ID               uint
 	Type             model.ConversationType
-	DirectLowID      uint
-	DirectHighID     uint
+	DirectLowID      *uint
+	DirectHighID     *uint
 	GroupID          *uint
 	LastSeq          uint64
 	LastMessageAt    *time.Time
@@ -50,6 +57,14 @@ type conversationRecordRow struct {
 	PeerNickname     string
 	PeerAvatarURL    string
 	FriendshipStatus model.FriendshipStatus
+	GroupName        string
+	GroupAvatarURL   string
+	GroupOwnerID     uint
+	GroupVersion     uint64
+	GroupCreatedAt   *time.Time
+	GroupUpdatedAt   *time.Time
+	GroupRole        model.GroupRole
+	GroupMemberCount int
 	LastMessageID    *uint
 	LastMessageSeq   *uint64
 	LastSenderID     *uint
@@ -130,19 +145,26 @@ func (r *ChatRepo) queryConversations(ctx context.Context, userID uint, extra st
  COALESCE(c.last_message_at, c.created_at) AS activity_at,
  peer.id AS peer_id, peer.username AS peer_username, peer.nickname AS peer_nickname,
  peer.avatar_url AS peer_avatar_url, COALESCE(f.status, '') AS friendship_status,
+ g.name AS group_name, g.avatar_url AS group_avatar_url, g.owner_id AS group_owner_id,
+ g.version AS group_version, g.created_at AS group_created_at, g.updated_at AS group_updated_at,
+ gm.role AS group_role,
+ CASE WHEN g.id IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM group_members active_members WHERE active_members.group_id = g.id AND active_members.status = 'active') END AS group_member_count,
  lm.id AS last_message_id, lm.seq AS last_message_seq, lm.sender_id AS last_sender_id,
  lm.client_message_id AS last_client_id, lm.message_type AS last_message_type,
  lm.content AS last_content, lm.metadata AS last_metadata, lm.created_at AS last_created_at
 FROM conversations c
 JOIN conversation_members me ON me.conversation_id = c.id AND me.user_id = ? AND me.status = 'active'
-JOIN users peer ON peer.id = CASE WHEN c.direct_low_id = ? THEN c.direct_high_id ELSE c.direct_low_id END
+LEFT JOIN users peer ON c.type = 'direct'
+ AND peer.id = CASE WHEN c.direct_low_id = ? THEN c.direct_high_id ELSE c.direct_low_id END
  AND peer.deleted_at IS NULL
 LEFT JOIN friendships f ON f.user_low_id = c.direct_low_id AND f.user_high_id = c.direct_high_id
+LEFT JOIN ` + "`groups`" + ` g ON c.type = 'group' AND g.id = c.group_id
+LEFT JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = ? AND gm.status = 'active'
 LEFT JOIN messages lm ON lm.conversation_id = c.id AND lm.seq = c.last_seq
-WHERE c.type = 'direct'` + extra + `
+WHERE ((c.type = 'direct' AND peer.id IS NOT NULL) OR (c.type = 'group' AND g.id IS NOT NULL AND gm.id IS NOT NULL))` + extra + `
 ORDER BY COALESCE(c.last_message_at, c.created_at) DESC, c.id DESC
 LIMIT ?`
-	args := []any{userID, userID}
+	args := []any{userID, userID, userID}
 	args = append(args, extraArgs...)
 	args = append(args, limit)
 	var rows []conversationRecordRow
@@ -151,15 +173,24 @@ LIMIT ?`
 	}
 	result := make([]ConversationRecord, 0, len(rows))
 	for _, row := range rows {
-		low, high := row.DirectLowID, row.DirectHighID
 		record := ConversationRecord{
 			Conversation: model.Conversation{
-				ID: row.ID, Type: row.Type, DirectLowID: &low, DirectHighID: &high, GroupID: row.GroupID,
+				ID: row.ID, Type: row.Type, DirectLowID: row.DirectLowID, DirectHighID: row.DirectHighID, GroupID: row.GroupID,
 				LastSeq: row.LastSeq, LastMessageAt: row.LastMessageAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
 			},
 			LastReadSeq: row.LastReadSeq, ActivityAt: row.ActivityAt,
 			Peer:             model.User{ID: row.PeerID, Username: row.PeerUsername, Nickname: row.PeerNickname, AvatarURL: row.PeerAvatarURL},
 			FriendshipStatus: row.FriendshipStatus,
+		}
+		if row.Type == model.ConversationTypeGroup && row.GroupID != nil && row.GroupCreatedAt != nil && row.GroupUpdatedAt != nil {
+			record.Group = &GroupConversationRecord{
+				Group: model.Group{
+					ID: *row.GroupID, Name: row.GroupName, AvatarURL: row.GroupAvatarURL,
+					OwnerID: row.GroupOwnerID, Version: row.GroupVersion,
+					CreatedAt: *row.GroupCreatedAt, UpdatedAt: *row.GroupUpdatedAt,
+				},
+				CurrentUserRole: row.GroupRole, MemberCount: row.GroupMemberCount,
+			}
 		}
 		if row.LastMessageID != nil && row.LastMessageSeq != nil && row.LastSenderID != nil && row.LastClientID != nil && row.LastMessageType != nil && row.LastContent != nil && row.LastCreatedAt != nil {
 			record.LastMessage = &model.Message{
@@ -270,17 +301,41 @@ func (r *ChatRepo) SendMessage(ctx context.Context, userID, conversationID uint,
 			}
 			return err
 		}
-		if !snapshot.IncludesDirectUser(userID) || snapshot.DirectLowID == nil || snapshot.DirectHighID == nil {
+		switch snapshot.Type {
+		case model.ConversationTypeDirect:
+			if !snapshot.IncludesDirectUser(userID) || snapshot.DirectLowID == nil || snapshot.DirectHighID == nil {
+				return ErrChatConversationMissing
+			}
+			if err := lockAcceptedFriendship(tx, *snapshot.DirectLowID, *snapshot.DirectHighID); err != nil {
+				return err
+			}
+		case model.ConversationTypeGroup:
+			if snapshot.GroupID == nil {
+				return ErrChatConversationMissing
+			}
+			var group model.Group
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&group, *snapshot.GroupID).Error; err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrChatConversationMissing
+				}
+				return err
+			}
+			if _, err := loadActiveGroupMember(tx, group.ID, userID, true); err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return ErrChatConversationMissing
+				}
+				return err
+			}
+		default:
 			return ErrChatConversationMissing
-		}
-		if err := lockAcceptedFriendship(tx, *snapshot.DirectLowID, *snapshot.DirectHighID); err != nil {
-			return err
 		}
 		var conversation model.Conversation
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&conversation, conversationID).Error; err != nil {
 			return err
 		}
-		if !conversation.IncludesDirectUser(userID) {
+		if conversation.Type != snapshot.Type ||
+			(conversation.Type == model.ConversationTypeDirect && !conversation.IncludesDirectUser(userID)) ||
+			(conversation.Type == model.ConversationTypeGroup && (conversation.GroupID == nil || snapshot.GroupID == nil || *conversation.GroupID != *snapshot.GroupID)) {
 			return ErrChatConversationMissing
 		}
 		var member model.ConversationMember

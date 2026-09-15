@@ -144,6 +144,22 @@ func TestChatServiceConversationCursorAndUnreadSemantics(t *testing.T) {
 	}
 }
 
+func TestChatServiceProjectsGroupConversationSummary(t *testing.T) {
+	now := time.Now().UTC()
+	repository := &chatRepoStub{rows: []repo.ConversationRecord{{
+		Conversation: model.Conversation{ID: 41, Type: model.ConversationTypeGroup, LastSeq: 3, CreatedAt: now, UpdatedAt: now},
+		LastReadSeq:  1, ActivityAt: now,
+		Group: &repo.GroupConversationRecord{
+			Group: model.Group{ID: 9, Name: "调查局", Version: 2}, CurrentUserRole: model.GroupRoleAdmin, MemberCount: 3,
+		},
+	}}}
+	page, err := NewChatService(repository, chatUsersStub{}).ListConversations(context.Background(), 7, "", 20)
+	if err != nil || len(page.Items) != 1 || page.Items[0].Peer != nil || page.Items[0].Group == nil ||
+		page.Items[0].Group.ID != 9 || page.Items[0].Group.CurrentUserRole != model.GroupRoleAdmin || !page.Items[0].CanSend {
+		t.Fatalf("group conversation = (%#v, %v)", page, err)
+	}
+}
+
 func TestChatServiceHistoryReturnsAscendingPageAndNextBoundary(t *testing.T) {
 	now := time.Now().UTC()
 	repository := &chatRepoStub{messages: []model.Message{

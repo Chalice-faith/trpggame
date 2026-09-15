@@ -6,7 +6,8 @@ import { orderedMigrationNames } from '../migrations/manifest.mjs';
 const readMigration = (name) => readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
 
 test('registers M2.2 conversation migrations in dependency order', () => {
-  assert.deepEqual(orderedMigrationNames.slice(-3), [
+  const start = orderedMigrationNames.indexOf('011_create_conversations.sql');
+  assert.deepEqual(orderedMigrationNames.slice(start, start + 3), [
     '011_create_conversations.sql',
     '012_create_conversation_members.sql',
     '013_create_messages.sql',

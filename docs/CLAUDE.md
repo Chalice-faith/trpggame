@@ -187,8 +187,10 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.3 群组系统
 
-- [ ] MySQL 迁移：`groups` 表 + `group_members` 表
-- [ ] Go: Group CRUD + 成员管理 Service/Handler
+- [x] M2.3-A：群规模、邀请/离群、角色权限、历史可见性、版本、系统消息和 IM 限流设计冻结
+- [x] MySQL 迁移：`groups` 表 + `group_members` 表
+- [x] Go: Group CRUD + 成员管理 Service/Handler + REST/OpenAPI + 群会话摘要联合
+- [ ] WebSocket：群成员扇出、群变化事件与每连接 IM 限流
 - [ ] Vue: 群聊列表 + 群管理界面
 - [ ] AI 拉群功能（AI 主持人账号加入群聊）
 
@@ -242,9 +244,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 007_create_game_saves.sql         # 已实现
 008_add_auto_save_uniqueness.sql # 已实现
 009_remove_foreign_keys.sql      # 已实现
-010_create_groups.sql              # Phase 2
-011_create_group_members.sql       # Phase 2
-012_create_key_events.sql          # Phase 3
+010_create_friendships.sql         # M2.1，已实现
+011_create_conversations.sql       # M2.2，已实现
+012_create_conversation_members.sql # M2.2，已实现
+013_create_messages.sql            # M2.2，已实现
+014_create_groups.sql              # M2.3
+015_create_group_members.sql       # M2.3
+016_create_key_events.sql          # Phase 3，暂定
 ```
 
 ---
@@ -383,4 +389,4 @@ docker compose logs -f go-backend python-ai
 - **代码状态**：M2.2 已完成持久化/REST、WebSocket 可靠投递，以及 Vue 会话列表、历史分页、乐观发送、ack、失败重试、未读/已读、重连同步和历史只读边界；DEV-007/008 已解决
 - **验证状态**：Go/Vue/Python/OpenAPI/数据库/Compose、本地 MySQL 8.4 与 Linux targeted race 全部通过；提交 `8260628` 的 CI 已由开发者确认通过，真实双账号浏览器已验证双向消息、未读、刷新/离线恢复、好友边界和连接接管
 - **提交状态**：M2.2-C 功能提交为 `d74f657`，评审改进项为 `1678e71`；M2.2-D 提交为 `8260628`，完整证据见 [M2.2验收记录.md](./M2.2验收记录.md)
-- **下一步**：等待开发者确认进入 M2.3-A 群组系统契约与数据模型设计；设计冻结前不直接实现群聊
+- **下一步**：提交 M2.3-A/B 并确认 CI，通过后进入 M2.3-C 群实时投递与每连接 IM 限流

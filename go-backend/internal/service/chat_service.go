@@ -56,17 +56,27 @@ type MessageItem struct {
 }
 
 type ConversationSummary struct {
-	ID          uint         `json:"id"`
-	Type        string       `json:"type"`
-	Peer        PublicUser   `json:"peer"`
-	CanSend     bool         `json:"can_send"`
-	LastSeq     uint64       `json:"last_seq"`
-	LastReadSeq uint64       `json:"last_read_seq"`
-	UnreadCount uint64       `json:"unread_count"`
-	LastMessage *MessageItem `json:"last_message"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
+	ID          uint                      `json:"id"`
+	Type        string                    `json:"type"`
+	Peer        *PublicUser               `json:"peer"`
+	Group       *ConversationGroupSummary `json:"group"`
+	CanSend     bool                      `json:"can_send"`
+	LastSeq     uint64                    `json:"last_seq"`
+	LastReadSeq uint64                    `json:"last_read_seq"`
+	UnreadCount uint64                    `json:"unread_count"`
+	LastMessage *MessageItem              `json:"last_message"`
+	CreatedAt   time.Time                 `json:"created_at"`
+	UpdatedAt   time.Time                 `json:"updated_at"`
 	activityAt  time.Time
+}
+
+type ConversationGroupSummary struct {
+	ID              uint            `json:"id"`
+	Name            string          `json:"name"`
+	AvatarURL       string          `json:"avatar_url"`
+	CurrentUserRole model.GroupRole `json:"current_user_role"`
+	MemberCount     int             `json:"member_count"`
+	Version         uint64          `json:"version"`
 }
 
 type ConversationPage struct {
@@ -258,12 +268,23 @@ func conversationSummary(record repo.ConversationRecord, senders map[uint]model.
 		lastRead = record.Conversation.LastSeq
 	}
 	result := ConversationSummary{
-		ID: record.Conversation.ID, Type: string(record.Conversation.Type), Peer: publicUser(record.Peer),
-		CanSend: record.FriendshipStatus == model.FriendshipStatusAccepted,
+		ID: record.Conversation.ID, Type: string(record.Conversation.Type),
 		LastSeq: record.Conversation.LastSeq, LastReadSeq: lastRead,
 		UnreadCount: unreadCount(record.Conversation.LastSeq, lastRead),
 		CreatedAt:   record.Conversation.CreatedAt, UpdatedAt: record.Conversation.UpdatedAt,
 		activityAt: record.ActivityAt,
+	}
+	if record.Conversation.Type == model.ConversationTypeDirect {
+		peer := publicUser(record.Peer)
+		result.Peer = &peer
+		result.CanSend = record.FriendshipStatus == model.FriendshipStatusAccepted
+	} else if record.Conversation.Type == model.ConversationTypeGroup && record.Group != nil {
+		result.Group = &ConversationGroupSummary{
+			ID: record.Group.Group.ID, Name: record.Group.Group.Name, AvatarURL: record.Group.Group.AvatarURL,
+			CurrentUserRole: record.Group.CurrentUserRole, MemberCount: record.Group.MemberCount,
+			Version: record.Group.Group.Version,
+		}
+		result.CanSend = true
 	}
 	if record.LastMessage != nil {
 		item := messageItem(*record.LastMessage, senders)

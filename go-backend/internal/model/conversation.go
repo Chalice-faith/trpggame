@@ -44,6 +44,8 @@ type ConversationMemberStatus string
 
 const (
 	ConversationMemberRoleMember ConversationMemberRole = "member"
+	ConversationMemberRoleAdmin  ConversationMemberRole = "admin"
+	ConversationMemberRoleOwner  ConversationMemberRole = "owner"
 
 	ConversationMemberStatusActive ConversationMemberStatus = "active"
 	ConversationMemberStatusLeft   ConversationMemberStatus = "left"

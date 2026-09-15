@@ -413,7 +413,81 @@ curl.exe -sS -X DELETE "$GO_BASE_URL/api/v1/friends/$USER_ID_B" `
 
 好友接口主要失败：`400/1600` 请求非法、`404/1601` 目标不存在、`400/1602` 不能添加自己、`404/1603` 申请不存在、`403/1604` 无操作权限、`409/1605` 状态冲突、`404/1606` 好友关系不存在、`400/1607` 分页非法、`500/1699` 内部错误。
 
-### 3.5 Go 内部回调（仅 Python → Go）
+### 3.5 群组与群成员（M2.3-B）
+
+以下接口均需要 Access Token。创建群组会在一个事务内创建唯一群会话、群主的两套成员关系和首条系统消息；响应中的 `version` 是后续写操作必须携带的乐观并发版本。
+
+#### POST/GET `/api/v1/groups` — 创建和列出群组
+
+```powershell
+$group = curl.exe -sS -X POST "$GO_BASE_URL/api/v1/groups" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw '{"name":"周五夜调查局","avatar_url":""}' | ConvertFrom-Json
+$GROUP_ID = $group.data.id
+$GROUP_VERSION = $group.data.version
+$CONVERSATION_ID = $group.data.conversation_id
+
+curl.exe -sS "$GO_BASE_URL/api/v1/groups?limit=20" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+成功：`200`。群对象为 `{id,name,avatar_url,owner_id,conversation_id,current_user_role,member_count,version,created_at,updated_at}`；列表按群 ID 倒序稳定分页。
+
+#### GET/PATCH `/api/v1/groups/{groupId}` — 查询和修改群资料
+
+```powershell
+curl.exe -sS "$GO_BASE_URL/api/v1/groups/$GROUP_ID" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+curl.exe -sS -X PATCH "$GO_BASE_URL/api/v1/groups/$GROUP_ID" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"name\":\"周六夜调查局\",\"expected_version\":$GROUP_VERSION}"
+```
+
+只有群主可以修改。真实变化使版本加一并写入系统消息；相同值保持幂等，不递增版本。
+
+#### POST/GET `/api/v1/groups/{groupId}/members` — 邀请和列出成员
+
+```powershell
+curl.exe -sS -X POST "$GO_BASE_URL/api/v1/groups/$GROUP_ID/members" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"user_ids\":[$USER_ID_B],\"expected_version\":$GROUP_VERSION}"
+
+curl.exe -sS "$GO_BASE_URL/api/v1/groups/$GROUP_ID/members?limit=50" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+群主和管理员每次最多邀请 20 名自己的当前好友；群最多 50 名有效成员，批量邀请全成或全败。新成员可读取完整群历史。成员页每项为 `{id,user,role,joined_at}`。
+
+#### PATCH/DELETE `/api/v1/groups/{groupId}/members/{userId}` — 角色与离群
+
+```powershell
+curl.exe -sS -X PATCH "$GO_BASE_URL/api/v1/groups/$GROUP_ID/members/$USER_ID_B" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"role\":\"admin\",\"expected_version\":$GROUP_VERSION}"
+
+curl.exe -sS -X DELETE "$GO_BASE_URL/api/v1/groups/$GROUP_ID/members/$USER_ID_B?expected_version=$GROUP_VERSION" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+群主可调整 `admin/member` 并移除任意非群主成员；管理员只能移除普通成员；成员把路径用户 ID 设为自己即可退群。群主必须先转让，不能直接退出。离群后群详情、历史、已读、同步和发送权限立即失效。
+
+#### POST `/api/v1/groups/{groupId}/transfer` — 转让群主
+
+```powershell
+curl.exe -sS -X POST "$GO_BASE_URL/api/v1/groups/$GROUP_ID/transfer" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"new_owner_user_id\":$USER_ID_B,\"expected_version\":$GROUP_VERSION}"
+```
+
+转让会原子更新 `groups.owner_id`、双方在 `group_members`/`conversation_members` 的角色、版本和系统消息。主要失败：`400/1800` 请求非法、`404/1801` 群不可见、`403/1802` 权限不足、`409/1803` 非好友、`409/1804` 群已满、`409/1805` 群主冲突、`409/1806` 版本冲突、`500/1807` 群服务不可用。
+
+### 3.6 Go 内部回调（仅 Python → Go）
 
 #### POST `/api/v1/internal/scripts/{id}/status`
 
@@ -565,7 +639,7 @@ ${IM_WS_URL}?token=<ACCESS_TOKEN>
 }
 ```
 
-当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或载荷校验失败、`1705` 类型未支持，以及聊天业务错误 `1709` 会话不可用、`1710` 需要好友关系、`1711` 消息载荷非法、`1712` 消息正文非法、`1715` 同步请求非法、`1716` 聊天服务不可用。`1706`、`1707` 仍为保留码。
+当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或载荷校验失败、`1705` 类型未支持，以及聊天业务错误 `1709` 会话不可用、`1710` 需要好友关系、`1711` 消息载荷非法、`1712` 消息正文非法、`1715` 同步请求非法、`1716` 聊天服务不可用。`1706`、`1707` 仍为保留码；`1717` 将在 M2.3-C 启用为每连接限流错误。
 
 连接成功后的第一条消息必须为 `connected`。同一账号建立第二条 IM 连接时，旧连接先收到：
 
@@ -636,7 +710,7 @@ M2.2-C 起客户端可主动发送 `ping`、`chat_message` 和 `im_sync`。IM �
 }
 ```
 
-服务端返回同 `request_id` 的 `im_sync_batch`，其中 `messages` 按 seq 升序，`next_seq` 为本批最后 seq；`has_more=true` 时继续以 `next_seq` 请求。群聊仍未实现，其他未支持入站类型返回 `error / 1705`。
+服务端返回同 `request_id` 的 `im_sync_batch`，其中 `messages` 按 seq 升序，`next_seq` 为本批最后 seq；`has_more=true` 时继续以 `next_seq` 请求。M2.3-B 已允许有效群成员持久化群消息并进行历史/同步访问，但在线群成员实时扇出、群变化事件和限流仍待 M2.3-C；其他未支持入站类型返回 `error / 1705`。
 
 安全要求：服务端默认访问日志不记录 `/ws` 与 `/ws/im` 的查询串，接口测试和问题反馈中也不要复制包含真实 Token 的完整连接地址。
 
@@ -763,9 +837,18 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 - [ ] 非好友发送、非成员同步、非法正文及非法同步参数返回对应 1709—1716 错误且连接保持可用。
 - [x] Vue 聊天页面的乐观发送、ack、未读、刷新恢复、离线消息恢复、删好友后历史只读及重新加好友后会话复用已通过真实双账号浏览器验收。
 
+### 6.6 群组持久化与权限
+
+- [ ] 三个真实账号完成创建群、批量邀请、成员列表和群资料更新。
+- [ ] 验证 owner/admin/member 权限矩阵、群主转让和原群主转让后退群。
+- [ ] 验证非好友邀请、50 人容量、过期版本和越权操作返回 1800—1807 对应错误。
+- [ ] 验证新成员可读取完整历史；离群或被移除后群详情、历史、同步和发送立即不可用。
+- [ ] 验证删除好友不影响共同群聊，重新入群复用成员行且不恢复管理员角色。
+- [x] 临时 MySQL 8.4 空库已通过 001—015 迁移、群完整生命周期、群会话查询和双成员表一致性自动化测试。
+
 ## 7. 当前已知边界
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
 - `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊可靠投递和基于 MySQL seq 的断线补推。Vue 聊天界面已实现；群聊和跨实例实时广播仍未实现。
+- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊可靠投递和基于 MySQL seq 的断线补推。M2.3-B 已实现群组 REST、群消息持久化与历史权限；群实时扇出、群变化事件、Vue 群界面和跨实例广播仍未实现。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。

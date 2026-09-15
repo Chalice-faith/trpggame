@@ -1,11 +1,11 @@
 openapi: 3.0.3
 info:
   title: TRPG Game Public API
-  version: 2.2.0-m2.2-b
+  version: 2.3.0-m2.3-b
   license:
     name: Project license not specified
   description: |
-    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系和 M2.2-B 私聊持久化接口。
+    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系、M2.2 私聊和 M2.3-B 群组持久化接口。
 
     所有业务响应均使用 `code` 和 `message`；除删除剧本外，成功响应还包含 `data`。
     `code = 0` 表示业务成功。WebSocket、Python AI 和 Go 内部回调不属于本公共规范。
@@ -20,7 +20,9 @@ tags:
   - name: Friends
     description: 好友申请、好友关系与在线状态快照
   - name: Conversations
-    description: 私聊会话、历史消息与当前用户已读水位
+    description: 私聊/群聊会话、历史消息与当前用户已读水位
+  - name: Groups
+    description: 私有群组、成员与角色管理
   - name: Scripts
     description: PDF 剧本上传、查询和管理
   - name: Games
@@ -356,6 +358,213 @@ paths:
               schema: {$ref: '#/components/schemas/ApiError'}
         '500': {$ref: '#/components/responses/FriendInternalError'}
 
+  /api/v1/groups:
+    post:
+      tags: [Groups]
+      summary: 创建私有群组
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateGroupRequest'}
+      responses:
+        '200':
+          description: 群组、唯一群会话和群主成员关系已原子创建
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    get:
+      tags: [Groups]
+      summary: 查询当前用户的有效群组
+      operationId: listGroups
+      parameters:
+        - {$ref: '#/components/parameters/GroupCursor'}
+        - {$ref: '#/components/parameters/GroupLimit'}
+      responses:
+        '200':
+          description: 按群组 ID 倒序稳定分页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}:
+    get:
+      tags: [Groups]
+      summary: 查询当前成员可见的群详情
+      operationId: getGroup
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      responses:
+        '200':
+          description: 当前用户视角的群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    patch:
+      tags: [Groups]
+      summary: 群主修改群名称或头像
+      operationId: updateGroup
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateGroupRequest'}
+      responses:
+        '200':
+          description: 更新后或无状态变化的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409': {$ref: '#/components/responses/GroupVersionConflict'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/members:
+    get:
+      tags: [Groups]
+      summary: 查询有效群成员
+      operationId: listGroupMembers
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupCursor'}
+        - {$ref: '#/components/parameters/GroupMemberLimit'}
+      responses:
+        '200':
+          description: 按成员关系 ID 倒序稳定分页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupMemberPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    post:
+      tags: [Groups]
+      summary: 群主或管理员批量邀请好友
+      operationId: inviteGroupMembers
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InviteGroupMembersRequest'}
+      responses:
+        '200':
+          description: 邀请后的权威群详情；已在群内的目标保持幂等
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 版本冲突（1806）、非好友（1803）或群已满（1804）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/members/{userId}:
+    patch:
+      tags: [Groups]
+      summary: 群主调整管理员或普通成员角色
+      operationId: setGroupMemberRole
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetGroupMemberRoleRequest'}
+      responses:
+        '200':
+          description: 调整后的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 群主或版本冲突（1805/1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    delete:
+      tags: [Groups]
+      summary: 主动退群或移除群成员
+      operationId: removeGroupMember
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+        - {$ref: '#/components/parameters/ExpectedGroupVersion'}
+      responses:
+        '200':
+          description: 操作后的群版本；主动退群时当前角色和人数可能省略
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 群主不能直接退出（1805）或版本冲突（1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/transfer:
+    post:
+      tags: [Groups]
+      summary: 原子转让群主
+      operationId: transferGroupOwner
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferGroupRequest'}
+      responses:
+        '200':
+          description: 转让后的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 新群主无效（1805）或版本冲突（1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
   /api/v1/conversations/direct:
     post:
       tags: [Conversations]
@@ -381,7 +590,7 @@ paths:
   /api/v1/conversations:
     get:
       tags: [Conversations]
-      summary: 查询当前用户的私聊会话
+      summary: 查询当前用户的私聊与群聊会话
       operationId: listConversations
       parameters:
         - {$ref: '#/components/parameters/ConversationCursor'}
@@ -399,7 +608,7 @@ paths:
   /api/v1/conversations/{conversationId}/messages:
     get:
       tags: [Conversations]
-      summary: 查询私聊历史消息
+      summary: 查询当前有效成员可见的会话历史消息
       operationId: listConversationMessages
       description: 数据库向旧消息查询，响应 items 始终按 seq 升序。
       parameters:
@@ -1086,6 +1295,37 @@ components:
       in: query
       required: false
       schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    GroupUserId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    GroupCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页最后一条记录的 ID；下一页查询更小的 ID
+      schema: {type: string, pattern: '^[1-9][0-9]*$'}
+    GroupLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    GroupMemberLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    ExpectedGroupVersion:
+      name: expected_version
+      in: query
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
 
   responses:
     Unauthorized:
@@ -1213,6 +1453,36 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ApiError'}
           example: {code: 1716, message: chat unavailable}
+    InvalidGroupRequest:
+      description: 群请求、字段、分页参数或游标无效（业务码 1800）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1800, message: invalid group request}
+    GroupNotFound:
+      description: 群不存在或当前用户不是有效成员（业务码 1801）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1801, message: group not found}
+    GroupPermissionDenied:
+      description: 当前群角色无操作权限（业务码 1802）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1802, message: group permission denied}
+    GroupVersionConflict:
+      description: expected_version 已过期（业务码 1806）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1806, message: group version conflict}
+    GroupUnavailable:
+      description: 群服务或事务失败（业务码 1807）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1807, message: group unavailable}
 
   schemas:
     ApiError:
@@ -1356,6 +1626,133 @@ components:
       properties:
         peer_user_id: {type: integer, format: int64, minimum: 1}
 
+    GroupRole:
+      type: string
+      enum: [owner, admin, member]
+
+    Group:
+      type: object
+      required: [id, name, avatar_url, owner_id, conversation_id, current_user_role, member_count, version, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        owner_id: {type: integer, format: int64, minimum: 1}
+        conversation_id: {type: integer, format: int64, minimum: 1}
+        current_user_role:
+          type: string
+          nullable: true
+          enum: [owner, admin, member]
+        member_count: {type: integer, minimum: 0, maximum: 50}
+        version: {type: integer, format: int64, minimum: 1}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    GroupConversationSummary:
+      type: object
+      required: [id, name, avatar_url, current_user_role, member_count, version]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        current_user_role: {$ref: '#/components/schemas/GroupRole'}
+        member_count: {type: integer, minimum: 1, maximum: 50}
+        version: {type: integer, format: int64, minimum: 1}
+
+    GroupResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/Group'}
+
+    GroupPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Group'}
+            next_cursor: {type: string, nullable: true}
+
+    GroupMember:
+      type: object
+      required: [id, user, role, joined_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        user: {$ref: '#/components/schemas/PublicUser'}
+        role: {$ref: '#/components/schemas/GroupRole'}
+        joined_at: {type: string, format: date-time}
+
+    GroupMemberPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/GroupMember'}
+            next_cursor: {type: string, nullable: true}
+
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048, default: ''}
+
+    UpdateGroupRequest:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      minProperties: 2
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    InviteGroupMembersRequest:
+      type: object
+      required: [user_ids, expected_version]
+      additionalProperties: false
+      properties:
+        user_ids:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SetGroupMemberRoleRequest:
+      type: object
+      required: [role, expected_version]
+      additionalProperties: false
+      properties:
+        role: {type: string, enum: [admin, member]}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    TransferGroupRequest:
+      type: object
+      required: [new_owner_user_id, expected_version]
+      additionalProperties: false
+      properties:
+        new_owner_user_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
     Message:
       type: object
       required: [id, conversation_id, seq, sender, client_message_id, message_type, content, metadata, created_at]
@@ -1374,13 +1771,11 @@ components:
         metadata: {type: object, additionalProperties: true}
         created_at: {type: string, format: date-time}
 
-    Conversation:
+    ConversationBase:
       type: object
-      required: [id, type, peer, can_send, last_seq, last_read_seq, unread_count, last_message, created_at, updated_at]
+      required: [id, can_send, last_seq, last_read_seq, unread_count, last_message, created_at, updated_at]
       properties:
         id: {type: integer, format: int64, minimum: 1}
-        type: {type: string, enum: [direct]}
-        peer: {$ref: '#/components/schemas/PublicUser'}
         can_send: {type: boolean}
         last_seq: {type: integer, format: int64, minimum: 0}
         last_read_seq: {type: integer, format: int64, minimum: 0}
@@ -1392,6 +1787,40 @@ components:
             - {$ref: '#/components/schemas/Message'}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
+
+    DirectConversation:
+      allOf:
+        - {$ref: '#/components/schemas/ConversationBase'}
+        - type: object
+          required: [type, peer, group]
+          properties:
+            type: {type: string, enum: [direct]}
+            peer: {$ref: '#/components/schemas/PublicUser'}
+            group:
+              type: object
+              nullable: true
+
+    GroupConversation:
+      allOf:
+        - {$ref: '#/components/schemas/ConversationBase'}
+        - type: object
+          required: [type, peer, group]
+          properties:
+            type: {type: string, enum: [group]}
+            peer:
+              type: object
+              nullable: true
+            group: {$ref: '#/components/schemas/GroupConversationSummary'}
+
+    Conversation:
+      oneOf:
+        - {$ref: '#/components/schemas/DirectConversation'}
+        - {$ref: '#/components/schemas/GroupConversation'}
+      discriminator:
+        propertyName: type
+        mapping:
+          direct: '#/components/schemas/DirectConversation'
+          group: '#/components/schemas/GroupConversation'
 
     ConversationResponse:
       type: object

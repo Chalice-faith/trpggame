@@ -20,6 +20,7 @@ type WebSocketHandlers struct {
 type RESTHandlers struct {
 	Friend *handler.FriendHandler
 	Chat   *handler.ChatHandler
+	Group  *handler.GroupHandler
 }
 
 var websocketLogSkipPaths = []string{"/ws", "/ws/im"}
@@ -50,12 +51,16 @@ func Setup(
 	userHandler := handler.NewUserHandler(db, cfg)
 	friendHandler := handler.NewFriendHandler(nil)
 	chatHandler := handler.NewChatHandler(nil)
+	groupHandler := handler.NewGroupHandler(nil)
 	if len(restHandlers) > 0 {
 		if restHandlers[0].Friend != nil {
 			friendHandler = restHandlers[0].Friend
 		}
 		if restHandlers[0].Chat != nil {
 			chatHandler = restHandlers[0].Chat
+		}
+		if restHandlers[0].Group != nil {
+			groupHandler = restHandlers[0].Group
 		}
 	}
 
@@ -116,6 +121,19 @@ func Setup(
 				conversations.GET("", chatHandler.ListConversations)
 				conversations.GET("/:conversationId/messages", chatHandler.ListMessages)
 				conversations.POST("/:conversationId/read", chatHandler.MarkRead)
+			}
+
+			groups := authorized.Group("/groups")
+			{
+				groups.POST("", groupHandler.Create)
+				groups.GET("", groupHandler.List)
+				groups.GET("/:groupId", groupHandler.Get)
+				groups.PATCH("/:groupId", groupHandler.Update)
+				groups.POST("/:groupId/members", groupHandler.Invite)
+				groups.GET("/:groupId/members", groupHandler.ListMembers)
+				groups.PATCH("/:groupId/members/:userId", groupHandler.SetRole)
+				groups.DELETE("/:groupId/members/:userId", groupHandler.Remove)
+				groups.POST("/:groupId/transfer", groupHandler.Transfer)
 			}
 
 			// 剧本 (Phase 1 M1.3 实现)
