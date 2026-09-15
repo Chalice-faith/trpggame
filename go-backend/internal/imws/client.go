@@ -165,6 +165,8 @@ func (c *Client) readPump() {
 			if marshalErr == nil && c.Hub != nil {
 				c.Hub.sendToClient(c, payload)
 			}
+		case MsgChatMessage, MsgImSync:
+			c.dispatchBusiness(message)
 		default:
 			c.sendError(
 				ErrorCodeUnsupportedMessageType,

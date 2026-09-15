@@ -215,6 +215,8 @@ func main() {
 	chatRepo := repo.NewChatRepo(db)
 	chatService := service.NewChatService(chatRepo, userRepo)
 	chatHandler := handler.NewChatHandler(chatService)
+	chatRealtime := service.NewChatRealtime(chatService, imHub)
+	imHub.SetInboundHandler(chatRealtime)
 
 	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
 	wsHandlers := router.WebSocketHandlers{

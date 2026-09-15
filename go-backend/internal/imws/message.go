@@ -14,7 +14,8 @@ import (
 	"trpggame/internal/realtime"
 )
 
-const MaxTextMessageSize = 8192
+// MaxTextMessageSize 允许 4000 个 UTF-8 字符正文加 JSON 信封仍有余量，见 M2.2 实施方案 3.8。
+const MaxTextMessageSize = 32768
 
 const (
 	ErrorCodeMissingToken           = 1700
@@ -23,6 +24,12 @@ const (
 	ErrorCodeMalformedMessage       = 1703
 	ErrorCodeInvalidMessage         = 1704
 	ErrorCodeUnsupportedMessageType = 1705
+	ErrorCodeConversationNotFound   = 1709
+	ErrorCodeFriendshipRequired     = 1710
+	ErrorCodeInvalidChatMessage     = 1711
+	ErrorCodeInvalidMessageContent  = 1712
+	ErrorCodeInvalidSyncRequest     = 1715
+	ErrorCodeChatUnavailable        = 1716
 )
 
 const (
@@ -38,17 +45,33 @@ var (
 	messageTypePattern        = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
+// BusinessError 是业务处理器返回给连接层的稳定错误分类。
+// 连接层只回显 Code/Message，不携带正文或内部错误细节。
+type BusinessError struct {
+	Code    int
+	Message string
+}
+
+func (e *BusinessError) Error() string {
+	return fmt.Sprintf("IM business error %d: %s", e.Code, e.Message)
+}
+
 // MessageType IM WebSocket 消息类型。
 type MessageType string
 
 const (
-	MsgPing               MessageType = "ping"
-	MsgPong               MessageType = "pong"
-	MsgConnected          MessageType = "connected"
-	MsgError              MessageType = "error"
-	MsgConnectionReplaced MessageType = "connection_replaced"
-	MsgPresence           MessageType = "presence"
-	MsgFriendshipUpdated  MessageType = "friendship_updated"
+	MsgPing                MessageType = "ping"
+	MsgPong                MessageType = "pong"
+	MsgConnected           MessageType = "connected"
+	MsgError               MessageType = "error"
+	MsgConnectionReplaced  MessageType = "connection_replaced"
+	MsgPresence            MessageType = "presence"
+	MsgFriendshipUpdated   MessageType = "friendship_updated"
+	MsgChatMessage         MessageType = "chat_message"
+	MsgChatAck             MessageType = "chat_ack"
+	MsgImSync              MessageType = "im_sync"
+	MsgImSyncBatch         MessageType = "im_sync_batch"
+	MsgConversationUpdated MessageType = "conversation_updated"
 )
 
 // ClientMessage 是客户端发送到 IM 通道的严格信封。

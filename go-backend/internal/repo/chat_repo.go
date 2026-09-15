@@ -199,6 +199,31 @@ func (r *ChatRepo) ListMessages(ctx context.Context, userID, conversationID uint
 	return messages, nil
 }
 
+// ListMessagesAfter 返回 since_seq 之后的消息（seq 升序），供 im_sync 缺口补齐；
+// 非成员与不存在的会话统一返回 ErrChatConversationMissing，不泄露会话存在性。
+func (r *ChatRepo) ListMessagesAfter(ctx context.Context, userID, conversationID uint, sinceSeq uint64, limit int) ([]model.Message, error) {
+	query := r.db.WithContext(ctx).Model(&model.Message{}).
+		Joins("JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = ? AND cm.status = ?", userID, model.ConversationMemberStatusActive).
+		Where("messages.conversation_id = ?", conversationID).
+		Where("messages.seq > ?", sinceSeq)
+	var messages []model.Message
+	if err := query.Order("messages.seq ASC").Limit(limit).Find(&messages).Error; err != nil {
+		return nil, err
+	}
+	if len(messages) == 0 {
+		var count int64
+		if err := r.db.WithContext(ctx).Model(&model.ConversationMember{}).
+			Where("conversation_id = ? AND user_id = ? AND status = ?", conversationID, userID, model.ConversationMemberStatusActive).
+			Count(&count).Error; err != nil {
+			return nil, err
+		}
+		if count == 0 {
+			return nil, ErrChatConversationMissing
+		}
+	}
+	return messages, nil
+}
+
 func (r *ChatRepo) MarkRead(ctx context.Context, userID, conversationID uint, requested uint64) (uint64, uint64, error) {
 	var current, lastSeq uint64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {

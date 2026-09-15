@@ -25,6 +25,7 @@ var (
 	ErrInvalidMessageContent      = errors.New("invalid message content")
 	ErrInvalidMessageQuery        = errors.New("invalid message query")
 	ErrReadSequenceConflict       = errors.New("read sequence conflict")
+	ErrInvalidSyncRequest         = errors.New("invalid sync request")
 )
 
 type ChatRepository interface {
@@ -32,6 +33,7 @@ type ChatRepository interface {
 	GetConversation(context.Context, uint, uint) (*repo.ConversationRecord, error)
 	ListConversations(context.Context, uint, time.Time, uint, int) ([]repo.ConversationRecord, error)
 	ListMessages(context.Context, uint, uint, uint64, int) ([]model.Message, error)
+	ListMessagesAfter(context.Context, uint, uint, uint64, int) ([]model.Message, error)
 	MarkRead(context.Context, uint, uint, uint64) (uint64, uint64, error)
 	SendMessage(context.Context, uint, uint, string, string, time.Time) (*repo.SendMessageResult, error)
 }
@@ -175,6 +177,31 @@ func (s *ChatService) ListMessages(ctx context.Context, currentUserID, conversat
 		nextBeforeSeq = items[0].Seq
 	}
 	return &MessagePage{Items: items, NextBeforeSeq: nextBeforeSeq, HasMore: hasMore}, nil
+}
+
+// ListMessagesSince 返回 since_seq 之后的消息（seq 升序），供 im_sync 缺口补齐。
+// hasMore 表示仍存在更旧于 limit 截断的后续消息；非成员错误映射为会话不存在。
+func (s *ChatService) ListMessagesSince(ctx context.Context, currentUserID, conversationID uint, sinceSeq uint64, limit int) ([]MessageItem, bool, error) {
+	if currentUserID == 0 || conversationID == 0 || limit < 1 || limit > 100 {
+		return nil, false, ErrInvalidMessageQuery
+	}
+	rows, err := s.chats.ListMessagesAfter(ctx, currentUserID, conversationID, sinceSeq, limit+1)
+	if err != nil {
+		return nil, false, mapChatRepositoryError("list messages after", err)
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	senders, err := s.loadMessageSenders(ctx, rows)
+	if err != nil {
+		return nil, false, err
+	}
+	items := make([]MessageItem, len(rows))
+	for index, row := range rows {
+		items[index] = messageItem(row, senders)
+	}
+	return items, hasMore, nil
 }
 
 func (s *ChatService) MarkRead(ctx context.Context, currentUserID, conversationID uint, requested uint64) (*ReadResult, error) {

@@ -54,14 +54,14 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 
 - 🚧 **M1.6 联调与验收**：自动化与 CI 已通过，真实依赖部署和端到端接口测试待执行
 
-### Phase 2 — 多人社交 🚧 *M2.0、M2.1 代码完成；M2.2-B 持久化完成*
+### Phase 2 — 多人社交 🚧 *M2.0、M2.1 代码完成；M2.2-C 可靠投递完成*
 
 - ✅ **M2.0-A**：Origin 白名单、公共 JWT 鉴权和 IM 消息契约
 - ✅ **M2.0-B**：游戏 WebSocket 接入公共握手组件
 - ✅ **M2.0-C**：独立 `/ws/im` 通道、Ping/Pong 和单连接接管基础
 - ✅ **M2.0-D**：D1—D4 已完成并提交；GitHub Actions CI #27（含 targeted race）通过，真实部署验收待执行
 - 🚧 **M2.1**：好友 REST、Redis presence、实时事件与 Vue 闭环已完成，CI #32 通过；等待真实双账号浏览器验收
-- 🚧 **M2.2**：私聊会话、消息持久化、REST 与 MySQL 并发验证已完成；WebSocket 业务消息尚未开始
+- 🚧 **M2.2**：私聊会话、消息持久化、REST 与 WebSocket 可靠投递（chat_ack、对端推送、im_sync 补齐）已完成；Vue 聊天界面尚未开始
 - 📋 **M2.3—M2.4**：群组和多人跑团尚未开始
 
 ### Phase 3 — 体验增强 📋 *规划中*
@@ -465,7 +465,8 @@ AI 可调用的 Function Calling 函数：
 - ✅ M2.1-D Vue 好友页、全局 IM Store 与代码级验收收尾（CI #32 通过；真实双账号浏览器验收待执行）
 - ✅ M2.2-A 私聊、可靠投递与断线恢复设计已冻结
 - ✅ M2.2-B 会话/消息迁移、持久化、REST、OpenAPI 与 MySQL 8.4 并发验证
-- ⬜ M2.2-C—D WebSocket、Vue 与验收
+- ✅ M2.2-C IM WebSocket 可靠投递：chat_message/ack、conversation_updated、im_sync 补齐与 32 KiB 帧
+- ⬜ M2.2-D Vue 聊天界面与验收收尾
 - ⬜ M2.3 群组系统
 - ⬜ M2.4 多人游戏房间
 

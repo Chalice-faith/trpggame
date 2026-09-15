@@ -15,21 +15,23 @@ import (
 )
 
 type chatRepoStub struct {
-	conversation model.Conversation
-	record       repo.ConversationRecord
-	rows         []repo.ConversationRecord
-	messages     []model.Message
-	markCurrent  uint64
-	markLast     uint64
-	sendResult   repo.SendMessageResult
-	err          error
-	low          uint
-	high         uint
-	before       time.Time
-	beforeID     uint
-	limit        int
-	requested    uint64
-	sentContent  string
+	conversation  model.Conversation
+	record        repo.ConversationRecord
+	rows          []repo.ConversationRecord
+	messages      []model.Message
+	afterMessages []model.Message
+	markCurrent   uint64
+	markLast      uint64
+	sendResult    repo.SendMessageResult
+	err           error
+	low           uint
+	high          uint
+	before        time.Time
+	beforeID      uint
+	limit         int
+	requested     uint64
+	sentContent   string
+	sinceSeq      uint64
 }
 
 func (s *chatRepoStub) EnsureDirectConversation(_ context.Context, low, high uint) (*model.Conversation, error) {
@@ -46,6 +48,13 @@ func (s *chatRepoStub) ListConversations(_ context.Context, _ uint, before time.
 func (s *chatRepoStub) ListMessages(_ context.Context, _, _ uint, _ uint64, limit int) ([]model.Message, error) {
 	s.limit = limit
 	return append([]model.Message(nil), s.messages...), s.err
+}
+func (s *chatRepoStub) ListMessagesAfter(_ context.Context, _, _ uint, sinceSeq uint64, limit int) ([]model.Message, error) {
+	s.sinceSeq, s.limit = sinceSeq, limit
+	if s.afterMessages == nil {
+		return nil, s.err
+	}
+	return append([]model.Message(nil), s.afterMessages...), s.err
 }
 func (s *chatRepoStub) MarkRead(_ context.Context, _, _ uint, requested uint64) (uint64, uint64, error) {
 	s.requested = requested

@@ -44,6 +44,7 @@ type Hub struct {
 	deliver    chan deliverRequest
 	refresh    chan refreshRequest
 	observer   PresenceObserver
+	inbound    InboundHandler
 
 	stop     chan struct{}
 	done     chan struct{}
@@ -68,6 +69,21 @@ func (h *Hub) SetPresenceObserver(observer PresenceObserver) {
 	if h != nil {
 		h.observer = observer
 	}
+}
+
+// SetInboundHandler 在 Run 启动前注入业务消息处理器；未注入时业务类型按不支持处理。
+func (h *Hub) SetInboundHandler(handler InboundHandler) {
+	if h != nil {
+		h.inbound = handler
+	}
+}
+
+// InboundHandler 返回当前业务消息处理器，nil 表示没有可用处理器。
+func (h *Hub) InboundHandler() InboundHandler {
+	if h == nil {
+		return nil
+	}
+	return h.inbound
 }
 
 // Run 启动 Hub 事件循环。
