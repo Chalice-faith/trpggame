@@ -231,6 +231,21 @@ func TestChatServiceMySQL84Concurrency(t *testing.T) {
 		}
 	})
 
+	t.Run("sync after sequence returns ascending batches", func(t *testing.T) {
+		first, hasMore, err := chatService.ListMessagesSince(context.Background(), b, conversationID, 20, 2)
+		if err != nil || !hasMore || len(first) != 2 || first[0].Seq != 21 || first[1].Seq != 22 {
+			t.Fatalf("first sync batch = %#v, hasMore=%v, err=%v", first, hasMore, err)
+		}
+		second, hasMore, err := chatService.ListMessagesSince(context.Background(), b, conversationID, first[1].Seq, 2)
+		if err != nil || !hasMore || len(second) != 2 || second[0].Seq != 23 || second[1].Seq != 24 {
+			t.Fatalf("second sync batch = %#v, hasMore=%v, err=%v", second, hasMore, err)
+		}
+		last, hasMore, err := chatService.ListMessagesSince(context.Background(), b, conversationID, second[1].Seq, 2)
+		if err != nil || hasMore || len(last) != 1 || last[0].Seq != 25 {
+			t.Fatalf("last sync batch = %#v, hasMore=%v, err=%v", last, hasMore, err)
+		}
+	})
+
 	t.Run("history and read watermarks remain available after unfriend", func(t *testing.T) {
 		if _, err := chatService.ListMessages(context.Background(), c, conversationID, 0, 100); !errors.Is(err, ErrConversationNotFound) {
 			t.Fatalf("non-member history = %v", err)

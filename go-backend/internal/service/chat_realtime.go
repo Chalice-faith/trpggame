@@ -181,20 +181,8 @@ func (r *ChatRealtime) pushConversationUpdated(ctx context.Context, conversation
 
 // chatBusinessError 将服务层错误映射为 IM 错误帧的稳定分类。
 func chatBusinessError(err error) error {
-	switch {
-	case errors.Is(err, ErrConversationNotFound):
-		return &imws.BusinessError{Code: imws.ErrorCodeConversationNotFound, Message: "conversation not found"}
-	case errors.Is(err, ErrFriendshipRequired):
-		return &imws.BusinessError{Code: imws.ErrorCodeFriendshipRequired, Message: "friendship required"}
-	case errors.Is(err, ErrInvalidChatMessage):
-		return &imws.BusinessError{Code: imws.ErrorCodeInvalidChatMessage, Message: "invalid chat message"}
-	case errors.Is(err, ErrInvalidMessageContent):
-		return &imws.BusinessError{Code: imws.ErrorCodeInvalidMessageContent, Message: "invalid message content"}
-	case errors.Is(err, ErrInvalidSyncRequest):
-		return &imws.BusinessError{Code: imws.ErrorCodeInvalidSyncRequest, Message: "invalid sync request"}
-	default:
-		return &imws.BusinessError{Code: imws.ErrorCodeChatUnavailable, Message: "chat unavailable"}
-	}
+	descriptor := DescribeChatError(err)
+	return &imws.BusinessError{Code: descriptor.Code, Message: descriptor.Message}
 }
 
 func decodeChatPayload(data json.RawMessage, target any) error {

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { watch } from 'vue'
 import { useAuthStore } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
 import { useIMStore } from '@/stores/im'
 
 const authStore = useAuthStore()
+const chatStore = useChatStore()
 const friendsStore = useFriendsStore()
 const imStore = useIMStore()
 
@@ -15,6 +17,7 @@ watch(
       void imStore.connect()
     } else {
       imStore.disconnect()
+      chatStore.clear()
       friendsStore.clear()
     }
   },

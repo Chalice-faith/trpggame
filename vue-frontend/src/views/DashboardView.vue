@@ -11,6 +11,7 @@ import {
   type UploadRawFile
 } from 'element-plus'
 import {
+  ChatDotRound,
   Plus,
   Refresh,
   SwitchButton,
@@ -255,6 +256,7 @@ onBeforeUnmount(() => {
 
       <div class="account">
         <span class="account-name">{{ authStore.user?.nickname || authStore.user?.username }}</span>
+        <el-button text :icon="ChatDotRound" @click="router.push('/chat')">消息</el-button>
         <el-button text :icon="UserFilled" @click="router.push('/friends')">好友</el-button>
         <el-button text :icon="SwitchButton" @click="handleLogout">退出</el-button>
       </div>

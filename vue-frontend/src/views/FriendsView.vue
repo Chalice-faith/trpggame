@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Check,
+  ChatDotRound,
   Close,
   Delete,
   Plus,
@@ -18,10 +19,12 @@ import type {
   UserSearchItem
 } from '@/api/friends'
 import { useFriendsStore } from '@/stores/friends'
+import { useChatStore } from '@/stores/chat'
 import { useIMStore } from '@/stores/im'
 
 const router = useRouter()
 const friendsStore = useFriendsStore()
+const chatStore = useChatStore()
 const imStore = useIMStore()
 const keyword = ref('')
 const actingKey = ref('')
@@ -111,6 +114,19 @@ async function removeFriend(item: FriendItem) {
     ElMessage.success('好友已删除')
   } catch (error: any) {
     ElMessage.error(error?.response?.data?.message || '删除好友失败')
+  } finally {
+    actingKey.value = ''
+  }
+}
+
+async function openChat(item: FriendItem) {
+  const key = `chat-${item.peer.id}`
+  actingKey.value = key
+  try {
+    const conversation = await chatStore.createDirect(item.peer.id)
+    await router.push(`/chat/${conversation.id}`)
+  } catch (error: any) {
+    ElMessage.error(error?.response?.data?.message || '打开私聊失败')
   } finally {
     actingKey.value = ''
   }
@@ -272,7 +288,16 @@ onMounted(refresh)
             <strong>{{ userName(item.peer) }}</strong>
             <span>@{{ item.peer.username }} · {{ presenceCopy[item.presence] }}</span>
           </div>
-          <el-button disabled>聊天（M2.2）</el-button>
+          <el-button
+            type="primary"
+            plain
+            :icon="ChatDotRound"
+            data-testid="chat-friend-button"
+            :loading="actingKey === `chat-${item.peer.id}`"
+            @click="openChat(item)"
+          >
+            私聊
+          </el-button>
           <el-button
             text
             type="danger"

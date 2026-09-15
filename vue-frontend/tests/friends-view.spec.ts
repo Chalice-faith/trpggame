@@ -16,14 +16,23 @@ const apiMocks = vi.hoisted(() => ({
   listFriends: vi.fn(),
   deleteFriend: vi.fn()
 }))
+const chatApiMocks = vi.hoisted(() => ({
+  createDirectConversation: vi.fn()
+}))
+const routerPush = vi.hoisted(() => vi.fn())
 
 vi.mock('vue-router', () => ({
-  useRouter: () => ({ push: vi.fn() })
+  useRouter: () => ({ push: routerPush })
 }))
 
 vi.mock('@/api/friends', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/api/friends')>()),
   ...apiMocks
+}))
+
+vi.mock('@/api/chat', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/api/chat')>()),
+  ...chatApiMocks
 }))
 
 const peer = {
@@ -89,6 +98,18 @@ describe('FriendsView', () => {
       status: 'rejected'
     })
     apiMocks.deleteFriend.mockResolvedValue(undefined)
+    chatApiMocks.createDirectConversation.mockResolvedValue({
+      id: 41,
+      type: 'direct',
+      peer,
+      can_send: true,
+      last_seq: 0,
+      last_read_seq: 0,
+      unread_count: 0,
+      last_message: null,
+      created_at: '2026-09-15T01:00:00Z',
+      updated_at: '2026-09-15T01:00:00Z'
+    })
   })
 
   it('searches users and sends a friend request', async () => {
@@ -142,6 +163,18 @@ describe('FriendsView', () => {
     await flushPromises()
     expect(apiMocks.deleteFriend).toHaveBeenCalledWith(8)
     expect(wrapper.find('[data-testid="friend-row"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('creates or reuses a direct conversation from the friend row', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.get('[data-testid="chat-friend-button"]').trigger('click')
+    await flushPromises()
+
+    expect(chatApiMocks.createDirectConversation).toHaveBeenCalledWith(8)
+    expect(routerPush).toHaveBeenCalledWith('/chat/41')
     wrapper.unmount()
   })
 })

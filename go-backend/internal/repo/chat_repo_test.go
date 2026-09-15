@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -60,6 +61,41 @@ func TestChatRepoMarkReadUsesLockedMonotonicUpdate(t *testing.T) {
 	current, last, err := repository.MarkRead(context.Background(), 7, 41, 8)
 	if err != nil || current != 8 || last != 10 {
 		t.Fatalf("MarkRead() = (%d,%d,%v)", current, last, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
+func TestChatRepoListMessagesAfterUsesMembershipAndAscendingSequence(t *testing.T) {
+	repository, mock := newMockChatRepo(t)
+	now := time.Now().UTC()
+	messageColumns := []string{
+		"id", "conversation_id", "seq", "sender_id", "client_message_id", "message_type", "content", "metadata", "created_at",
+	}
+	mock.ExpectQuery("SELECT .* FROM `messages` JOIN conversation_members cm ON cm.conversation_id = messages.conversation_id AND cm.user_id = \\? AND cm.status = \\? WHERE messages.conversation_id = \\? AND messages.seq > \\? ORDER BY messages.seq ASC LIMIT 3").
+		WithArgs(uint(7), model.ConversationMemberStatusActive, uint(41), uint64(8)).
+		WillReturnRows(sqlmock.NewRows(messageColumns).
+			AddRow(91, 41, 9, 8, "550e8400-e29b-41d4-a716-446655440000", "text", "nine", []byte(`{}`), now).
+			AddRow(92, 41, 10, 8, "8c21c14d-cf36-4fd2-845d-1496d9c154b2", "text", "ten", []byte(`{}`), now))
+
+	messages, err := repository.ListMessagesAfter(context.Background(), 7, 41, 8, 3)
+	if err != nil || len(messages) != 2 || messages[0].Seq != 9 || messages[1].Seq != 10 {
+		t.Fatalf("ListMessagesAfter() = (%#v, %v)", messages, err)
+	}
+	assertSQLExpectations(t, mock)
+}
+
+func TestChatRepoListMessagesAfterHidesConversationFromNonMember(t *testing.T) {
+	repository, mock := newMockChatRepo(t)
+	mock.ExpectQuery("SELECT .* FROM `messages` JOIN conversation_members cm .* ORDER BY messages.seq ASC LIMIT 3").
+		WithArgs(uint(7), model.ConversationMemberStatusActive, uint(41), uint64(8)).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "conversation_id", "seq", "sender_id", "client_message_id", "message_type", "content", "metadata", "created_at"}))
+	mock.ExpectQuery("SELECT count\\(\\*\\) FROM `conversation_members` WHERE conversation_id = \\? AND user_id = \\? AND status = \\?").
+		WithArgs(uint(41), uint(7), model.ConversationMemberStatusActive).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+
+	_, err := repository.ListMessagesAfter(context.Background(), 7, 41, 8, 3)
+	if !errors.Is(err, ErrChatConversationMissing) {
+		t.Fatalf("ListMessagesAfter() error = %v", err)
 	}
 	assertSQLExpectations(t, mock)
 }

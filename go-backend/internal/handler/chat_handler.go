@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -124,20 +123,9 @@ func chatLimit(c *gin.Context, defaultLimit int) (int, error) {
 }
 
 func chatError(c *gin.Context, err error) {
-	status, code, message := http.StatusInternalServerError, 1716, "chat unavailable"
-	switch {
-	case errors.Is(err, service.ErrInvalidConversationRequest):
-		status, code, message = http.StatusBadRequest, 1708, "invalid conversation request"
-	case errors.Is(err, service.ErrConversationNotFound):
-		status, code, message = http.StatusNotFound, 1709, "conversation not found"
-	case errors.Is(err, service.ErrFriendshipRequired):
-		status, code, message = http.StatusConflict, 1710, "friendship required"
-	case errors.Is(err, service.ErrInvalidMessageQuery):
-		status, code, message = http.StatusBadRequest, 1713, "invalid message query"
-	case errors.Is(err, service.ErrReadSequenceConflict):
-		status, code, message = http.StatusConflict, 1714, "read sequence conflict"
-	default:
+	descriptor := service.DescribeChatError(err)
+	if descriptor.Internal {
 		log.Printf("chat handler: %v", err)
 	}
-	c.JSON(status, gin.H{"code": code, "message": message})
+	c.JSON(descriptor.HTTPStatus, gin.H{"code": descriptor.Code, "message": descriptor.Message})
 }

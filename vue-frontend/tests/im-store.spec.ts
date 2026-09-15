@@ -6,6 +6,7 @@ import { nextTick } from 'vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '@/App.vue'
 import { useAuthStore, type User } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
 import { IM_RECONNECT_DELAYS, useIMStore } from '@/stores/im'
 
@@ -22,6 +23,7 @@ class MockWebSocket {
   onmessage: ((event: MessageEvent) => void) | null = null
   onerror: (() => void) | null = null
   onclose: ((event: CloseEvent) => void) | null = null
+  sent: string[] = []
 
   constructor(url: string) {
     this.url = url
@@ -40,6 +42,10 @@ class MockWebSocket {
 
   message(data: unknown) {
     this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent)
+  }
+
+  send(data: string) {
+    this.sent.push(data)
   }
 
   close() {
@@ -215,5 +221,32 @@ describe('global IM store', () => {
 
     expect(friendsStore.friends[0].presence).toBe('online')
     expect(refreshSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('dispatches chat acknowledgements and incoming messages to the chat store', () => {
+    logIn()
+    const chatStore = useChatStore()
+    const ack = vi.spyOn(chatStore, 'handleAck')
+    const incoming = vi.spyOn(chatStore, 'handleIncoming')
+    const imStore = useIMStore()
+
+    imStore.handleMessage(
+      JSON.stringify({
+        type: 'chat_ack',
+        request_id: '550e8400-e29b-41d4-a716-446655440000',
+        timestamp: Date.now(),
+        data: { message: { conversation_id: 41 }, duplicate: false }
+      })
+    )
+    imStore.handleMessage(
+      JSON.stringify({
+        type: 'chat_message',
+        timestamp: Date.now(),
+        data: { message: { conversation_id: 41, seq: 2 } }
+      })
+    )
+
+    expect(ack).toHaveBeenCalledTimes(1)
+    expect(incoming).toHaveBeenCalledTimes(1)
   })
 })

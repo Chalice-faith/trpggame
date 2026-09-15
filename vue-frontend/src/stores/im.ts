@@ -2,6 +2,13 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { PresenceStatus, PublicUser } from '@/api/friends'
 import { useAuthStore } from '@/stores/auth'
+import {
+  useChatStore,
+  type ChatAckData,
+  type ChatMessageEventData,
+  type ConversationUpdatedData,
+  type ImSyncBatchData
+} from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
 
 export const IM_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000]
@@ -9,10 +16,16 @@ const TOKEN_REFRESH_WINDOW_MS = 30_000
 
 type IMConnectionStatus = 'disconnected' | 'connecting' | 'connected'
 
-interface IMMessage<T = unknown> {
+export interface IMMessage<T = unknown> {
   type: string
+  request_id?: string
   timestamp: number
   data: T
+}
+
+interface IMErrorData {
+  code: number
+  message: string
 }
 
 interface PresenceEventData {
@@ -105,6 +118,7 @@ export const useIMStore = defineStore('im', () => {
       if (socket !== candidate) return
       socket = null
       status.value = 'disconnected'
+      useChatStore().handleDisconnected()
 
       if (intentionalDisconnect || !authStore.isLoggedIn) return
       if (event.code === 4001) {
@@ -150,6 +164,7 @@ export const useIMStore = defineStore('im', () => {
       return
     }
     const friendsStore = useFriendsStore()
+    const chatStore = useChatStore()
     if (message.type === 'presence') {
       const data = message.data as PresenceEventData
       if (
@@ -160,8 +175,39 @@ export const useIMStore = defineStore('im', () => {
       }
     } else if (message.type === 'friendship_updated') {
       void friendsStore.handleFriendshipUpdated().catch(() => undefined)
+      void chatStore.loadConversations(true).catch(() => undefined)
     } else if (message.type === 'connection_replaced') {
       replacementNotice.value = '账号已在其他页面建立了新的实时连接'
+    } else if (message.type === 'connected') {
+      void chatStore.handleConnected()
+    } else if (message.type === 'chat_ack') {
+      chatStore.handleAck(message.request_id ?? '', message.data as ChatAckData)
+    } else if (message.type === 'chat_message') {
+      chatStore.handleIncoming(message.data as ChatMessageEventData)
+    } else if (message.type === 'conversation_updated') {
+      chatStore.handleConversationUpdated(message.data as ConversationUpdatedData)
+    } else if (message.type === 'im_sync_batch') {
+      chatStore.handleSyncBatch(message.data as ImSyncBatchData)
+    } else if (message.type === 'error') {
+      const data = message.data as IMErrorData
+      chatStore.handleError(message.request_id ?? '', data?.message ?? '请求失败')
+    }
+  }
+
+  function send(type: string, data: Record<string, unknown>, requestId?: string) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false
+    try {
+      socket.send(
+        JSON.stringify({
+          type,
+          request_id: requestId,
+          data
+        })
+      )
+      return true
+    } catch {
+      lastError.value = 'IM 消息发送失败'
+      return false
     }
   }
 
@@ -199,7 +245,8 @@ export const useIMStore = defineStore('im', () => {
     isConnected,
     connect,
     disconnect,
-    handleMessage
+    handleMessage,
+    send
   }
 })
 

@@ -182,8 +182,8 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 - [x] Go: `chat_handler.go` — 会话创建/列表、历史消息和已读水位 REST
 - [x] WebSocket `chat_message`/`chat_ack` 双向可靠投递与 `conversation_updated` 推送
 - [x] MySQL 会话 seq + `im_sync`/`im_sync_batch` 断线补推
-- [ ] Vue: `stores/chat.ts` — 聊天状态管理
-- [ ] Vue: `ChatView.vue` — 会话列表与私聊面板
+- [x] Vue: `stores/chat.ts` — 乐观发送、ack、失败重试、seq 去重、未读与重连同步
+- [x] Vue: `ChatView.vue` — 会话列表、历史分页、私聊面板与只读边界
 
 #### M2.3 群组系统
 
@@ -378,9 +378,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成代码级收尾，M2.2-A、M2.2-B、M2.2-C 已完成，当前停止在 M2.2-D 门前
-- **文档状态**：Phase 2 规划、M2.0—M2.2 实施方案、未完成事项、技术设计、接口测试及暂停交接已同步；M2.2-D 尚未开始
-- **代码状态**：M2.2 已完成 011—013 迁移、私聊会话/消息持久化、连续 seq、发送幂等、历史/已读 REST、OpenAPI，以及 `chat_message`/`chat_ack`、`conversation_updated`、`im_sync`/`im_sync_batch` WebSocket 可靠投递；Vue 聊天界面尚未实现
-- **验证状态**：M2.2-B 的 Go/OpenAPI/迁移/MySQL 8.4 验证及 M2.2-C 的 IM 分发顺序、大帧、超时、Stop 竞争、双账号真实 WebSocket 端到端自动化测试已通过；当前分支 CI 为 passing，真实依赖与双账号浏览器验收仍未执行
-- **提交状态**：M2.2-C 功能提交为 `d74f657`，评审改进项记录为 `1678e71`；完整记录见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：等待开发者确认后进入 M2.2-D，新增聊天 API/Store/页面，覆盖乐观发送、ack、失败重试、历史分页、未读和重连同步，并完成 M2.2 验收收尾
+- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成代码级收尾；M2.2-D 代码级实现与本地回归已完成，尚未标记完整验收通过
+- **文档状态**：Phase 2 规划、M2.0—M2.2 实施方案、未完成事项、技术设计、接口测试、暂停交接及 M2.2 验收记录已同步
+- **代码状态**：M2.2 已完成持久化/REST、WebSocket 可靠投递，以及 Vue 会话列表、历史分页、乐观发送、ack、失败重试、未读/已读、重连同步和历史只读边界；DEV-007/008 已解决
+- **验证状态**：Go 全量测试/vet/build、Linux targeted race、MySQL 8.4 空库迁移与聊天集成、Vue 28 项测试与生产构建、Python 105 项测试、OpenAPI、数据库迁移测试和 Compose 解析均已在本地通过；当前改动 CI 与真实双账号浏览器验收仍未执行
+- **提交状态**：M2.2-C 功能提交为 `d74f657`，评审改进项为 `1678e71`；M2.2-D 当前改动尚未提交，完整证据见 [M2.2验收记录.md](./M2.2验收记录.md)
+- **下一步**：评审并提交 M2.2-D，确认 GitHub Actions 后以两个真实账号完成实时私聊、断线补推、刷新恢复与删好友只读验收；验收通过前不进入 M2.3
