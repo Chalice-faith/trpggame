@@ -1,10 +1,10 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.1-D
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.2-C
 >
-> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-10 核对）。
+> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-15 核对）。
 >
-> 状态：接口字段和错误码已按源码整理；M2.1 自动化回归结果见 [M2.1 验收记录](./M2.1验收记录.md)，真实 Docker 服务和双账号浏览器联调尚未执行。
+> 状态：接口字段和错误码已按源码整理至 M2.2-C；M2.1 自动化回归结果见 [M2.1 验收记录](./M2.1验收记录.md)，M2.2-C 已完成 WebSocket 代码级验证，真实 Docker 服务和双账号浏览器联调尚未执行。
 
 这份文档用于在 Swagger UI、Postman 或 `curl` 中手工验收。所有示例均使用 JSON 字段名，不使用 Go/Python 内部字段名。
 
@@ -565,7 +565,7 @@ ${IM_WS_URL}?token=<ACCESS_TOKEN>
 }
 ```
 
-当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或 Ping 载荷校验失败、`1705` 类型未支持。`1706`、`1707` 保留到聊天消息接入后启用。
+当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或载荷校验失败、`1705` 类型未支持，以及聊天业务错误 `1709` 会话不可用、`1710` 需要好友关系、`1711` 消息载荷非法、`1712` 消息正文非法、`1715` 同步请求非法、`1716` 聊天服务不可用。`1706`、`1707` 仍为保留码。
 
 连接成功后的第一条消息必须为 `connected`。同一账号建立第二条 IM 连接时，旧连接先收到：
 
@@ -612,7 +612,31 @@ im.onclose = (event) => console.log(event.code, event.reason);
 {"type":"presence","timestamp":1789056000000,"data":{"user_id":8,"status":"online"}}
 ```
 
-`friendship_updated` 的 `status` 可为 `pending`、`accepted`、`rejected`、`removed`；收到后应重新查询受影响的 REST 列表。`presence` 在 M2.1 推送中只使用 online/offline，unknown 只用于 REST 查询降级。客户端仍只允许主动发送 `ping`；`chat_message`、群聊和离线同步尚未实现，发送未支持类型会返回 `error / 1705`。
+`friendship_updated` 的 `status` 可为 `pending`、`accepted`、`rejected`、`removed`；收到后应重新查询受影响的 REST 列表。`presence` 在 M2.1 推送中只使用 online/offline，unknown 只用于 REST 查询降级。
+
+M2.2-C 起客户端可主动发送 `ping`、`chat_message` 和 `im_sync`。IM 文本帧上限为 32 KiB；`chat_message.request_id` 必须是规范 UUID，并直接作为发送幂等键：
+
+```json
+{
+  "type":"chat_message",
+  "request_id":"550e8400-e29b-41d4-a716-446655440000",
+  "data":{"conversation_id":41,"message_type":"text","content":"今晚开团吗？"}
+}
+```
+
+发送成功后当前连接收到同 `request_id` 的 `chat_ack`；首次发送时 `duplicate=false`，用相同 UUID 和相同载荷重试时返回原消息且 `duplicate=true`，不会再次向对端广播。对端在线连接收到 `chat_message`，双方还会收到按各自视角生成的 `conversation_updated`。
+
+断线或检测到 seq 缺口时发送：
+
+```json
+{
+  "type":"im_sync",
+  "request_id":"8c21c14d-cf36-4fd2-845d-1496d9c154b2",
+  "data":{"conversation_id":41,"since_seq":8,"limit":100}
+}
+```
+
+服务端返回同 `request_id` 的 `im_sync_batch`，其中 `messages` 按 seq 升序，`next_seq` 为本批最后 seq；`has_more=true` 时继续以 `next_seq` 请求。群聊仍未实现，其他未支持入站类型返回 `error / 1705`。
 
 安全要求：服务端默认访问日志不记录 `/ws` 与 `/ws/im` 的查询串，接口测试和问题反馈中也不要复制包含真实 Token 的完整连接地址。
 
@@ -730,9 +754,18 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 - [ ] 同账号第二页面接管连接，旧页面收到事件并以 4001 关闭，且不再重连。
 - [ ] 关闭 Redis 时好友 REST 将 presence 降级为 unknown，不泄露非好友状态。
 
+### 6.5 私聊与可靠消息
+
+- [ ] 两个真实账号创建或复用私聊会话，历史分页按 seq 升序且无重复遗漏。
+- [ ] 发送端收到 `chat_ack`，接收端收到 `chat_message`，双方收到各自视角的 `conversation_updated`。
+- [ ] 使用相同 `request_id` 重试只产生一条持久化消息，返回 `duplicate=true` 且不重复广播。
+- [ ] 接收端离线后发送多条消息，重连使用 `im_sync` 分批补齐，并验证 `next_seq` 与 `has_more`。
+- [ ] 非好友发送、非成员同步、非法正文及非法同步参数返回对应 1709—1716 错误且连接保持可用。
+- [ ] Vue 聊天页面的乐观发送、失败重试、未读、刷新恢复和删好友后历史只读留待 M2.2-D 实现并验收。
+
 ## 7. 当前已知边界
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
 - `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- 游戏通道中的 `chat_message` 仍未接通；独立 `/ws/im` 已提供连接、接管、好友关系事件与在线状态，聊天、群组及离线同步仍未实现。
+- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊可靠投递和基于 MySQL seq 的断线补推。Vue 聊天界面、群聊和跨实例实时广播仍未实现。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。
