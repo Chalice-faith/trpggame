@@ -48,6 +48,7 @@ func (r *eventRecorder) all() []publishedEvent {
 type realtimeConvStub struct {
 	chatRepoStub
 	records map[uint]repo.ConversationRecord
+	views   []repo.ConversationView
 }
 
 func (s *realtimeConvStub) GetConversation(_ context.Context, userID, _ uint) (*repo.ConversationRecord, error) {
@@ -56,6 +57,10 @@ func (s *realtimeConvStub) GetConversation(_ context.Context, userID, _ uint) (*
 		return nil, repo.ErrChatConversationMissing
 	}
 	return &record, nil
+}
+
+func (s *realtimeConvStub) ListActiveConversationViews(_ context.Context, _ uint) ([]repo.ConversationView, error) {
+	return append([]repo.ConversationView(nil), s.views...), nil
 }
 
 func realtimeConversationFixture(low, high uint, lastSeq uint64, senderRead uint64, peerRead uint64) map[uint]repo.ConversationRecord {
@@ -76,6 +81,33 @@ func realtimeConversationFixture(low, high uint, lastSeq uint64, senderRead uint
 		low:  build(low, high, senderRead),
 		high: build(high, low, peerRead),
 	}
+}
+
+func realtimeGroupFixture(memberIDs []uint, lastMessage model.Message, reads map[uint]uint64) ([]repo.ConversationView, map[uint]repo.ConversationRecord) {
+	groupID := uint(9)
+	activity := lastMessage.CreatedAt
+	views := make([]repo.ConversationView, 0, len(memberIDs))
+	records := make(map[uint]repo.ConversationRecord, len(memberIDs))
+	for index, userID := range memberIDs {
+		role := model.GroupRoleMember
+		if index == 0 {
+			role = model.GroupRoleOwner
+		}
+		record := repo.ConversationRecord{
+			Conversation: model.Conversation{
+				ID: 41, Type: model.ConversationTypeGroup, GroupID: &groupID,
+				LastSeq: lastMessage.Seq, LastMessageAt: &activity, CreatedAt: activity, UpdatedAt: activity,
+			},
+			LastReadSeq: reads[userID], ActivityAt: activity, LastMessage: &lastMessage,
+			Group: &repo.GroupConversationRecord{
+				Group:           model.Group{ID: groupID, Name: "周五夜调查局", OwnerID: memberIDs[0], Version: 2, CreatedAt: activity, UpdatedAt: activity},
+				CurrentUserRole: role, MemberCount: len(memberIDs),
+			},
+		}
+		views = append(views, repo.ConversationView{UserID: userID, Record: record})
+		records[userID] = record
+	}
+	return views, records
 }
 
 func TestChatRealtimeChatMessageAckAndPeerDelivery(t *testing.T) {
@@ -165,6 +197,94 @@ func TestChatRealtimeDuplicateMessageOnlyAcks(t *testing.T) {
 	}
 	if remaining := events.all(); len(remaining) != 0 {
 		t.Fatalf("duplicate broadcast events = %#v", remaining)
+	}
+}
+
+func TestChatRealtimeGroupMessageFansOutToActiveMembers(t *testing.T) {
+	requestID := "550e8400-e29b-41d4-a716-446655440000"
+	now := time.Now().UTC()
+	message := model.Message{
+		ID: 1, ConversationID: 41, Seq: 5, SenderID: 7, ClientMessageID: requestID,
+		MessageType: model.MessageTypeText, Content: "全员进行侦查检定", Metadata: []byte(`{}`), CreatedAt: now,
+	}
+	views, records := realtimeGroupFixture([]uint{7, 8, 9}, message, map[uint]uint64{7: 5, 8: 4, 9: 2})
+	repository := &realtimeConvStub{
+		chatRepoStub: chatRepoStub{sendResult: repo.SendMessageResult{Message: message}},
+		records:      records, views: views,
+	}
+	events := &eventRecorder{}
+	realtime := NewChatRealtime(NewChatService(repository, chatUsersStub{users: map[uint]model.User{
+		7: {ID: 7, Username: "keeper"}, 8: {ID: 8, Username: "alice"}, 9: {ID: 9, Username: "bob"},
+	}}), events)
+
+	reply, err := realtime.HandleIM(context.Background(), 7, imws.ClientMessage{
+		Type: imws.MsgChatMessage, RequestID: requestID,
+		Data: json.RawMessage(`{"conversation_id":41,"message_type":"text","content":"全员进行侦查检定"}`),
+	})
+	if err != nil || reply.Type != imws.MsgChatAck {
+		t.Fatalf("HandleIM() = (%#v, %v)", reply, err)
+	}
+	published := events.all()
+	if len(published) != 5 {
+		t.Fatalf("published events = %#v", published)
+	}
+	for index, userID := range []uint{8, 9} {
+		if published[index].userID != userID || published[index].eventType != string(imws.MsgChatMessage) {
+			t.Fatalf("message event %d = %#v", index, published[index])
+		}
+	}
+	for index, userID := range []uint{7, 8, 9} {
+		event := published[index+2]
+		if event.userID != userID || event.eventType != string(imws.MsgConversationUpdated) {
+			t.Fatalf("conversation event %d = %#v", index, event)
+		}
+		data := event.data.(ConversationUpdatedEventData)
+		if data.Conversation.Group == nil || data.Conversation.Peer != nil || data.Conversation.Group.ID != 9 {
+			t.Fatalf("conversation data %d = %#v", index, data.Conversation)
+		}
+	}
+}
+
+func TestChatRealtimeGroupRemovalNotifiesRemovedUserWithoutLeakingSystemMessage(t *testing.T) {
+	now := time.Now().UTC()
+	message := model.Message{
+		ID: 2, ConversationID: 41, Seq: 2, SenderID: 7, ClientMessageID: "550e8400-e29b-41d4-a716-446655440001",
+		MessageType: model.MessageTypeSystem, Content: "member 9 was removed from the group",
+		Metadata: []byte(`{"event":"member_removed","actor_user_id":7,"target_user_id":9,"group_id":9,"group_version":2}`), CreatedAt: now,
+	}
+	views, records := realtimeGroupFixture([]uint{7, 8}, message, map[uint]uint64{7: 2, 8: 0})
+	repository := &realtimeConvStub{records: records, views: views}
+	events := &eventRecorder{}
+	realtime := NewChatRealtime(NewChatService(repository, chatUsersStub{users: map[uint]model.User{
+		7: {ID: 7, Username: "owner"}, 8: {ID: 8, Username: "member"}, 9: {ID: 9, Username: "removed"},
+	}}), events)
+
+	realtime.PublishGroupMutation(&repo.GroupMutationResult{
+		Record: repo.GroupRecord{
+			Group:          model.Group{ID: 9, Name: "周五夜调查局", OwnerID: 7, Version: 2, CreatedAt: now, UpdatedAt: now},
+			ConversationID: 41, CurrentUserRole: model.GroupRoleOwner, MemberCount: 2,
+		},
+		Changed: true, Messages: []model.Message{message},
+	})
+
+	published := events.all()
+	if len(published) != 7 {
+		t.Fatalf("published events = %#v", published)
+	}
+	for index, userID := range []uint{7, 8, 9} {
+		event := published[index]
+		if event.userID != userID || event.eventType != string(imws.MsgGroupMemberChanged) {
+			t.Fatalf("member event %d = %#v", index, event)
+		}
+		data := event.data.(GroupMemberChangedEventData)
+		if data.Event != "member_removed" || data.TargetUserID != 9 || data.Version != 2 {
+			t.Fatalf("member data %d = %#v", index, data)
+		}
+	}
+	for _, event := range published[3:] {
+		if event.userID == 9 {
+			t.Fatalf("removed user received post-removal event %#v", event)
+		}
 	}
 }
 
@@ -394,5 +514,100 @@ func TestChatRealtimeChatMessageOverRealWebSocket(t *testing.T) {
 	if peerUpdated.Conversation.ID != 41 || peerUpdated.Conversation.LastSeq != 1 ||
 		peerUpdated.Conversation.UnreadCount != 1 || peerUpdated.Conversation.Peer.ID != 7 {
 		t.Fatalf("peer conversation view = %#v", peerUpdated.Conversation)
+	}
+}
+
+// TestChatRealtimeGroupLifecycleOverThreeWebSockets 验证三个真实连接上的群消息扇出，
+// 以及成员被移除后仅收到失效事件、不再收到系统消息和会话摘要。
+func TestChatRealtimeGroupLifecycleOverThreeWebSockets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	origins, err := realtime.ParseAllowedOrigins(imwsTestOrigin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := imws.NewHub()
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+
+	requestID := "550e8400-e29b-41d4-a716-446655440000"
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	textMessage := model.Message{
+		ID: 1, ConversationID: 41, Seq: 1, SenderID: 7, ClientMessageID: requestID,
+		MessageType: model.MessageTypeText, Content: "三人群聊", Metadata: []byte(`{}`), CreatedAt: now,
+	}
+	views, records := realtimeGroupFixture([]uint{7, 8, 9}, textMessage, map[uint]uint64{7: 1, 8: 0, 9: 0})
+	repository := &realtimeConvStub{
+		chatRepoStub: chatRepoStub{sendResult: repo.SendMessageResult{Message: textMessage}},
+		records:      records, views: views,
+	}
+	chatService := NewChatService(repository, chatUsersStub{users: map[uint]model.User{
+		7: {ID: 7, Username: "owner"}, 8: {ID: 8, Username: "member-a"}, 9: {ID: 9, Username: "member-b"},
+	}})
+	chatRealtime := NewChatRealtime(chatService, hub)
+	hub.SetInboundHandler(chatRealtime)
+
+	engine := gin.New()
+	engine.GET("/ws/im", imws.HandleWebSocket(hub, imwsTestJWTSecret, origins))
+	server := httptest.NewServer(engine)
+	t.Cleanup(server.Close)
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+
+	connections := map[uint]*websocket.Conn{}
+	for _, userID := range []uint{7, 8, 9} {
+		conn := dialIMTest(t, wsURL, generateIMTestToken(t, userID))
+		connections[userID] = conn
+		defer conn.Close()
+		_ = readIMServerMessage(t, conn)
+	}
+
+	frame := `{"type":"chat_message","request_id":"` + requestID + `","data":{"conversation_id":41,"message_type":"text","content":"三人群聊"}}`
+	if err := connections[7].WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+		t.Fatalf("write group message: %v", err)
+	}
+	ownerFirst := readIMServerMessage(t, connections[7])
+	ownerSecond := readIMServerMessage(t, connections[7])
+	if ownerFirst.Type != imws.MsgConversationUpdated || ownerSecond.Type != imws.MsgChatAck {
+		t.Fatalf("owner frames = %q, %q", ownerFirst.Type, ownerSecond.Type)
+	}
+	for _, userID := range []uint{8, 9} {
+		messageFrame := readIMServerMessage(t, connections[userID])
+		conversationFrame := readIMServerMessage(t, connections[userID])
+		if messageFrame.Type != imws.MsgChatMessage || conversationFrame.Type != imws.MsgConversationUpdated {
+			t.Fatalf("member %d frames = %q, %q", userID, messageFrame.Type, conversationFrame.Type)
+		}
+	}
+
+	systemMessage := model.Message{
+		ID: 2, ConversationID: 41, Seq: 2, SenderID: 7, ClientMessageID: "550e8400-e29b-41d4-a716-446655440001",
+		MessageType: model.MessageTypeSystem, Content: "member 9 was removed from the group",
+		Metadata: []byte(`{"event":"member_removed","actor_user_id":7,"target_user_id":9,"group_id":9,"group_version":2}`), CreatedAt: now.Add(time.Second),
+	}
+	repository.views, _ = realtimeGroupFixture([]uint{7, 8}, systemMessage, map[uint]uint64{7: 2, 8: 0})
+	chatRealtime.PublishGroupMutation(&repo.GroupMutationResult{
+		Record: repo.GroupRecord{
+			Group:          model.Group{ID: 9, Name: "周五夜调查局", OwnerID: 7, Version: 2, CreatedAt: now, UpdatedAt: now.Add(time.Second)},
+			ConversationID: 41, CurrentUserRole: model.GroupRoleOwner, MemberCount: 2,
+		},
+		Changed: true, Messages: []model.Message{systemMessage},
+	})
+
+	for _, userID := range []uint{7, 8} {
+		memberFrame := readIMServerMessage(t, connections[userID])
+		messageFrame := readIMServerMessage(t, connections[userID])
+		conversationFrame := readIMServerMessage(t, connections[userID])
+		if memberFrame.Type != imws.MsgGroupMemberChanged || messageFrame.Type != imws.MsgChatMessage || conversationFrame.Type != imws.MsgConversationUpdated {
+			t.Fatalf("active member %d mutation frames = %q, %q, %q", userID, memberFrame.Type, messageFrame.Type, conversationFrame.Type)
+		}
+	}
+	removedFrame := readIMServerMessage(t, connections[9])
+	if removedFrame.Type != imws.MsgGroupMemberChanged {
+		t.Fatalf("removed member frame = %q", removedFrame.Type)
+	}
+	var removedData GroupMemberChangedEventData
+	if err := json.Unmarshal(removedFrame.Data, &removedData); err != nil {
+		t.Fatal(err)
+	}
+	if removedData.Event != "member_removed" || removedData.TargetUserID != 9 || removedData.Version != 2 {
+		t.Fatalf("removed member event = %#v", removedData)
 	}
 }

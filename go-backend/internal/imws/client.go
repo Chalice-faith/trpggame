@@ -58,6 +58,7 @@ type Client struct {
 	done         chan struct{}
 	closeOnce    sync.Once
 	options      clientOptions
+	limiter      *weightedTokenBucket
 }
 
 // NewClient 创建带有不可复用 connection_id 的 IM Client。
@@ -96,6 +97,7 @@ func newClientWithConnectionID(
 		closeCommand: make(chan closeCommand, closeCommandCap),
 		done:         make(chan struct{}),
 		options:      options,
+		limiter:      newBusinessTokenBucket(),
 	}
 }
 
@@ -166,6 +168,10 @@ func (c *Client) readPump() {
 				c.Hub.sendToClient(c, payload)
 			}
 		case MsgChatMessage, MsgImSync:
+			if !c.limiter.allow(businessMessageCost(message.Type)) {
+				c.sendError(ErrorCodeRateLimited, "rate limited", message.RequestID)
+				continue
+			}
 			c.dispatchBusiness(message)
 		default:
 			c.sendError(

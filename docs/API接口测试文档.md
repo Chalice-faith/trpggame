@@ -639,7 +639,7 @@ ${IM_WS_URL}?token=<ACCESS_TOKEN>
 }
 ```
 
-当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或载荷校验失败、`1705` 类型未支持，以及聊天业务错误 `1709` 会话不可用、`1710` 需要好友关系、`1711` 消息载荷非法、`1712` 消息正文非法、`1715` 同步请求非法、`1716` 聊天服务不可用。`1706`、`1707` 仍为保留码；`1717` 将在 M2.3-C 启用为每连接限流错误。
+当前已启用：`1700` 缺少 Token、`1701` Token 无效、`1702` Origin 不允许、`1703` 信封解析失败、`1704` 字段或载荷校验失败、`1705` 类型未支持，以及聊天业务错误 `1709` 会话不可用、`1710` 需要好友关系、`1711` 消息载荷非法、`1712` 消息正文非法、`1715` 同步请求非法、`1716` 聊天服务不可用、`1717` 每连接限流。`1706`、`1707` 仍为保留码。
 
 连接成功后的第一条消息必须为 `connected`。同一账号建立第二条 IM 连接时，旧连接先收到：
 
@@ -698,7 +698,7 @@ M2.2-C 起客户端可主动发送 `ping`、`chat_message` 和 `im_sync`。IM �
 }
 ```
 
-发送成功后当前连接收到同 `request_id` 的 `chat_ack`；首次发送时 `duplicate=false`，用相同 UUID 和相同载荷重试时返回原消息且 `duplicate=true`，不会再次向对端广播。对端在线连接收到 `chat_message`，双方还会收到按各自视角生成的 `conversation_updated`。
+发送成功后当前连接收到同 `request_id` 的 `chat_ack`；首次发送时 `duplicate=false`，用相同 UUID 和相同载荷重试时返回原消息且 `duplicate=true`，不会再次广播。私聊对端或群聊中除发送者外的全部在线有效成员收到 `chat_message`，全部参与者还会收到按各自视角生成的 `conversation_updated`。
 
 断线或检测到 seq 缺口时发送：
 
@@ -710,7 +710,19 @@ M2.2-C 起客户端可主动发送 `ping`、`chat_message` 和 `im_sync`。IM �
 }
 ```
 
-服务端返回同 `request_id` 的 `im_sync_batch`，其中 `messages` 按 seq 升序，`next_seq` 为本批最后 seq；`has_more=true` 时继续以 `next_seq` 请求。M2.3-B 已允许有效群成员持久化群消息并进行历史/同步访问，但在线群成员实时扇出、群变化事件和限流仍待 M2.3-C；其他未支持入站类型返回 `error / 1705`。
+服务端返回同 `request_id` 的 `im_sync_batch`，其中 `messages` 按 seq 升序，`next_seq` 为本批最后 seq；`has_more=true` 时继续以 `next_seq` 请求。有效群成员与私聊参与者使用同一补推协议；退出或被移除后立即返回会话不可用。
+
+群资料或成员事务提交后，在线有效成员会收到 `group_updated` 或 `group_member_changed`；退出或被移除者也会单独收到对应的成员失效事件，但不会再收到该事务的系统消息或会话摘要：
+
+```json
+{"type":"group_updated","timestamp":1789464000000,"data":{"group":{"id":9,"name":"周五夜调查局","avatar_url":"","owner_id":7,"member_count":3,"version":4}}}
+```
+
+```json
+{"type":"group_member_changed","timestamp":1789464000000,"data":{"group_id":9,"event":"member_removed","actor_user_id":7,"target_user_id":8,"version":5}}
+```
+
+`chat_message` 与 `im_sync` 共用当前物理连接的令牌桶：每秒恢复 10、突发容量 20，成本分别为 1 和 5；`ping` 与未知类型不消耗。令牌不足时返回带原 `request_id` 的 `error / 1717 rate limited`，不会调用业务 Service、不会写库、也不会关闭连接；连接接管后的新连接使用新桶。其他未支持入站类型返回 `error / 1705`。
 
 安全要求：服务端默认访问日志不记录 `/ws` 与 `/ws/im` 的查询串，接口测试和问题反馈中也不要复制包含真实 Token 的完整连接地址。
 
@@ -845,10 +857,14 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 - [ ] 验证新成员可读取完整历史；离群或被移除后群详情、历史、同步和发送立即不可用。
 - [ ] 验证删除好友不影响共同群聊，重新入群复用成员行且不恢复管理员角色。
 - [x] 临时 MySQL 8.4 空库已通过 001—015 迁移、群完整生命周期、群会话查询和双成员表一致性自动化测试。
+- [ ] 三个账号同时连接 `/ws/im`，验证群文本扇出、每人视角的 `conversation_updated`、重复发送不重播及离线 `im_sync` 补齐。
+- [ ] 验证 `group_updated`、`group_member_changed`、系统消息顺序，以及被移除者只收到失效事件。
+- [ ] 连续突发发送与高成本同步触发 1717；确认限流请求未写库且同连接恢复后可继续使用。
+- [x] 自动化已覆盖三连接真实 WebSocket 群生命周期、批量会话视角、移除失权通知和加权令牌桶边界。
 
 ## 7. 当前已知边界
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
 - `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊可靠投递和基于 MySQL seq 的断线补推。M2.3-B 已实现群组 REST、群消息持久化与历史权限；群实时扇出、群变化事件、Vue 群界面和跨实例广播仍未实现。
+- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊/群聊可靠投递、群变化事件和基于 MySQL seq 的断线补推。Vue 群界面和跨实例广播仍未实现。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。

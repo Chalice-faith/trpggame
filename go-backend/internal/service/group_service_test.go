@@ -32,6 +32,12 @@ type groupRepoStub struct {
 func (s *groupRepoStub) mutation() (*repo.GroupMutationResult, error) {
 	return &repo.GroupMutationResult{Record: s.record, Changed: true}, s.err
 }
+
+type groupMutationRecorder struct{ results []*repo.GroupMutationResult }
+
+func (r *groupMutationRecorder) PublishGroupMutation(result *repo.GroupMutationResult) {
+	r.results = append(r.results, result)
+}
 func (s *groupRepoStub) Create(_ context.Context, actorID uint, name, avatar string, _ time.Time) (*repo.GroupMutationResult, error) {
 	s.actorID, s.name, s.avatarURL = actorID, name, avatar
 	return s.mutation()
@@ -141,3 +147,27 @@ func TestGroupServiceMutationValidationAndErrorMapping(t *testing.T) {
 		}
 	}
 }
+
+func TestGroupServicePublishesCommittedMutation(t *testing.T) {
+	repository := &groupRepoStub{record: repo.GroupRecord{Group: model.Group{ID: 9, Version: 2}}}
+	publisher := &groupMutationRecorder{}
+	svc := NewGroupService(repository)
+	svc.SetMutationPublisher(publisher)
+
+	if _, err := svc.Update(context.Background(), 7, 9, 1, ptrString("新群名"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(publisher.results) != 1 || publisher.results[0].Record.Group.ID != 9 {
+		t.Fatalf("published results = %#v", publisher.results)
+	}
+
+	repository.err = repo.ErrGroupVersionConflict
+	if _, err := svc.Update(context.Background(), 7, 9, 1, ptrString("冲突"), nil); !errors.Is(err, ErrGroupVersionConflict) {
+		t.Fatalf("conflict error = %v", err)
+	}
+	if len(publisher.results) != 1 {
+		t.Fatalf("failed mutation was published: %#v", publisher.results)
+	}
+}
+
+func ptrString(value string) *string { return &value }

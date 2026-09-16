@@ -35,6 +35,12 @@ type GroupRepository interface {
 	Transfer(context.Context, uint, uint, uint, uint64, time.Time) (*repo.GroupMutationResult, error)
 }
 
+// GroupMutationPublisher 在群事务提交成功后执行尽力实时投递。
+// 推送失败不能改变 REST 操作的持久化结果。
+type GroupMutationPublisher interface {
+	PublishGroupMutation(*repo.GroupMutationResult)
+}
+
 type GroupSummary struct {
 	ID              uint             `json:"id"`
 	Name            string           `json:"name"`
@@ -66,12 +72,20 @@ type GroupMemberPage struct {
 }
 
 type GroupService struct {
-	groups GroupRepository
-	now    func() time.Time
+	groups    GroupRepository
+	publisher GroupMutationPublisher
+	now       func() time.Time
 }
 
 func NewGroupService(groups GroupRepository) *GroupService {
 	return &GroupService{groups: groups, now: time.Now}
+}
+
+// SetMutationPublisher 在服务开始处理请求前注入实时投递器。
+func (s *GroupService) SetMutationPublisher(publisher GroupMutationPublisher) {
+	if s != nil {
+		s.publisher = publisher
+	}
 }
 
 func (s *GroupService) Create(ctx context.Context, userID uint, name, avatarURL string) (*GroupSummary, error) {
@@ -84,6 +98,7 @@ func (s *GroupService) Create(ctx context.Context, userID uint, name, avatarURL 
 	if err != nil {
 		return nil, mapGroupRepositoryError("create group", err)
 	}
+	s.publishMutation(result)
 	summary := groupSummary(result.Record)
 	return &summary, nil
 }
@@ -161,7 +176,7 @@ func (s *GroupService) Update(ctx context.Context, userID, groupID uint, expecte
 		avatarURL = &trimmed
 	}
 	result, err := s.groups.Update(ctx, userID, groupID, expectedVersion, name, avatarURL, s.now().UTC())
-	return groupMutationSummary(result, err, "update group")
+	return s.groupMutationSummary(result, err, "update group")
 }
 
 func (s *GroupService) Invite(ctx context.Context, userID, groupID uint, targetIDs []uint, expectedVersion uint64) (*GroupSummary, error) {
@@ -181,7 +196,7 @@ func (s *GroupService) Invite(ctx context.Context, userID, groupID uint, targetI
 		unique = append(unique, targetID)
 	}
 	result, err := s.groups.Invite(ctx, userID, groupID, unique, expectedVersion, s.now().UTC())
-	return groupMutationSummary(result, err, "invite group members")
+	return s.groupMutationSummary(result, err, "invite group members")
 }
 
 func (s *GroupService) SetRole(ctx context.Context, userID, groupID, targetID uint, role model.GroupRole, expectedVersion uint64) (*GroupSummary, error) {
@@ -190,7 +205,7 @@ func (s *GroupService) SetRole(ctx context.Context, userID, groupID, targetID ui
 		return nil, ErrInvalidGroupRequest
 	}
 	result, err := s.groups.SetRole(ctx, userID, groupID, targetID, role, expectedVersion, s.now().UTC())
-	return groupMutationSummary(result, err, "set group member role")
+	return s.groupMutationSummary(result, err, "set group member role")
 }
 
 func (s *GroupService) Remove(ctx context.Context, userID, groupID, targetID uint, expectedVersion uint64) (*GroupSummary, error) {
@@ -198,7 +213,7 @@ func (s *GroupService) Remove(ctx context.Context, userID, groupID, targetID uin
 		return nil, ErrInvalidGroupRequest
 	}
 	result, err := s.groups.Remove(ctx, userID, groupID, targetID, expectedVersion, s.now().UTC())
-	return groupMutationSummary(result, err, "remove group member")
+	return s.groupMutationSummary(result, err, "remove group member")
 }
 
 func (s *GroupService) Transfer(ctx context.Context, userID, groupID, targetID uint, expectedVersion uint64) (*GroupSummary, error) {
@@ -206,15 +221,22 @@ func (s *GroupService) Transfer(ctx context.Context, userID, groupID, targetID u
 		return nil, ErrInvalidGroupRequest
 	}
 	result, err := s.groups.Transfer(ctx, userID, groupID, targetID, expectedVersion, s.now().UTC())
-	return groupMutationSummary(result, err, "transfer group owner")
+	return s.groupMutationSummary(result, err, "transfer group owner")
 }
 
-func groupMutationSummary(result *repo.GroupMutationResult, err error, operation string) (*GroupSummary, error) {
+func (s *GroupService) groupMutationSummary(result *repo.GroupMutationResult, err error, operation string) (*GroupSummary, error) {
 	if err != nil {
 		return nil, mapGroupRepositoryError(operation, err)
 	}
+	s.publishMutation(result)
 	summary := groupSummary(result.Record)
 	return &summary, nil
+}
+
+func (s *GroupService) publishMutation(result *repo.GroupMutationResult) {
+	if result != nil && result.Changed && s.publisher != nil {
+		s.publisher.PublishGroupMutation(result)
+	}
 }
 
 func mapGroupRepositoryError(operation string, err error) error {

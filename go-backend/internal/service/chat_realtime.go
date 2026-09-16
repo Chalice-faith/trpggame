@@ -69,6 +69,27 @@ type ConversationUpdatedEventData struct {
 	Conversation ConversationSummary `json:"conversation"`
 }
 
+type GroupEventSummary struct {
+	ID          uint   `json:"id"`
+	Name        string `json:"name"`
+	AvatarURL   string `json:"avatar_url"`
+	OwnerID     uint   `json:"owner_id"`
+	MemberCount int    `json:"member_count"`
+	Version     uint64 `json:"version"`
+}
+
+type GroupUpdatedEventData struct {
+	Group GroupEventSummary `json:"group"`
+}
+
+type GroupMemberChangedEventData struct {
+	GroupID      uint   `json:"group_id"`
+	Event        string `json:"event"`
+	ActorUserID  uint   `json:"actor_user_id"`
+	TargetUserID uint   `json:"target_user_id"`
+	Version      uint64 `json:"version"`
+}
+
 type ImSyncBatchData struct {
 	ConversationID uint          `json:"conversation_id"`
 	Messages       []MessageItem `json:"messages"`
@@ -140,7 +161,11 @@ func serverMessage(messageType imws.MessageType, requestID string, data any) (*i
 	}, nil
 }
 
-// publishDelivery 在消息提交后推送对端 chat_message 和双方视角的 conversation_updated。
+type groupConversationViewRepository interface {
+	ListActiveConversationViews(context.Context, uint) ([]repo.ConversationView, error)
+}
+
+// publishDelivery 在消息提交后按会话类型推送 chat_message 和各成员视角的 conversation_updated。
 // 推送使用独立超时，避免慢请求挤占投递；失败仅记录不含正文的结构化错误。
 func (r *ChatRealtime) publishDelivery(senderID, conversationID uint, item *MessageItem) {
 	ctx, cancel := context.WithTimeout(context.Background(), chatPushTimeout)
@@ -151,12 +176,31 @@ func (r *ChatRealtime) publishDelivery(senderID, conversationID uint, item *Mess
 		log.Printf("[CHAT] load conversation %d for realtime delivery by user %d: %v", conversationID, senderID, err)
 		return
 	}
-	peerID := record.Conversation.DirectPeerID(senderID)
-	if peerID == 0 {
+	switch record.Conversation.Type {
+	case model.ConversationTypeDirect:
+		peerID := record.Conversation.DirectPeerID(senderID)
+		if peerID == 0 {
+			return
+		}
+		r.publishUserEvent(peerID, imws.MsgChatMessage, ChatMessageEventData{Message: item})
+		r.pushConversationUpdated(ctx, conversationID, senderID, peerID)
+	case model.ConversationTypeGroup:
+		r.publishGroupMessageDelivery(ctx, senderID, conversationID, item)
+	}
+}
+
+func (r *ChatRealtime) publishGroupMessageDelivery(ctx context.Context, senderID, conversationID uint, item *MessageItem) {
+	views, err := r.groupConversationViews(ctx, conversationID)
+	if err != nil {
+		log.Printf("[CHAT] load group conversation %d views for realtime delivery: %v", conversationID, err)
 		return
 	}
-	r.publisher.PublishUserEvent(peerID, string(imws.MsgChatMessage), ChatMessageEventData{Message: item})
-	r.pushConversationUpdated(ctx, conversationID, senderID, peerID)
+	for _, view := range views {
+		if view.UserID != senderID {
+			r.publishUserEvent(view.UserID, imws.MsgChatMessage, ChatMessageEventData{Message: item})
+		}
+	}
+	r.pushConversationViews(ctx, views)
 }
 
 func (r *ChatRealtime) pushConversationUpdated(ctx context.Context, conversationID uint, recipients ...uint) {
@@ -171,11 +215,140 @@ func (r *ChatRealtime) pushConversationUpdated(ctx context.Context, conversation
 			log.Printf("[CHAT] load senders for conversation %d realtime update: %v", conversationID, err)
 			continue
 		}
-		r.publisher.PublishUserEvent(
+		r.publishUserEvent(
 			recipient,
-			string(imws.MsgConversationUpdated),
+			imws.MsgConversationUpdated,
 			ConversationUpdatedEventData{Conversation: conversationSummary(*record, senders)},
 		)
+	}
+}
+
+func (r *ChatRealtime) groupConversationViews(ctx context.Context, conversationID uint) ([]repo.ConversationView, error) {
+	repository, ok := r.chat.chats.(groupConversationViewRepository)
+	if !ok {
+		return nil, fmt.Errorf("chat repository does not support group conversation views")
+	}
+	return repository.ListActiveConversationViews(ctx, conversationID)
+}
+
+func (r *ChatRealtime) pushConversationViews(ctx context.Context, views []repo.ConversationView) {
+	records := make([]repo.ConversationRecord, 0, len(views))
+	for _, view := range views {
+		records = append(records, view.Record)
+	}
+	senders, err := r.chat.loadMessageSenders(ctx, conversationLastMessages(records))
+	if err != nil {
+		log.Printf("[CHAT] load group conversation senders for realtime update: %v", err)
+		return
+	}
+	for _, view := range views {
+		r.publishUserEvent(
+			view.UserID,
+			imws.MsgConversationUpdated,
+			ConversationUpdatedEventData{Conversation: conversationSummary(view.Record, senders)},
+		)
+	}
+}
+
+type groupSystemMetadata struct {
+	Event        string `json:"event"`
+	ActorUserID  uint   `json:"actor_user_id"`
+	TargetUserID uint   `json:"target_user_id"`
+	GroupID      uint   `json:"group_id"`
+	GroupVersion uint64 `json:"group_version"`
+}
+
+// PublishGroupMutation 实现 GroupMutationPublisher。仓储事务已经提交后，
+// 才向变更后的有效成员推送群事件、系统消息和各自视角的会话摘要。
+func (r *ChatRealtime) PublishGroupMutation(result *repo.GroupMutationResult) {
+	if r == nil || result == nil || !result.Changed || r.publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), chatPushTimeout)
+	defer cancel()
+
+	views, err := r.groupConversationViews(ctx, result.Record.ConversationID)
+	if err != nil {
+		log.Printf("[GROUP] load conversation %d views for realtime mutation: %v", result.Record.ConversationID, err)
+		return
+	}
+	active := make(map[uint]struct{}, len(views))
+	for _, view := range views {
+		active[view.UserID] = struct{}{}
+	}
+
+	metadata := make([]groupSystemMetadata, 0, len(result.Messages))
+	groupUpdated := len(result.Messages) == 0
+	for _, message := range result.Messages {
+		var current groupSystemMetadata
+		if err := json.Unmarshal(message.Metadata, &current); err != nil {
+			log.Printf("[GROUP] decode system message %d metadata for realtime mutation: %v", message.ID, err)
+			continue
+		}
+		metadata = append(metadata, current)
+		switch current.Event {
+		case "group_created", "group_name_changed", "group_avatar_changed":
+			groupUpdated = true
+		}
+	}
+
+	if groupUpdated {
+		data := GroupUpdatedEventData{Group: groupEventSummary(result.Record)}
+		for _, view := range views {
+			r.publishUserEvent(view.UserID, imws.MsgGroupUpdated, data)
+		}
+	}
+	for _, current := range metadata {
+		if !groupMemberEvent(current.Event) {
+			continue
+		}
+		data := GroupMemberChangedEventData{
+			GroupID: current.GroupID, Event: current.Event, ActorUserID: current.ActorUserID,
+			TargetUserID: current.TargetUserID, Version: current.GroupVersion,
+		}
+		for _, view := range views {
+			r.publishUserEvent(view.UserID, imws.MsgGroupMemberChanged, data)
+		}
+		if (current.Event == "member_removed" || current.Event == "member_left") && current.TargetUserID > 0 {
+			if _, stillActive := active[current.TargetUserID]; !stillActive {
+				r.publishUserEvent(current.TargetUserID, imws.MsgGroupMemberChanged, data)
+			}
+		}
+	}
+
+	senders, err := r.chat.loadMessageSenders(ctx, result.Messages)
+	if err != nil {
+		log.Printf("[GROUP] load system message senders for realtime mutation: %v", err)
+		return
+	}
+	for _, message := range result.Messages {
+		item := messageItem(message, senders)
+		for _, view := range views {
+			r.publishUserEvent(view.UserID, imws.MsgChatMessage, ChatMessageEventData{Message: &item})
+		}
+	}
+	r.pushConversationViews(ctx, views)
+}
+
+func groupEventSummary(record repo.GroupRecord) GroupEventSummary {
+	return GroupEventSummary{
+		ID: record.Group.ID, Name: record.Group.Name, AvatarURL: record.Group.AvatarURL,
+		OwnerID: record.Group.OwnerID, MemberCount: record.MemberCount, Version: record.Group.Version,
+	}
+}
+
+func groupMemberEvent(event string) bool {
+	switch event {
+	case "member_joined", "member_role_changed", "member_removed", "member_left", "owner_transferred":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *ChatRealtime) publishUserEvent(userID uint, eventType imws.MessageType, data any) {
+	if r.publisher == nil || !r.publisher.PublishUserEvent(userID, string(eventType), data) {
+		log.Printf("[CHAT] realtime delivery unavailable type=%s user_id=%d", eventType, userID)
 	}
 }
 

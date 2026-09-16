@@ -30,6 +30,7 @@ const (
 	ErrorCodeInvalidMessageContent  = 1712
 	ErrorCodeInvalidSyncRequest     = 1715
 	ErrorCodeChatUnavailable        = 1716
+	ErrorCodeRateLimited            = 1717
 )
 
 const (
@@ -72,6 +73,8 @@ const (
 	MsgImSync              MessageType = "im_sync"
 	MsgImSyncBatch         MessageType = "im_sync_batch"
 	MsgConversationUpdated MessageType = "conversation_updated"
+	MsgGroupUpdated        MessageType = "group_updated"
+	MsgGroupMemberChanged  MessageType = "group_member_changed"
 )
 
 // ClientMessage 是客户端发送到 IM 通道的严格信封。

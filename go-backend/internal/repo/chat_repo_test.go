@@ -100,6 +100,35 @@ func TestChatRepoListMessagesAfterHidesConversationFromNonMember(t *testing.T) {
 	assertSQLExpectations(t, mock)
 }
 
+func TestChatRepoListActiveConversationViewsLoadsGroupMembersInOneQuery(t *testing.T) {
+	repository, mock := newMockChatRepo(t)
+	now := time.Now().UTC()
+	columns := []string{
+		"viewer_id", "id", "type", "direct_low_id", "direct_high_id", "group_id", "last_seq",
+		"last_message_at", "created_at", "updated_at", "last_read_seq", "activity_at",
+		"group_name", "group_avatar_url", "group_owner_id", "group_version", "group_created_at", "group_updated_at",
+		"group_role", "group_member_count", "last_message_id", "last_message_seq", "last_sender_id",
+		"last_client_id", "last_message_type", "last_content", "last_metadata", "last_created_at",
+	}
+	mock.ExpectQuery("SELECT .*me.user_id AS viewer_id.*FROM conversations c.*ORDER BY me.user_id ASC").
+		WithArgs(uint(41)).
+		WillReturnRows(sqlmock.NewRows(columns).
+			AddRow(7, 41, "group", nil, nil, 9, 5, now, now, now, 5, now, "调查局", "", 7, 3, now, now, "owner", 2, 91, 5, 7, "550e8400-e29b-41d4-a716-446655440000", "text", "hello", []byte(`{}`), now).
+			AddRow(8, 41, "group", nil, nil, 9, 5, now, now, now, 2, now, "调查局", "", 7, 3, now, now, "member", 2, 91, 5, 7, "550e8400-e29b-41d4-a716-446655440000", "text", "hello", []byte(`{}`), now))
+
+	views, err := repository.ListActiveConversationViews(context.Background(), 41)
+	if err != nil || len(views) != 2 {
+		t.Fatalf("ListActiveConversationViews() = (%#v, %v)", views, err)
+	}
+	if views[0].UserID != 7 || views[0].Record.Group == nil || views[0].Record.Group.CurrentUserRole != model.GroupRoleOwner || views[0].Record.LastReadSeq != 5 {
+		t.Fatalf("owner view = %#v", views[0])
+	}
+	if views[1].UserID != 8 || views[1].Record.Group == nil || views[1].Record.Group.CurrentUserRole != model.GroupRoleMember || views[1].Record.LastReadSeq != 2 {
+		t.Fatalf("member view = %#v", views[1])
+	}
+	assertSQLExpectations(t, mock)
+}
+
 func newMockChatRepo(t *testing.T) (*ChatRepo, sqlmock.Sqlmock) {
 	t.Helper()
 	sqlDB, mock, err := sqlmock.New()

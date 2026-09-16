@@ -35,12 +35,20 @@ type GroupConversationRecord struct {
 	MemberCount     int
 }
 
+// ConversationView 是同一会话面向某个有效成员的摘要视角。
+// 群实时扇出使用批量查询一次取得全部成员的未读水位和角色。
+type ConversationView struct {
+	UserID uint
+	Record ConversationRecord
+}
+
 type SendMessageResult struct {
 	Message   model.Message
 	Duplicate bool
 }
 
 type conversationRecordRow struct {
+	ViewerID         uint
 	ID               uint
 	Type             model.ConversationType
 	DirectLowID      *uint
@@ -138,6 +146,39 @@ func (r *ChatRepo) ListConversations(ctx context.Context, userID uint, before ti
 	return r.queryConversations(ctx, userID, extra, args, limit)
 }
 
+// ListActiveConversationViews 批量返回群会话全部有效成员的各自视角。
+// 非群会话或不存在的会话返回空集合；调用方已经持有发送成功后的会话类型快照。
+func (r *ChatRepo) ListActiveConversationViews(ctx context.Context, conversationID uint) ([]ConversationView, error) {
+	query := `SELECT
+ me.user_id AS viewer_id,
+ c.id, c.type, c.direct_low_id, c.direct_high_id, c.group_id, c.last_seq,
+ c.last_message_at, c.created_at, c.updated_at, me.last_read_seq,
+ COALESCE(c.last_message_at, c.created_at) AS activity_at,
+ g.name AS group_name, g.avatar_url AS group_avatar_url, g.owner_id AS group_owner_id,
+ g.version AS group_version, g.created_at AS group_created_at, g.updated_at AS group_updated_at,
+ gm.role AS group_role,
+ (SELECT COUNT(*) FROM group_members active_members WHERE active_members.group_id = g.id AND active_members.status = 'active') AS group_member_count,
+ lm.id AS last_message_id, lm.seq AS last_message_seq, lm.sender_id AS last_sender_id,
+ lm.client_message_id AS last_client_id, lm.message_type AS last_message_type,
+ lm.content AS last_content, lm.metadata AS last_metadata, lm.created_at AS last_created_at
+FROM conversations c
+JOIN conversation_members me ON me.conversation_id = c.id AND me.status = 'active'
+JOIN ` + "`groups`" + ` g ON g.id = c.group_id
+JOIN group_members gm ON gm.group_id = g.id AND gm.user_id = me.user_id AND gm.status = 'active'
+LEFT JOIN messages lm ON lm.conversation_id = c.id AND lm.seq = c.last_seq
+WHERE c.id = ? AND c.type = 'group'
+ORDER BY me.user_id ASC`
+	var rows []conversationRecordRow
+	if err := r.db.WithContext(ctx).Raw(query, conversationID).Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	views := make([]ConversationView, 0, len(rows))
+	for _, row := range rows {
+		views = append(views, ConversationView{UserID: row.ViewerID, Record: conversationRecord(row)})
+	}
+	return views, nil
+}
+
 func (r *ChatRepo) queryConversations(ctx context.Context, userID uint, extra string, extraArgs []any, limit int) ([]ConversationRecord, error) {
 	query := `SELECT
  c.id, c.type, c.direct_low_id, c.direct_high_id, c.group_id, c.last_seq,
@@ -173,36 +214,40 @@ LIMIT ?`
 	}
 	result := make([]ConversationRecord, 0, len(rows))
 	for _, row := range rows {
-		record := ConversationRecord{
-			Conversation: model.Conversation{
-				ID: row.ID, Type: row.Type, DirectLowID: row.DirectLowID, DirectHighID: row.DirectHighID, GroupID: row.GroupID,
-				LastSeq: row.LastSeq, LastMessageAt: row.LastMessageAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
-			},
-			LastReadSeq: row.LastReadSeq, ActivityAt: row.ActivityAt,
-			Peer:             model.User{ID: row.PeerID, Username: row.PeerUsername, Nickname: row.PeerNickname, AvatarURL: row.PeerAvatarURL},
-			FriendshipStatus: row.FriendshipStatus,
-		}
-		if row.Type == model.ConversationTypeGroup && row.GroupID != nil && row.GroupCreatedAt != nil && row.GroupUpdatedAt != nil {
-			record.Group = &GroupConversationRecord{
-				Group: model.Group{
-					ID: *row.GroupID, Name: row.GroupName, AvatarURL: row.GroupAvatarURL,
-					OwnerID: row.GroupOwnerID, Version: row.GroupVersion,
-					CreatedAt: *row.GroupCreatedAt, UpdatedAt: *row.GroupUpdatedAt,
-				},
-				CurrentUserRole: row.GroupRole, MemberCount: row.GroupMemberCount,
-			}
-		}
-		if row.LastMessageID != nil && row.LastMessageSeq != nil && row.LastSenderID != nil && row.LastClientID != nil && row.LastMessageType != nil && row.LastContent != nil && row.LastCreatedAt != nil {
-			record.LastMessage = &model.Message{
-				ID: *row.LastMessageID, ConversationID: row.ID, Seq: *row.LastMessageSeq,
-				SenderID: *row.LastSenderID, ClientMessageID: *row.LastClientID,
-				MessageType: *row.LastMessageType, Content: *row.LastContent,
-				Metadata: append([]byte(nil), row.LastMetadata...), CreatedAt: *row.LastCreatedAt,
-			}
-		}
-		result = append(result, record)
+		result = append(result, conversationRecord(row))
 	}
 	return result, nil
+}
+
+func conversationRecord(row conversationRecordRow) ConversationRecord {
+	record := ConversationRecord{
+		Conversation: model.Conversation{
+			ID: row.ID, Type: row.Type, DirectLowID: row.DirectLowID, DirectHighID: row.DirectHighID, GroupID: row.GroupID,
+			LastSeq: row.LastSeq, LastMessageAt: row.LastMessageAt, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt,
+		},
+		LastReadSeq: row.LastReadSeq, ActivityAt: row.ActivityAt,
+		Peer:             model.User{ID: row.PeerID, Username: row.PeerUsername, Nickname: row.PeerNickname, AvatarURL: row.PeerAvatarURL},
+		FriendshipStatus: row.FriendshipStatus,
+	}
+	if row.Type == model.ConversationTypeGroup && row.GroupID != nil && row.GroupCreatedAt != nil && row.GroupUpdatedAt != nil {
+		record.Group = &GroupConversationRecord{
+			Group: model.Group{
+				ID: *row.GroupID, Name: row.GroupName, AvatarURL: row.GroupAvatarURL,
+				OwnerID: row.GroupOwnerID, Version: row.GroupVersion,
+				CreatedAt: *row.GroupCreatedAt, UpdatedAt: *row.GroupUpdatedAt,
+			},
+			CurrentUserRole: row.GroupRole, MemberCount: row.GroupMemberCount,
+		}
+	}
+	if row.LastMessageID != nil && row.LastMessageSeq != nil && row.LastSenderID != nil && row.LastClientID != nil && row.LastMessageType != nil && row.LastContent != nil && row.LastCreatedAt != nil {
+		record.LastMessage = &model.Message{
+			ID: *row.LastMessageID, ConversationID: row.ID, Seq: *row.LastMessageSeq,
+			SenderID: *row.LastSenderID, ClientMessageID: *row.LastClientID,
+			MessageType: *row.LastMessageType, Content: *row.LastContent,
+			Metadata: append([]byte(nil), row.LastMetadata...), CreatedAt: *row.LastCreatedAt,
+		}
+	}
+	return record
 }
 
 func (r *ChatRepo) ListMessages(ctx context.Context, userID, conversationID uint, beforeSeq uint64, limit int) ([]model.Message, error) {

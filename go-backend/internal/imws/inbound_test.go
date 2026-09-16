@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -315,5 +316,53 @@ func TestClientBusinessDuringHubStopDoesNotDeadlock(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("business handling deadlocked during hub stop")
+	}
+}
+
+func TestClientRateLimitSkipsHandlerAndKeepsConnectionOpen(t *testing.T) {
+	handler := &stubInbound{}
+	wsURL, _ := newTestIMServerWithInbound(t, handler)
+	conn, _, err := dialIM(t, wsURL, generateTestToken(t, 7), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	_ = readServerMessage(t, conn)
+
+	rateLimited := 0
+	for index := 1; index <= 30; index++ {
+		requestID := fmt.Sprintf("550e8400-e29b-41d4-a716-%012d", index)
+		frame := `{"type":"chat_message","request_id":"` + requestID + `","data":{"conversation_id":41}}`
+		if err := conn.WriteMessage(websocket.TextMessage, []byte(frame)); err != nil {
+			t.Fatalf("write request %d: %v", index, err)
+		}
+	}
+	for index := 1; index <= 30; index++ {
+		requestID := fmt.Sprintf("550e8400-e29b-41d4-a716-%012d", index)
+		reply := readServerMessage(t, conn)
+		if reply.Type == MsgError {
+			var data ErrorData
+			if err := json.Unmarshal(reply.Data, &data); err != nil {
+				t.Fatal(err)
+			}
+			if data.Code != ErrorCodeRateLimited || data.Message != "rate limited" || reply.RequestID != requestID {
+				t.Fatalf("rate-limit reply = %#v, data = %#v", reply, data)
+			}
+			rateLimited++
+		}
+	}
+	if rateLimited == 0 {
+		t.Fatal("rapid burst did not trigger rate limiting")
+	}
+	if got, want := handler.count(), 30-rateLimited; got != want {
+		t.Fatalf("handler count = %d, want %d", got, want)
+	}
+
+	pingID := "8c21c14d-cf36-4fd2-845d-1496d9c154b2"
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"ping","request_id":"`+pingID+`","data":{}}`)); err != nil {
+		t.Fatalf("write ping after limit: %v", err)
+	}
+	if pong := readServerMessage(t, conn); pong.Type != MsgPong || pong.RequestID != pingID {
+		t.Fatalf("connection closed or ping limited: %#v", pong)
 	}
 }

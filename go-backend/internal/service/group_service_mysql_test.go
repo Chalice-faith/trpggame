@@ -72,7 +72,8 @@ func TestGroupServiceMySQL84Lifecycle(t *testing.T) {
 	})
 
 	groupService := NewGroupService(repo.NewGroupRepo(db))
-	chatService := NewChatService(repo.NewChatRepo(db), repo.NewUserRepo(db))
+	chatRepo := repo.NewChatRepo(db)
+	chatService := NewChatService(chatRepo, repo.NewUserRepo(db))
 	created, err := groupService.Create(context.Background(), owner, "Integration Group", "")
 	if err != nil || created.Version != 1 || created.MemberCount != 1 {
 		t.Fatalf("create = (%#v, %v)", created, err)
@@ -108,9 +109,27 @@ func TestGroupServiceMySQL84Lifecycle(t *testing.T) {
 	if err := db.Model(&model.Friendship{}).Where("id = ?", friendships[2].ID).Update("status", model.FriendshipStatusRemoved).Error; err != nil {
 		t.Fatal(err)
 	}
-	message, duplicate, err := chatService.SendText(context.Background(), extra, conversationID, uuid.NewString(), "group hello")
+	clientMessageID := uuid.NewString()
+	message, duplicate, err := chatService.SendText(context.Background(), extra, conversationID, clientMessageID, "group hello")
 	if err != nil || duplicate || message.Seq != 6 {
 		t.Fatalf("group send = (%#v, %v, %v)", message, duplicate, err)
+	}
+	repeated, duplicate, err := chatService.SendText(context.Background(), extra, conversationID, clientMessageID, "group hello")
+	if err != nil || !duplicate || repeated.ID != message.ID || repeated.Seq != 6 {
+		t.Fatalf("duplicate group send = (%#v, %v, %v)", repeated, duplicate, err)
+	}
+	synced, hasMore, err := chatService.ListMessagesSince(context.Background(), extra, conversationID, 4, 100)
+	if err != nil || hasMore || len(synced) != 2 || synced[0].Seq != 5 || synced[1].Seq != 6 {
+		t.Fatalf("group sync = (%#v, %v, %v)", synced, hasMore, err)
+	}
+	views, err := chatRepo.ListActiveConversationViews(context.Background(), conversationID)
+	if err != nil || len(views) != 4 {
+		t.Fatalf("group conversation views = (%#v, %v)", views, err)
+	}
+	for _, view := range views {
+		if view.Record.Group == nil || view.Record.Group.MemberCount != 4 || view.Record.Conversation.LastSeq != 6 {
+			t.Fatalf("invalid group conversation view = %#v", view)
+		}
 	}
 	history, err := chatService.ListMessages(context.Background(), extra, conversationID, 0, 20)
 	if err != nil || len(history.Items) != 6 || history.Items[0].Seq != 1 {
@@ -131,6 +150,18 @@ func TestGroupServiceMySQL84Lifecycle(t *testing.T) {
 	}
 	if _, _, err := chatService.SendText(context.Background(), member, conversationID, uuid.NewString(), "forbidden"); !errors.Is(err, ErrConversationNotFound) {
 		t.Fatalf("removed send = %v", err)
+	}
+	if _, _, err := chatService.ListMessagesSince(context.Background(), member, conversationID, 0, 100); !errors.Is(err, ErrConversationNotFound) {
+		t.Fatalf("removed sync = %v", err)
+	}
+	views, err = chatRepo.ListActiveConversationViews(context.Background(), conversationID)
+	if err != nil || len(views) != 3 {
+		t.Fatalf("post-removal group conversation views = (%#v, %v)", views, err)
+	}
+	for _, view := range views {
+		if view.UserID == member {
+			t.Fatalf("removed member remained in active views: %#v", views)
+		}
 	}
 
 	transferred, err := groupService.Transfer(context.Background(), owner, groupID, admin, 5)
