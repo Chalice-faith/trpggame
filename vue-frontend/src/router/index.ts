@@ -7,6 +7,7 @@ const RegisterView = () => import('@/views/RegisterView.vue')
 const DashboardView = () => import('@/views/DashboardView.vue')
 const FriendsView = () => import('@/views/FriendsView.vue')
 const ChatView = () => import('@/views/ChatView.vue')
+const GroupsView = () => import('@/views/GroupsView.vue')
 const ScriptDetailView = () => import('@/views/ScriptDetailView.vue')
 const GameSoloView = () => import('@/views/GameSoloView.vue')
 const GamePlayView = () => import('@/views/GamePlayView.vue')
@@ -44,6 +45,12 @@ const routes: RouteRecordRaw[] = [
     path: '/chat/:conversationId?',
     name: 'Chat',
     component: ChatView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/groups/:groupId?',
+    name: 'Groups',
+    component: GroupsView,
     meta: { requiresAuth: true }
   },
   {

@@ -8,6 +8,7 @@ import App from '@/App.vue'
 import { useAuthStore, type User } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
+import { useGroupsStore } from '@/stores/groups'
 import { IM_RECONNECT_DELAYS, useIMStore } from '@/stores/im'
 
 class MockWebSocket {
@@ -248,5 +249,37 @@ describe('global IM store', () => {
 
     expect(ack).toHaveBeenCalledTimes(1)
     expect(incoming).toHaveBeenCalledTimes(1)
+  })
+
+  it('dispatches group updates and member changes to the groups store', () => {
+    logIn()
+    const groupsStore = useGroupsStore()
+    const updated = vi.spyOn(groupsStore, 'handleGroupUpdated')
+    const memberChanged = vi.spyOn(groupsStore, 'handleMemberChanged')
+    const imStore = useIMStore()
+
+    imStore.handleMessage(
+      JSON.stringify({
+        type: 'group_updated',
+        timestamp: Date.now(),
+        data: { group: { id: 9, name: '调查局', version: 4 } }
+      })
+    )
+    imStore.handleMessage(
+      JSON.stringify({
+        type: 'group_member_changed',
+        timestamp: Date.now(),
+        data: {
+          group_id: 9,
+          event: 'member_joined',
+          actor_user_id: 7,
+          target_user_id: 8,
+          version: 5
+        }
+      })
+    )
+
+    expect(updated).toHaveBeenCalledTimes(1)
+    expect(memberChanged).toHaveBeenCalledTimes(1)
   })
 })

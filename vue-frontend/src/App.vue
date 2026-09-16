@@ -4,11 +4,13 @@ import { useAuthStore } from '@/stores/auth'
 import { useChatStore } from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
 import { useIMStore } from '@/stores/im'
+import { useGroupsStore } from '@/stores/groups'
 
 const authStore = useAuthStore()
 const chatStore = useChatStore()
 const friendsStore = useFriendsStore()
 const imStore = useIMStore()
+const groupsStore = useGroupsStore()
 
 watch(
   () => authStore.isLoggedIn,
@@ -19,6 +21,7 @@ watch(
       imStore.disconnect()
       chatStore.clear()
       friendsStore.clear()
+      groupsStore.clear()
     }
   },
   { immediate: true }

@@ -408,6 +408,17 @@ export const useChatStore = defineStore('chat', () => {
     return conversations.value.find(({ id }) => id === conversationId)
   }
 
+  function removeConversation(conversationId: number) {
+    conversations.value = conversations.value.filter(({ id }) => id !== conversationId)
+    delete messagesByConversation.value[conversationId]
+    delete historyByConversation.value[conversationId]
+    syncingConversations.delete(conversationId)
+    for (const [requestId, target] of syncRequests) {
+      if (target === conversationId) syncRequests.delete(requestId)
+    }
+    if (selectedConversationId.value === conversationId) selectedConversationId.value = null
+  }
+
   function clear() {
     conversations.value = []
     messagesByConversation.value = {}
@@ -450,6 +461,7 @@ export const useChatStore = defineStore('chat', () => {
     handleConnected,
     handleDisconnected,
     requestSync,
+    removeConversation,
     clear
   }
 })

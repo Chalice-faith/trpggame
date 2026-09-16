@@ -10,6 +10,11 @@ import {
   type ImSyncBatchData
 } from '@/stores/chat'
 import { useFriendsStore } from '@/stores/friends'
+import {
+  type GroupMemberChangedEventData,
+  type GroupUpdatedEventData
+} from '@/api/groups'
+import { useGroupsStore } from '@/stores/groups'
 
 export const IM_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000]
 const TOKEN_REFRESH_WINDOW_MS = 30_000
@@ -165,6 +170,7 @@ export const useIMStore = defineStore('im', () => {
     }
     const friendsStore = useFriendsStore()
     const chatStore = useChatStore()
+    const groupsStore = useGroupsStore()
     if (message.type === 'presence') {
       const data = message.data as PresenceEventData
       if (
@@ -185,7 +191,15 @@ export const useIMStore = defineStore('im', () => {
     } else if (message.type === 'chat_message') {
       chatStore.handleIncoming(message.data as ChatMessageEventData)
     } else if (message.type === 'conversation_updated') {
-      chatStore.handleConversationUpdated(message.data as ConversationUpdatedData)
+      const data = message.data as ConversationUpdatedData
+      chatStore.handleConversationUpdated(data)
+      if (data.conversation?.type === 'group') {
+        groupsStore.applyConversationGroup(data.conversation.group)
+      }
+    } else if (message.type === 'group_updated') {
+      groupsStore.handleGroupUpdated(message.data as GroupUpdatedEventData)
+    } else if (message.type === 'group_member_changed') {
+      groupsStore.handleMemberChanged(message.data as GroupMemberChangedEventData)
     } else if (message.type === 'im_sync_batch') {
       chatStore.handleSyncBatch(message.data as ImSyncBatchData)
     } else if (message.type === 'error') {

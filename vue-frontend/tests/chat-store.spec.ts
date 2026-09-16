@@ -31,6 +31,7 @@ function conversation(overrides: Partial<ConversationSummary> = {}): Conversatio
     id: 41,
     type: 'direct',
     peer,
+    group: null,
     can_send: true,
     last_seq: 0,
     last_read_seq: 0,

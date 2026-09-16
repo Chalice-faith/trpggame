@@ -19,10 +19,17 @@ export interface ChatMessage {
   created_at: string
 }
 
-export interface ConversationSummary {
+export interface ConversationGroupSummary {
   id: number
-  type: 'direct' | 'group'
-  peer: PublicUser
+  name: string
+  avatar_url: string
+  current_user_role: 'owner' | 'admin' | 'member'
+  member_count: number
+  version: number
+}
+
+interface ConversationBase {
+  id: number
   can_send: boolean
   last_seq: number
   last_read_seq: number
@@ -31,6 +38,22 @@ export interface ConversationSummary {
   created_at: string
   updated_at: string
 }
+
+export interface DirectConversationSummary extends ConversationBase {
+  type: 'direct'
+  peer: PublicUser
+  group: null
+}
+
+export interface GroupConversationSummary extends ConversationBase {
+  type: 'group'
+  peer: null
+  group: ConversationGroupSummary
+}
+
+export type ConversationSummary =
+  | DirectConversationSummary
+  | GroupConversationSummary
 
 export interface ConversationPage {
   items: ConversationSummary[]

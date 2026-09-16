@@ -35,6 +35,7 @@ function conversation(canSend = true) {
     id: 41,
     type: 'direct' as const,
     peer,
+    group: null,
     can_send: canSend,
     last_seq: 1,
     last_read_seq: 0,
@@ -199,6 +200,50 @@ describe('ChatView', () => {
       { conversation_id: 41, message_type: 'text', content: '需要重试' },
       expect.any(String)
     )
+    wrapper.unmount()
+  })
+
+  it('renders a group conversation and system messages without a fake peer', async () => {
+    const groupConversation = {
+      ...conversation(),
+      type: 'group' as const,
+      peer: null,
+      group: {
+        id: 9,
+        name: '周五夜调查局',
+        avatar_url: '',
+        current_user_role: 'admin' as const,
+        member_count: 3,
+        version: 4
+      },
+      last_message: {
+        ...conversation().last_message,
+        sender: {
+          id: 7,
+          username: 'player07',
+          nickname: '守秘人',
+          avatar_url: ''
+        },
+        message_type: 'system' as const,
+        content: 'member 8 joined the group',
+        metadata: { event: 'member_joined', target_user_id: 8 }
+      }
+    }
+    apiMocks.listConversations.mockResolvedValue({ items: [groupConversation], next_cursor: null })
+    apiMocks.listMessages.mockResolvedValue({
+      items: [groupConversation.last_message],
+      next_before_seq: 0,
+      has_more: false
+    })
+    const imStore = useIMStore()
+    imStore.status = 'connected'
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('周五夜调查局')
+    expect(wrapper.text()).toContain('3 人 · 管理员')
+    expect(wrapper.text()).toContain('守秘人 邀请成员 #8 加入群组')
+    expect(wrapper.text()).toContain('群成员')
     wrapper.unmount()
   })
 })

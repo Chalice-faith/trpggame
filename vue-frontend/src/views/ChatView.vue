@@ -25,7 +25,12 @@ const canSend = computed(
   () => Boolean(chatStore.selectedConversation?.can_send && imStore.isConnected)
 )
 const composerPlaceholder = computed(() => {
-  if (!chatStore.selectedConversation?.can_send) return '已不是好友，历史消息仅供查看'
+  const conversation = chatStore.selectedConversation
+  if (!conversation?.can_send) {
+    return conversation?.type === 'group'
+      ? '已不在群组中，无法继续发送'
+      : '已不是好友，历史消息仅供查看'
+  }
   if (!imStore.isConnected) return '实时连接已断开，重连后可继续发送'
   return '输入消息，Enter 发送，Shift + Enter 换行'
 })
@@ -108,12 +113,44 @@ function isMine(message: ChatMessageView) {
 }
 
 function displayName(conversation: ConversationSummary) {
+  if (conversation.type === 'group') return conversation.group.name
   return conversation.peer.nickname.trim() || conversation.peer.username
 }
 
 function avatarText(conversation: ConversationSummary) {
   return [...displayName(conversation)][0]?.toUpperCase() || '?'
 }
+
+function avatarUrl(conversation: ConversationSummary) {
+  return conversation.type === 'group'
+    ? conversation.group.avatar_url
+    : conversation.peer.avatar_url
+}
+
+function conversationSubtitle(conversation: ConversationSummary) {
+  return conversation.type === 'group'
+    ? `${conversation.group.member_count} 人 · ${groupRoleCopy[conversation.group.current_user_role]}`
+    : `@${conversation.peer.username}`
+}
+
+function systemMessageText(message: ChatMessageView) {
+  const event = typeof message.metadata?.event === 'string' ? message.metadata.event : ''
+  const target = Number(message.metadata?.target_user_id) || 0
+  const actor = message.sender?.nickname.trim() || message.sender?.username || '成员'
+  const copy: Record<string, string> = {
+    group_created: `${actor} 创建了群组`,
+    group_name_changed: `${actor} 修改了群名称`,
+    group_avatar_changed: `${actor} 修改了群头像`,
+    member_joined: `${actor} 邀请成员 #${target} 加入群组`,
+    member_role_changed: `${actor} 调整了成员 #${target} 的角色`,
+    member_removed: `${actor} 将成员 #${target} 移出群组`,
+    member_left: `成员 #${target} 退出了群组`,
+    owner_transferred: `${actor} 将群主转让给成员 #${target}`
+  }
+  return copy[event] || message.content
+}
+
+const groupRoleCopy = { owner: '群主', admin: '管理员', member: '成员' } as const
 
 function formatTime(value: string) {
   const date = new Date(value)
@@ -150,6 +187,7 @@ watch(() => route.params.conversationId, openRouteConversation)
           {{ imStore.isConnected ? '实时连接正常' : '实时连接中断' }}
         </span>
         <el-button :icon="UserFilled" @click="router.push('/friends')">好友</el-button>
+        <el-button :icon="UserFilled" @click="router.push('/groups')">群组</el-button>
         <el-button :icon="ArrowLeft" @click="router.push('/dashboard')">剧本库</el-button>
       </div>
     </header>
@@ -168,7 +206,7 @@ watch(() => route.params.conversationId, openRouteConversation)
         <div class="conversation-heading">
           <div>
             <p class="eyebrow">CONVERSATIONS</p>
-            <h1>私聊</h1>
+            <h1>会话</h1>
           </div>
           <el-button
             text
@@ -192,8 +230,8 @@ watch(() => route.params.conversationId, openRouteConversation)
         >
           <ChatDotRound />
           <strong>还没有会话</strong>
-          <span>从好友页选择一位同伴开始私聊。</span>
-          <el-button type="primary" plain @click="router.push('/friends')">前往好友页</el-button>
+          <span>从好友页开始私聊，或创建一个冒险群组。</span>
+          <el-button type="primary" plain @click="router.push('/groups')">创建群组</el-button>
         </div>
 
         <button
@@ -205,7 +243,7 @@ watch(() => route.params.conversationId, openRouteConversation)
           data-testid="conversation-row"
           @click="selectConversation(conversation)"
         >
-          <el-avatar :size="46" :src="conversation.peer.avatar_url">
+          <el-avatar :size="46" :src="avatarUrl(conversation)">
             {{ avatarText(conversation) }}
           </el-avatar>
           <span class="conversation-copy">
@@ -239,13 +277,20 @@ watch(() => route.params.conversationId, openRouteConversation)
 
       <section v-if="chatStore.selectedConversation" class="message-panel">
         <header class="message-heading">
-          <el-avatar :size="40" :src="chatStore.selectedConversation.peer.avatar_url">
+          <el-avatar :size="40" :src="avatarUrl(chatStore.selectedConversation)">
             {{ avatarText(chatStore.selectedConversation) }}
           </el-avatar>
           <div>
             <strong>{{ displayName(chatStore.selectedConversation) }}</strong>
-            <small>@{{ chatStore.selectedConversation.peer.username }}</small>
+            <small>{{ conversationSubtitle(chatStore.selectedConversation) }}</small>
           </div>
+          <el-button
+            v-if="chatStore.selectedConversation.type === 'group'"
+            text
+            @click="router.push(`/groups/${chatStore.selectedConversation.group.id}`)"
+          >
+            群成员
+          </el-button>
           <el-tag v-if="!chatStore.selectedConversation.can_send" type="warning">历史只读</el-tag>
         </header>
 
@@ -268,17 +313,23 @@ watch(() => route.params.conversationId, openRouteConversation)
             v-else-if="!chatStore.currentMessages.length"
             class="message-empty"
           >
-            向 {{ displayName(chatStore.selectedConversation) }} 发出第一条消息吧。
+            在 {{ displayName(chatStore.selectedConversation) }} 发出第一条消息吧。
           </div>
 
           <article
             v-for="message in chatStore.currentMessages"
             :key="message.client_message_id || message.id"
             class="message-row"
-            :class="{ mine: isMine(message) }"
+            :class="{ mine: isMine(message), system: message.message_type === 'system' }"
             data-testid="chat-message"
           >
-            <div class="message-bubble">
+            <div v-if="message.message_type === 'system'" class="system-message">
+              {{ systemMessageText(message) }}
+            </div>
+            <div v-else class="message-bubble">
+              <small v-if="chatStore.selectedConversation.type === 'group' && !isMine(message)" class="sender-name">
+                {{ message.sender?.nickname || message.sender?.username || '未知成员' }}
+              </small>
               <p>{{ message.content }}</p>
               <footer>
                 <time>{{ formatTime(message.created_at) }}</time>
@@ -306,7 +357,7 @@ watch(() => route.params.conversationId, openRouteConversation)
             v-if="!chatStore.selectedConversation.can_send"
             type="warning"
             :closable="false"
-            title="好友关系已解除，历史消息仍可查看，但不能继续发送。"
+            :title="chatStore.selectedConversation.type === 'group' ? '你已不在群组中，不能继续发送。' : '好友关系已解除，历史消息仍可查看，但不能继续发送。'"
           />
           <div class="composer-row">
             <el-input
@@ -499,6 +550,16 @@ watch(() => route.params.conversationId, openRouteConversation)
 .history-control { min-height: 38px; color: #67677c; font-size: 11px; text-align: center; }
 .message-row { display: flex; margin: 12px 0; justify-content: flex-start; }
 .message-row.mine { justify-content: flex-end; }
+.message-row.system { justify-content: center; }
+.system-message {
+  max-width: 76%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  color: #85859b;
+  font-size: 12px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.045);
+}
 .message-bubble {
   position: relative;
   max-width: min(72%, 680px);
@@ -507,6 +568,7 @@ watch(() => route.params.conversationId, openRouteConversation)
   border-radius: 5px 15px 15px 15px;
   background: #25253d;
 }
+.sender-name { display: block; margin-bottom: 4px; color: #63cbb7; font-size: 11px; }
 .message-row.mine .message-bubble {
   border-color: rgba(63, 195, 172, 0.2);
   border-radius: 15px 5px 15px 15px;
