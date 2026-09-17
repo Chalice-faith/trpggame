@@ -141,6 +141,40 @@ describe('groups store', () => {
     expect(chatStore.selectedConversationId).toBeNull()
   })
 
+  it('does not restore a departed group when the realtime leave event arrives before the API response', async () => {
+    const store = useGroupsStore()
+    store.groups = [group()]
+    store.selectedGroupId = 9
+    apiMocks.removeGroupMember.mockImplementation(async () => {
+      store.handleMemberChanged({
+        group_id: 9,
+        event: 'member_left',
+        actor_user_id: 7,
+        target_user_id: 7,
+        version: 4
+      })
+      return group({ current_user_role: null, member_count: 1, version: 4 })
+    })
+
+    await store.remove(7)
+
+    expect(store.groups).toEqual([])
+    expect(store.selectedGroupId).toBeNull()
+  })
+
+  it('never adds a group without current-user membership to the visible list', () => {
+    const store = useGroupsStore()
+    store.groups = [group()]
+    // A leave response can arrive while the realtime event and route refresh are racing.
+    apiMocks.listGroups.mockResolvedValue({
+      items: [group({ current_user_role: null, member_count: 1, version: 4 })],
+      next_cursor: null
+    })
+    return store.loadGroups().then(() => {
+      expect(store.groups).toEqual([])
+    })
+  })
+
   it('refreshes authoritative data after a version conflict', async () => {
     const store = useGroupsStore()
     store.groups = [group()]

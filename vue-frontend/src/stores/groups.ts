@@ -109,12 +109,13 @@ export const useGroupsStore = defineStore('groups', () => {
 
   async function remove(userId: number) {
     const currentUserId = useAuthStore().user?.id
+    const groupId = selectedGroupId.value
     const result = await mutateSelected(
       (group) => removeGroupMember(group.id, userId, group.version),
       userId !== currentUserId
     )
-    if (userId === currentUserId && selectedGroupId.value) {
-      removeLocalGroup(selectedGroupId.value)
+    if (userId === currentUserId && groupId) {
+      removeLocalGroup(groupId)
     }
     return result
   }
@@ -206,6 +207,10 @@ export const useGroupsStore = defineStore('groups', () => {
   }
 
   function upsertGroup(group: GroupSummary) {
+    if (!group.current_user_role) {
+      removeLocalGroup(group.id)
+      return
+    }
     const index = groups.value.findIndex(({ id }) => id === group.id)
     if (index >= 0) {
       if (group.version >= groups.value[index].version) groups.value[index] = group
