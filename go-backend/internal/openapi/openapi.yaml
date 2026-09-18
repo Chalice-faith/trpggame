@@ -358,6 +358,199 @@ paths:
               schema: {$ref: '#/components/schemas/ApiError'}
         '500': {$ref: '#/components/responses/FriendInternalError'}
 
+  /api/v1/rooms:
+    post:
+      tags: [Rooms]
+      summary: 以本人已就绪且预设角色充足的剧本创建多人等待房间
+      operationId: createRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateRoomRequest'}
+      responses:
+        '200':
+          description: 创建后的权威大厅快照
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/RoomCreateConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+    get:
+      tags: [Rooms]
+      summary: 列出本人仍为有效成员的多人房间，最多 100 个
+      operationId: listRooms
+      responses:
+        '200':
+          description: 按房间 ID 倒序排列
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomListResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/join:
+    post:
+      tags: [Rooms]
+      summary: 凭房间码加入或幂等返回已有成员关系
+      operationId: joinRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JoinRoomRequest'}
+      responses:
+        '200':
+          description: 加入后的权威大厅快照
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomRejoinDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomJoinConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}:
+    get:
+      tags: [Rooms]
+      summary: 有效成员读取权威大厅快照
+      operationId: getRoom
+      parameters:
+        - {$ref: '#/components/parameters/RoomId'}
+      responses:
+        '200':
+          description: 房间、有效成员与候选角色
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/character:
+    post:
+      tags: [Rooms]
+      summary: 有效成员选择或更换本人未占用角色
+      operationId: selectRoomCharacter
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SelectRoomCharacterRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/ready:
+    post:
+      tags: [Rooms]
+      summary: 设置本人准备状态；准备前必须选角
+      operationId: setRoomReady
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetRoomReadyRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/leave:
+    post:
+      tags: [Rooms]
+      summary: 普通成员离开等待大厅；房主须先转让
+      operationId: leaveRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/members/{userId}/remove:
+    post:
+      tags: [Rooms]
+      summary: 房主从等待大厅移除其他有效成员
+      operationId: removeRoomMember
+      parameters:
+        - {$ref: '#/components/parameters/RoomId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/transfer:
+    post:
+      tags: [Rooms]
+      summary: 房主主动转让等待大厅所有权
+      operationId: transferRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferRoomRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/start:
+    post:
+      tags: [Rooms]
+      summary: 房主在至少两名成员已各选不同角色并全部准备时事务开局
+      operationId: startRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
   /api/v1/groups:
     post:
       tags: [Groups]
@@ -1225,7 +1418,7 @@ components:
       name: roomId
       in: path
       required: true
-      description: 当前用户拥有的单人房间 ID
+      description: 游戏房间 ID；单人游戏接口限房主，多人大厅接口限有效成员
       schema:
         type: integer
         format: int64
@@ -1453,6 +1646,51 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/ApiError'}
           example: {code: 1716, message: chat unavailable}
+    InvalidRoomRequest:
+      description: 房间请求参数无效（1900）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomNotFound:
+      description: 房间不存在或无访问权（1901）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomCreateConflict:
+      description: 剧本未就绪或角色不足（1902/1903）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomJoinConflict:
+      description: 房间已满或不在等待中（1904/1905）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomRejoinDenied:
+      description: 被移除成员不可重新加入（1906）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomUnavailable:
+      description: 房间服务内部错误（1907）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomSnapshot:
+      description: 变更后的权威大厅快照
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+    RoomMutationConflict:
+      description: 房间已开局、版本冲突（1908，附 current_version）、角色已占用（1911）、开局条件不足（1912）或房主须先转让（1913）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomPermissionDenied:
+      description: 仅房主可操作（1909）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
     InvalidGroupRequest:
       description: 群请求、字段、分页参数或游标无效（业务码 1800）
       content:
@@ -1625,6 +1863,116 @@ components:
       additionalProperties: false
       properties:
         peer_user_id: {type: integer, format: int64, minimum: 1}
+
+    CreateRoomRequest:
+      type: object
+      required: [name, script_id, max_players]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        script_id: {type: integer, format: int64, minimum: 1}
+        max_players: {type: integer, minimum: 4, maximum: 6}
+
+    JoinRoomRequest:
+      type: object
+      required: [room_code]
+      additionalProperties: false
+      properties:
+        room_code: {type: string, minLength: 8, maxLength: 8}
+
+    RoomVersionRequest:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SelectRoomCharacterRequest:
+      type: object
+      required: [character_id, expected_version]
+      additionalProperties: false
+      properties:
+        character_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SetRoomReadyRequest:
+      type: object
+      required: [ready, expected_version]
+      additionalProperties: false
+      properties:
+        ready: {type: boolean}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    TransferRoomRequest:
+      type: object
+      required: [new_owner_user_id, expected_version]
+      additionalProperties: false
+      properties:
+        new_owner_user_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    MultiRoomSummary:
+      type: object
+      required: [id, name, script_id, owner_id, status, max_players, room_code, version, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 128}
+        script_id: {type: integer, format: int64, minimum: 1}
+        owner_id: {type: integer, format: int64, minimum: 1}
+        status: {$ref: '#/components/schemas/RoomStatus'}
+        max_players: {type: integer, minimum: 4, maximum: 6}
+        room_code: {type: string, minLength: 8, maxLength: 8}
+        version: {type: integer, format: int64, minimum: 1}
+        created_at: {type: string, format: date-time}
+
+    MultiRoomMember:
+      type: object
+      required: [user, is_ready, player_order, joined_at]
+      properties:
+        user: {$ref: '#/components/schemas/PublicUser'}
+        character_id: {type: integer, format: int64, nullable: true}
+        is_ready: {type: boolean}
+        player_order: {type: integer, minimum: 0}
+        joined_at: {type: string, format: date-time}
+
+    MultiRoomCharacter:
+      type: object
+      required: [id, name, description]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        description: {type: string}
+
+    MultiRoomSnapshot:
+      allOf:
+        - {$ref: '#/components/schemas/MultiRoomSummary'}
+        - type: object
+          required: [members, characters]
+          properties:
+            members:
+              type: array
+              items: {$ref: '#/components/schemas/MultiRoomMember'}
+            characters:
+              type: array
+              items: {$ref: '#/components/schemas/MultiRoomCharacter'}
+
+    RoomSnapshotResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/MultiRoomSnapshot'}
+
+    RoomListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/MultiRoomSummary'}
 
     GroupRole:
       type: string

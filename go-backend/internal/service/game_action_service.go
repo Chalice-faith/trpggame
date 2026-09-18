@@ -95,6 +95,9 @@ func (s *GameService) submitAction(
 		}
 		return nil, fmt.Errorf("%w: find game room: %v", ErrInternal, err)
 	}
+	if !room.IsSolo {
+		return nil, ErrGameRoomNotFound
+	}
 	player, err := s.gameRepo.FindPlayer(ctx, room.ID, req.UserID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

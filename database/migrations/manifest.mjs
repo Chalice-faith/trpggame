@@ -14,6 +14,8 @@ export const orderedMigrationNames = [
   '013_create_messages.sql',
   '014_create_groups.sql',
   '015_create_group_members.sql',
+  '016_extend_game_rooms.sql',
+  '017_extend_room_players.sql',
 ];
 
 export const historicalMigrationChecksums = new Map([

@@ -220,6 +220,9 @@ func main() {
 	chatRealtime := service.NewChatRealtime(chatService, imHub)
 	groupService.SetMutationPublisher(chatRealtime)
 	groupHandler := handler.NewGroupHandler(groupService)
+	roomRepo := repo.NewRoomRepo(db)
+	roomService := service.NewRoomService(roomRepo)
+	roomHandler := handler.NewRoomHandler(roomService)
 	imHub.SetInboundHandler(chatRealtime)
 
 	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
@@ -234,7 +237,7 @@ func main() {
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
-		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler, Group: groupHandler},
+		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler, Group: groupHandler, Room: roomHandler},
 	)
 
 	// 启动服务器

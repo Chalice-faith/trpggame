@@ -27,18 +27,21 @@ func (status RoomStatus) Valid() bool {
 
 // GameRoom 游戏房间
 type GameRoom struct {
-	ID          uint            `gorm:"primaryKey" json:"id"`
-	Name        string          `gorm:"size:128;not null" json:"name"`
-	ScriptID    uint            `gorm:"index;not null" json:"script_id"`
-	OwnerID     uint            `gorm:"index;not null" json:"owner_id"`
-	Status      RoomStatus      `gorm:"size:20;not null;default:waiting" json:"status"`
-	MaxPlayers  int             `gorm:"not null;default:1" json:"max_players"`
-	CurrentTurn int             `gorm:"not null;default:0" json:"current_turn"`
-	RoundNumber int             `gorm:"not null;default:0" json:"round_number"`
-	TurnOrder   json.RawMessage `gorm:"type:json;not null;default:(JSON_ARRAY())" json:"turn_order"`
-	IsSolo      bool            `gorm:"not null;default:true" json:"is_solo"`
-	CreatedAt   time.Time       `json:"created_at"`
-	EndedAt     *time.Time      `json:"ended_at,omitempty"`
+	ID                 uint            `gorm:"primaryKey" json:"id"`
+	Name               string          `gorm:"size:128;not null" json:"name"`
+	ScriptID           uint            `gorm:"index;not null" json:"script_id"`
+	OwnerID            uint            `gorm:"index;not null" json:"owner_id"`
+	Status             RoomStatus      `gorm:"size:20;not null;default:waiting" json:"status"`
+	MaxPlayers         int             `gorm:"not null;default:1" json:"max_players"`
+	CurrentTurn        int             `gorm:"not null;default:0" json:"current_turn"`
+	RoundNumber        int             `gorm:"not null;default:0" json:"round_number"`
+	TurnOrder          json.RawMessage `gorm:"type:json;not null;default:(JSON_ARRAY())" json:"turn_order"`
+	IsSolo             bool            `gorm:"not null" json:"is_solo"`
+	RoomCode           *string         `gorm:"size:8;uniqueIndex" json:"room_code,omitempty"`
+	Version            uint64          `gorm:"not null;default:1" json:"version"`
+	TurnTimeoutSeconds int             `gorm:"not null;default:120" json:"turn_timeout_seconds"`
+	CreatedAt          time.Time       `json:"created_at"`
+	EndedAt            *time.Time      `json:"ended_at,omitempty"`
 }
 
 // TableName 自定义表名
@@ -48,14 +51,25 @@ func (GameRoom) TableName() string {
 
 // RoomPlayer 房间玩家关联
 type RoomPlayer struct {
-	ID          uint      `gorm:"primaryKey" json:"id"`
-	RoomID      uint      `gorm:"index;not null" json:"room_id"`
-	UserID      uint      `gorm:"index;not null" json:"user_id"`
-	CharacterID *uint     `gorm:"index" json:"character_id,omitempty"`
-	PlayerOrder int       `gorm:"not null;default:0" json:"player_order"`
-	IsReady     bool      `gorm:"not null;default:false" json:"is_ready"`
-	JoinedAt    time.Time `json:"joined_at"`
+	ID          uint             `gorm:"primaryKey" json:"id"`
+	RoomID      uint             `gorm:"index;not null" json:"room_id"`
+	UserID      uint             `gorm:"index;not null" json:"user_id"`
+	CharacterID *uint            `gorm:"index" json:"character_id,omitempty"`
+	PlayerOrder int              `gorm:"not null;default:0" json:"player_order"`
+	IsReady     bool             `gorm:"not null;default:false" json:"is_ready"`
+	Status      RoomPlayerStatus `gorm:"size:16;not null;default:active" json:"status"`
+	JoinedAt    time.Time        `json:"joined_at"`
+	LeftAt      *time.Time       `json:"left_at,omitempty"`
 }
+
+// RoomPlayerStatus 是多人房间成员关系的持久化状态。
+type RoomPlayerStatus string
+
+const (
+	RoomPlayerStatusActive  RoomPlayerStatus = "active"
+	RoomPlayerStatusLeft    RoomPlayerStatus = "left"
+	RoomPlayerStatusRemoved RoomPlayerStatus = "removed"
+)
 
 // RuntimeMessage 是 Redis 最近对话列表中的稳定 JSON 契约。
 type RuntimeMessage struct {

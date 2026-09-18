@@ -21,6 +21,7 @@ type RESTHandlers struct {
 	Friend *handler.FriendHandler
 	Chat   *handler.ChatHandler
 	Group  *handler.GroupHandler
+	Room   *handler.RoomHandler
 }
 
 var websocketLogSkipPaths = []string{"/ws", "/ws/im"}
@@ -52,6 +53,7 @@ func Setup(
 	friendHandler := handler.NewFriendHandler(nil)
 	chatHandler := handler.NewChatHandler(nil)
 	groupHandler := handler.NewGroupHandler(nil)
+	roomHandler := handler.NewRoomHandler(nil)
 	if len(restHandlers) > 0 {
 		if restHandlers[0].Friend != nil {
 			friendHandler = restHandlers[0].Friend
@@ -61,6 +63,9 @@ func Setup(
 		}
 		if restHandlers[0].Group != nil {
 			groupHandler = restHandlers[0].Group
+		}
+		if restHandlers[0].Room != nil {
+			roomHandler = restHandlers[0].Room
 		}
 	}
 
@@ -134,6 +139,20 @@ func Setup(
 				groups.PATCH("/:groupId/members/:userId", groupHandler.SetRole)
 				groups.DELETE("/:groupId/members/:userId", groupHandler.Remove)
 				groups.POST("/:groupId/transfer", groupHandler.Transfer)
+			}
+
+			rooms := authorized.Group("/rooms")
+			{
+				rooms.POST("", roomHandler.Create)
+				rooms.GET("", roomHandler.List)
+				rooms.POST("/join", roomHandler.Join)
+				rooms.GET("/:roomId", roomHandler.Get)
+				rooms.POST("/:roomId/character", roomHandler.SelectCharacter)
+				rooms.POST("/:roomId/ready", roomHandler.SetReady)
+				rooms.POST("/:roomId/leave", roomHandler.Leave)
+				rooms.POST("/:roomId/members/:userId/remove", roomHandler.Remove)
+				rooms.POST("/:roomId/transfer", roomHandler.Transfer)
+				rooms.POST("/:roomId/start", roomHandler.Start)
 			}
 
 			// 剧本 (Phase 1 M1.3 实现)

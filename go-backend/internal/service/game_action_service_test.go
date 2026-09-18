@@ -77,6 +77,17 @@ func TestGameServiceSubmitActionCommitsAuthoritativeEffects(t *testing.T) {
 	}
 }
 
+func TestGameServiceSubmitActionDoesNotEnterMultiplayerRuntime(t *testing.T) {
+	gameService, gameRepository, _, runtimeRepository := actionServiceFixture()
+	gameRepository.room.IsSolo = false
+	if _, err := gameService.SubmitAction(context.Background(), validSubmitGameActionRequest()); !errors.Is(err, ErrGameRoomNotFound) {
+		t.Fatalf("multiplayer action = %v, want room not found", err)
+	}
+	if runtimeRepository.findCalls != 0 || runtimeRepository.beginCalls != 0 {
+		t.Fatalf("multiplayer action touched solo runtime: %#v", runtimeRepository)
+	}
+}
+
 func TestGameServiceSubmitActionStreamEmitsChunksAndCommittedMetadata(t *testing.T) {
 	service, _, aiClient, _ := actionServiceFixture()
 	aiClient.streamEvents = []ai_client.ActionStreamEvent{
@@ -555,7 +566,7 @@ func actionServiceFixture() (
 	characterID := uint(13)
 	gameRepository := &fakeGameRepository{
 		room: &model.GameRoom{
-			ID: 41, OwnerID: 7, ScriptID: 11, Status: model.RoomStatusPlaying,
+			ID: 41, OwnerID: 7, ScriptID: 11, Status: model.RoomStatusPlaying, IsSolo: true,
 		},
 		player: &model.RoomPlayer{
 			ID: 51, RoomID: 41, UserID: 7, CharacterID: &characterID,

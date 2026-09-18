@@ -6,7 +6,8 @@ import { orderedMigrationNames } from '../migrations/manifest.mjs';
 const readMigration = (name) => readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
 
 test('registers M2.3 group migrations after the conversation schema', () => {
-  assert.deepEqual(orderedMigrationNames.slice(-2), [
+  const start = orderedMigrationNames.indexOf('014_create_groups.sql');
+  assert.deepEqual(orderedMigrationNames.slice(start, start + 2), [
     '014_create_groups.sql',
     '015_create_group_members.sql',
   ]);
