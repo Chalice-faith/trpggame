@@ -1,6 +1,6 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.3-D + M2.4-B（房间 REST 本地实现待 CI；实时大厅与 Vue 尚未实现）
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.3-D + M2.4-B（房间 REST 已提交 `6a2ed79` 并通过 CI；实时大厅与 Vue 尚未实现）
 >
 > 契约来源：当前 Go、Python 和 Vue 代码（2026-09-15 核对）。
 >
