@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"gorm.io/gorm"
-
 	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
@@ -25,9 +23,10 @@ import (
 	"trpggame/internal/ws"
 )
 
-// roomAuthorizer 校验用户是否为房间房主，与 REST 行动链路的访问控制一致。
+// roomAuthorizer keeps solo rooms owner-only while admitting active multiplayer members.
 type roomAuthorizer struct {
-	repo *repo.GameRepo
+	rooms       *repo.RoomRepo
+	roomService *service.RoomService
 }
 
 func gameActionErrorCode(err error) int {
@@ -56,14 +55,20 @@ func gameActionErrorCode(err error) int {
 }
 
 func (a roomAuthorizer) Authorize(ctx context.Context, userID, roomID uint) error {
-	_, err := a.repo.FindRoomByIDAndOwnerID(ctx, roomID, userID)
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return errors.New("room not found or not owned by user")
-		}
-		return fmt.Errorf("authorize room: %w", err)
+	_, err := a.rooms.AuthorizeSubscription(ctx, userID, roomID)
+	return err
+}
+
+func (a roomAuthorizer) Snapshot(ctx context.Context, userID, roomID uint) (json.RawMessage, error) {
+	isSolo, err := a.rooms.AuthorizeSubscription(ctx, userID, roomID)
+	if err != nil || isSolo {
+		return nil, err
 	}
-	return nil
+	snapshot, err := a.roomService.Get(ctx, userID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(snapshot)
 }
 
 func main() {
@@ -222,12 +227,13 @@ func main() {
 	groupHandler := handler.NewGroupHandler(groupService)
 	roomRepo := repo.NewRoomRepo(db)
 	roomService := service.NewRoomService(roomRepo)
+	roomService.SetMutationPublisher(service.NewRoomRealtime(hub))
 	roomHandler := handler.NewRoomHandler(roomService)
 	imHub.SetInboundHandler(chatRealtime)
 
 	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
 	wsHandlers := router.WebSocketHandlers{
-		Game: ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{repo: gameRepo}),
+		Game: ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{rooms: roomRepo, roomService: roomService}),
 		IM:   imws.HandleWebSocket(imHub, cfg.JWT.Secret, allowedOrigins),
 	}
 	r := router.Setup(

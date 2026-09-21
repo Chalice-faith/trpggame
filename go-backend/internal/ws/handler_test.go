@@ -28,6 +28,16 @@ type fakeAuthorizer struct {
 	err     error
 }
 
+type fakeSnapshotAuthorizer struct {
+	fakeAuthorizer
+	snapshot json.RawMessage
+	err      error
+}
+
+func (f fakeSnapshotAuthorizer) Snapshot(_ context.Context, _, _ uint) (json.RawMessage, error) {
+	return f.snapshot, f.err
+}
+
 func (f fakeAuthorizer) Authorize(_ context.Context, userID, roomID uint) error {
 	if f.err != nil {
 		return f.err
@@ -316,6 +326,99 @@ func TestHandleWebSocketSubscribesAndAcceptsSync(t *testing.T) {
 	}
 	if batch.NextSeq != 1 || len(batch.Messages) != 1 || batch.Messages[0].Seq != 1 {
 		t.Fatalf("sync_batch = %#v, want [seq=1] next=1", batch)
+	}
+}
+
+func TestHandleWebSocketSendsMultiplayerSnapshotAfterSubscribed(t *testing.T) {
+	wsURL, hub := newTestWSServer(t, fakeSnapshotAuthorizer{
+		fakeAuthorizer: fakeAuthorizer{allowed: map[uint]map[uint]bool{41: {7: true}}},
+		snapshot:       json.RawMessage(`{"id":41,"version":8,"members":[],"characters":[]}`),
+	})
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, status, err := dialWS(t, wsURL, token, "41")
+	if err != nil {
+		t.Fatalf("dial: status=%d err=%v", status, err)
+	}
+	defer connection.Close()
+	if message := readGameServerMessage(t, connection); message.Type != MsgSubscribed {
+		t.Fatalf("first message = %q", message.Type)
+	}
+	snapshot := readGameServerMessage(t, connection)
+	if snapshot.Type != MsgRoomSnapshot || snapshot.Seq != 0 || !strings.Contains(string(snapshot.Data), `"version":8`) {
+		t.Fatalf("snapshot = %#v", snapshot)
+	}
+	// A per-connection baseline must not create a sequence gap for room mutations.
+	// The next retained event therefore starts at seq=1.
+	hub.BroadcastToRoom(41, MsgRoomReadyChanged, json.RawMessage(`{"id":41,"version":9}`))
+	if event := readGameServerMessage(t, connection); event.Type != MsgRoomReadyChanged || event.Seq != 1 {
+		t.Fatalf("first mutation = %#v", event)
+	}
+}
+
+func TestHandleWebSocketRevokesConnectionWhenPostUpgradeSnapshotLosesAccess(t *testing.T) {
+	wsURL, _ := newTestWSServer(t, fakeSnapshotAuthorizer{
+		fakeAuthorizer: fakeAuthorizer{allowed: map[uint]map[uint]bool{41: {7: true}}},
+		err:            errors.New("membership revoked"),
+	})
+	token, err := middleware.GenerateToken(7, "investigator", testJWTSecret, 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, status, err := dialWS(t, wsURL, token, "41")
+	if err != nil {
+		t.Fatalf("dial: status=%d err=%v", status, err)
+	}
+	defer connection.Close()
+	_ = connection.SetReadDeadline(time.Now().Add(testRecvTimeout))
+	_, payload, err := connection.ReadMessage()
+	if err == nil {
+		var message Message
+		if decodeErr := json.Unmarshal(payload, &message); decodeErr != nil || message.Type != MsgSubscribed {
+			t.Fatalf("pre-close message = %#v, err=%v", message, decodeErr)
+		}
+		_, _, err = connection.ReadMessage()
+	}
+	if !websocket.IsCloseError(err, realtime.CloseCodeRoomAccessRevoked) {
+		t.Fatalf("close = %v", err)
+	}
+}
+
+func TestHandleWebSocketBroadcastAndRevokeDeliversFinalEventThenCloses(t *testing.T) {
+	wsURL, hub := newTestWSServer(t, fakeAuthorizer{allowed: map[uint]map[uint]bool{41: {7: true, 8: true}}})
+	connections := make(map[uint]*websocket.Conn)
+	for _, userID := range []uint{7, 8} {
+		token, err := middleware.GenerateToken(userID, "player", testJWTSecret, 15)
+		if err != nil {
+			t.Fatal(err)
+		}
+		connection, status, err := dialWS(t, wsURL, token, "41")
+		if err != nil {
+			t.Fatalf("dial user %d: status=%d err=%v", userID, status, err)
+		}
+		defer connection.Close()
+		connections[userID] = connection
+		if message := readGameServerMessage(t, connection); message.Type != MsgSubscribed {
+			t.Fatalf("user %d first message = %q", userID, message.Type)
+		}
+	}
+	hub.BroadcastAndRevoke(41, 8, MsgRoomMemberLeft, json.RawMessage(`{"id":41,"version":2}`))
+	for _, userID := range []uint{7, 8} {
+		message := readGameServerMessage(t, connections[userID])
+		if message.Type != MsgRoomMemberLeft || message.Seq != 1 {
+			t.Fatalf("user %d final event = %#v", userID, message)
+		}
+	}
+	_ = connections[8].SetReadDeadline(time.Now().Add(testRecvTimeout))
+	_, _, err := connections[8].ReadMessage()
+	if !websocket.IsCloseError(err, realtime.CloseCodeRoomAccessRevoked) {
+		t.Fatalf("revoked close = %v", err)
+	}
+	hub.BroadcastToRoom(41, MsgRoomReadyChanged, json.RawMessage(`{"id":41,"version":3}`))
+	if message := readGameServerMessage(t, connections[7]); message.Type != MsgRoomReadyChanged || message.Seq != 2 {
+		t.Fatalf("remaining member event = %#v", message)
 	}
 }
 

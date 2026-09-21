@@ -33,8 +33,9 @@ const (
 )
 
 type clientCloseCommand struct {
-	code   int
-	reason string
+	code         int
+	reason       string
+	finalPayload []byte
 }
 
 // Client 代表一个 WebSocket 连接
@@ -94,6 +95,7 @@ func (c *Client) readPump() {
 				websocket.CloseGoingAway,
 				websocket.CloseNormalClosure,
 				realtime.CloseCodeConnectionReplaced,
+				realtime.CloseCodeRoomAccessRevoked,
 			) {
 				log.Printf("[WS] Read error: %v", err)
 			}
@@ -164,6 +166,9 @@ func (c *Client) writePump() {
 }
 
 func (c *Client) writeClose(command clientCloseCommand) {
+	if len(command.finalPayload) > 0 {
+		_ = c.writeText(command.finalPayload)
+	}
 	deadline := time.Now().Add(writeWait)
 	_ = c.Conn.WriteControl(
 		websocket.CloseMessage,

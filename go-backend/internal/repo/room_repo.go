@@ -33,9 +33,11 @@ type RoomMemberRecord struct {
 
 // RoomRecord 是 MySQL 权威大厅快照；候选角色和成员在同一次读取中组装。
 type RoomRecord struct {
-	Room       model.GameRoom
-	Members    []RoomMemberRecord
-	Characters []model.ScriptCharacter
+	Room           model.GameRoom
+	Members        []RoomMemberRecord
+	Characters     []model.ScriptCharacter
+	Mutation       string
+	AffectedUserID uint
 }
 
 type RoomRepo struct{ db *gorm.DB }
@@ -91,6 +93,37 @@ func (r *RoomRepo) Get(ctx context.Context, userID, roomID uint) (*RoomRecord, e
 		return nil, ErrRoomMissing
 	}
 	return r.snapshot(ctx, userID, roomID)
+}
+
+// AuthorizeSubscription keeps solo subscriptions owner-only and admits only active multiplayer members.
+// The returned flag identifies a solo room so callers can preserve its existing protocol.
+func (r *RoomRepo) AuthorizeSubscription(ctx context.Context, userID, roomID uint) (bool, error) {
+	if userID == 0 || roomID == 0 {
+		return false, ErrRoomMissing
+	}
+	var room model.GameRoom
+	if err := r.db.WithContext(ctx).Select("id", "owner_id", "is_solo").Where("id = ?", roomID).First(&room).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, ErrRoomMissing
+		}
+		return false, err
+	}
+	if room.IsSolo {
+		if room.OwnerID != userID {
+			return true, ErrRoomMissing
+		}
+		return true, nil
+	}
+	var count int64
+	if err := r.db.WithContext(ctx).Model(&model.RoomPlayer{}).
+		Where("room_id = ? AND user_id = ? AND status = ?", roomID, userID, model.RoomPlayerStatusActive).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	if count != 1 {
+		return false, ErrRoomMissing
+	}
+	return false, nil
 }
 
 func (r *RoomRepo) snapshot(ctx context.Context, userID, roomID uint) (*RoomRecord, error) {
@@ -155,7 +188,8 @@ func (e *RoomVersionError) Error() string {
 }
 func (e *RoomVersionError) Is(target error) bool { return target == ErrRoomVersionConflict }
 
-func (r *RoomRepo) mutate(ctx context.Context, actorID, roomID uint, expectedVersion uint64, change func(*gorm.DB, *model.GameRoom, model.RoomPlayer) error) (*RoomRecord, error) {
+func (r *RoomRepo) mutate(ctx context.Context, actorID, roomID uint, expectedVersion uint64, mutation string, affectedUserID uint, change func(*gorm.DB, *model.GameRoom, model.RoomPlayer) error) (*RoomRecord, error) {
+	changed := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var room model.GameRoom
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ? AND is_solo = ?", roomID, false).First(&room).Error; err != nil {
@@ -183,12 +217,18 @@ func (r *RoomRepo) mutate(ctx context.Context, actorID, roomID uint, expectedVer
 			}
 			return err
 		}
+		changed = true
 		return tx.Model(&room).Update("version", gorm.Expr("version + 1")).Error
 	})
 	if err != nil {
 		return nil, err
 	}
-	return r.snapshot(ctx, 0, roomID)
+	record, err := r.snapshot(ctx, 0, roomID)
+	if err == nil && changed {
+		record.Mutation = mutation
+		record.AffectedUserID = affectedUserID
+	}
+	return record, err
 }
 
 var (
@@ -200,7 +240,7 @@ var (
 )
 
 func (r *RoomRepo) SelectCharacter(ctx context.Context, actorID, roomID, characterID uint, expectedVersion uint64) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "room_character_selected", actorID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		var character model.ScriptCharacter
 		if err := tx.Where("id = ? AND script_id = ?", characterID, room.ScriptID).First(&character).Error; err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -223,7 +263,7 @@ func (r *RoomRepo) SelectCharacter(ctx context.Context, actorID, roomID, charact
 }
 
 func (r *RoomRepo) SetReady(ctx context.Context, actorID, roomID uint, ready bool, expectedVersion uint64) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "room_ready_changed", actorID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		if ready && actor.CharacterID == nil {
 			return ErrRoomStartConditions
 		}
@@ -235,7 +275,7 @@ func (r *RoomRepo) SetReady(ctx context.Context, actorID, roomID uint, ready boo
 }
 
 func (r *RoomRepo) Leave(ctx context.Context, actorID, roomID uint, expectedVersion uint64, now time.Time) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "room_member_left", actorID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		if room.OwnerID == actorID {
 			return ErrRoomOwnerLeave
 		}
@@ -247,7 +287,7 @@ func (r *RoomRepo) Leave(ctx context.Context, actorID, roomID uint, expectedVers
 }
 
 func (r *RoomRepo) Remove(ctx context.Context, actorID, roomID, targetID uint, expectedVersion uint64, now time.Time) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "room_member_left", targetID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		if room.OwnerID != actorID || targetID == actorID {
 			return ErrRoomPermission
 		}
@@ -266,7 +306,7 @@ func (r *RoomRepo) Remove(ctx context.Context, actorID, roomID, targetID uint, e
 }
 
 func (r *RoomRepo) Transfer(ctx context.Context, actorID, roomID, targetID uint, expectedVersion uint64) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "room_snapshot", targetID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		if room.OwnerID != actorID || targetID == actorID {
 			return ErrRoomPermission
 		}
@@ -285,7 +325,7 @@ func (r *RoomRepo) Transfer(ctx context.Context, actorID, roomID, targetID uint,
 }
 
 func (r *RoomRepo) Start(ctx context.Context, actorID, roomID uint, expectedVersion uint64) (*RoomRecord, error) {
-	return r.mutate(ctx, actorID, roomID, expectedVersion, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
+	return r.mutate(ctx, actorID, roomID, expectedVersion, "game_started", actorID, func(tx *gorm.DB, room *model.GameRoom, actor model.RoomPlayer) error {
 		if room.OwnerID != actorID {
 			return ErrRoomPermission
 		}
@@ -315,6 +355,7 @@ func (r *RoomRepo) Start(ctx context.Context, actorID, roomID uint, expectedVers
 
 func (r *RoomRepo) Join(ctx context.Context, userID uint, code string, now time.Time) (*RoomRecord, error) {
 	var roomID uint
+	changed := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var room model.GameRoom
 		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("room_code = ? AND is_solo = ?", code, false).First(&room).Error; err != nil {
@@ -362,6 +403,7 @@ func (r *RoomRepo) Join(ctx context.Context, userID uint, code string, now time.
 				return err
 			}
 		}
+		changed = true
 		if err := tx.Model(&model.RoomPlayer{}).Where("room_id = ? AND status = ?", room.ID, model.RoomPlayerStatusActive).Update("is_ready", false).Error; err != nil {
 			return err
 		}
@@ -370,5 +412,10 @@ func (r *RoomRepo) Join(ctx context.Context, userID uint, code string, now time.
 	if err != nil {
 		return nil, err
 	}
-	return r.Get(ctx, userID, roomID)
+	record, err := r.Get(ctx, userID, roomID)
+	if err == nil && changed {
+		record.Mutation = "room_member_joined"
+		record.AffectedUserID = userID
+	}
+	return record, err
 }

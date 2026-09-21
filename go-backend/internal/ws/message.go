@@ -15,19 +15,25 @@ const (
 
 // 服务端 → 客户端
 const (
-	MsgPong              MessageType = "pong"
-	MsgSubscribed        MessageType = "subscribed"
-	MsgNarrativeChunk    MessageType = "narrative_chunk"
-	MsgNarrativeComplete MessageType = "narrative_complete"
-	MsgDiceRoll          MessageType = "dice_roll"
-	MsgStatusUpdate      MessageType = "status_update"
-	MsgScriptProgress    MessageType = "script_progress"
-	MsgSystem            MessageType = "system"
-	MsgError             MessageType = "error"
-	MsgSyncBatch         MessageType = "sync_batch"
-	MsgPresence          MessageType = "presence"
-	MsgTurnStart         MessageType = "turn_start"
-	MsgTurnSkip          MessageType = "turn_skip"
+	MsgPong                  MessageType = "pong"
+	MsgSubscribed            MessageType = "subscribed"
+	MsgNarrativeChunk        MessageType = "narrative_chunk"
+	MsgNarrativeComplete     MessageType = "narrative_complete"
+	MsgDiceRoll              MessageType = "dice_roll"
+	MsgStatusUpdate          MessageType = "status_update"
+	MsgScriptProgress        MessageType = "script_progress"
+	MsgSystem                MessageType = "system"
+	MsgError                 MessageType = "error"
+	MsgSyncBatch             MessageType = "sync_batch"
+	MsgPresence              MessageType = "presence"
+	MsgTurnStart             MessageType = "turn_start"
+	MsgTurnSkip              MessageType = "turn_skip"
+	MsgRoomSnapshot          MessageType = "room_snapshot"
+	MsgRoomMemberJoined      MessageType = "room_member_joined"
+	MsgRoomMemberLeft        MessageType = "room_member_left"
+	MsgRoomReadyChanged      MessageType = "room_ready_changed"
+	MsgRoomCharacterSelected MessageType = "room_character_selected"
+	MsgGameStarted           MessageType = "game_started"
 )
 
 // Message WebSocket 消息结构。

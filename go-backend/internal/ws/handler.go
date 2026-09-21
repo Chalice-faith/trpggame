@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -25,6 +26,10 @@ const (
 // RoomAuthorizer 校验用户是否有权订阅某房间。实现方通常在 main 中基于游戏仓储注入。
 type RoomAuthorizer interface {
 	Authorize(ctx context.Context, userID, roomID uint) error
+}
+
+type RoomSnapshotProvider interface {
+	Snapshot(ctx context.Context, userID, roomID uint) (json.RawMessage, error)
 }
 
 // HandleWebSocket 处理 WebSocket 升级请求：JWT 鉴权 + 房间订阅校验。
@@ -67,7 +72,6 @@ func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet, authz
 			c.JSON(http.StatusForbidden, gin.H{"code": wsErrorRoomAccessDenied, "message": "room access denied"})
 			return
 		}
-
 		conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			log.Printf("[WS] Upgrade error: %v", err)
@@ -91,5 +95,16 @@ func HandleWebSocket(hub *Hub, secret string, origins *realtime.OriginSet, authz
 
 		go client.writePump()
 		go client.readPump()
+		if provider, ok := authz.(RoomSnapshotProvider); ok {
+			initialSnapshot, snapshotErr := provider.Snapshot(c.Request.Context(), claims.UserID, roomID)
+			if snapshotErr != nil {
+				log.Printf("[WS] User %d lost access to room %d during subscription: %v", claims.UserID, roomID, snapshotErr)
+				hub.DisconnectUser(roomID, claims.UserID, realtime.CloseCodeRoomAccessRevoked, realtime.CloseReasonRoomAccessRevoked)
+				return
+			}
+			if len(initialSnapshot) > 0 {
+				hub.SendRoomSnapshot(roomID, claims.UserID, initialSnapshot)
+			}
+		}
 	}
 }

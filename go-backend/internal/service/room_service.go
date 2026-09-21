@@ -75,9 +75,27 @@ type RoomSnapshot struct {
 	Characters []RoomCharacter `json:"characters"`
 }
 
+type RoomMutation struct {
+	Type           string
+	Snapshot       *RoomSnapshot
+	AffectedUserID uint
+	RevokeAccess   bool
+}
+
+type RoomMutationPublisher interface {
+	PublishRoomMutation(RoomMutation)
+}
+
 type RoomService struct {
-	rooms RoomRepository
-	now   func() time.Time
+	rooms     RoomRepository
+	publisher RoomMutationPublisher
+	now       func() time.Time
+}
+
+func (s *RoomService) SetMutationPublisher(publisher RoomMutationPublisher) {
+	if s != nil {
+		s.publisher = publisher
+	}
 }
 
 func NewRoomService(rooms RoomRepository) *RoomService {
@@ -147,7 +165,7 @@ func (s *RoomService) Join(ctx context.Context, userID uint, code string) (*Room
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) SelectCharacter(ctx context.Context, actorID, roomID, characterID uint, version uint64) (*RoomSnapshot, error) {
@@ -158,7 +176,7 @@ func (s *RoomService) SelectCharacter(ctx context.Context, actorID, roomID, char
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) SetReady(ctx context.Context, actorID, roomID uint, ready bool, version uint64) (*RoomSnapshot, error) {
@@ -169,7 +187,7 @@ func (s *RoomService) SetReady(ctx context.Context, actorID, roomID uint, ready 
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) Leave(ctx context.Context, actorID, roomID uint, version uint64) (*RoomSnapshot, error) {
@@ -180,7 +198,7 @@ func (s *RoomService) Leave(ctx context.Context, actorID, roomID uint, version u
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) Remove(ctx context.Context, actorID, roomID, targetID uint, version uint64) (*RoomSnapshot, error) {
@@ -191,7 +209,7 @@ func (s *RoomService) Remove(ctx context.Context, actorID, roomID, targetID uint
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) Transfer(ctx context.Context, actorID, roomID, targetID uint, version uint64) (*RoomSnapshot, error) {
@@ -202,7 +220,7 @@ func (s *RoomService) Transfer(ctx context.Context, actorID, roomID, targetID ui
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
 }
 
 func (s *RoomService) Start(ctx context.Context, actorID, roomID uint, version uint64) (*RoomSnapshot, error) {
@@ -213,7 +231,18 @@ func (s *RoomService) Start(ctx context.Context, actorID, roomID uint, version u
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return roomSnapshot(record), nil
+	return s.roomMutationResult(record), nil
+}
+
+func (s *RoomService) roomMutationResult(record *repo.RoomRecord) *RoomSnapshot {
+	snapshot := roomSnapshot(record)
+	if s.publisher != nil && record != nil && record.Mutation != "" {
+		s.publisher.PublishRoomMutation(RoomMutation{
+			Type: record.Mutation, Snapshot: snapshot, AffectedUserID: record.AffectedUserID,
+			RevokeAccess: record.Mutation == "room_member_left",
+		})
+	}
+	return snapshot
 }
 
 const roomCodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

@@ -15,6 +15,9 @@ const (
 	CloseReasonConnectionReplaced = "connection_replaced"
 	// CloseReasonServiceUnavailable 用于升级成功后 Hub 已不可用的关闭帧。
 	CloseReasonServiceUnavailable = "service unavailable"
+	// CloseCodeRoomAccessRevoked indicates that the authenticated user is no longer an active room member.
+	CloseCodeRoomAccessRevoked   = 4003
+	CloseReasonRoomAccessRevoked = "room_access_revoked"
 )
 
 // NewUpgrader 创建使用统一 Origin 白名单的 WebSocket Upgrader。

@@ -82,7 +82,8 @@ func TestRoomServiceMySQL84CreateJoinAndCapacity(t *testing.T) {
 		db.Unscoped().Delete(&script)
 		db.Unscoped().Where("id IN ?", userIDs).Delete(&model.User{})
 	})
-	svc := NewRoomService(repo.NewRoomRepo(db))
+	roomRepo := repo.NewRoomRepo(db)
+	svc := NewRoomService(roomRepo)
 	ctx := context.Background()
 	if _, err := svc.Create(ctx, users[0].ID, script.ID, "Too many", 5); !errors.Is(err, ErrRoomCharactersInsufficient) {
 		t.Fatalf("character shortage: %v", err)
@@ -95,6 +96,18 @@ func TestRoomServiceMySQL84CreateJoinAndCapacity(t *testing.T) {
 		t.Fatal(err)
 	}
 	roomID = created.ID
+	if isSolo, err := roomRepo.AuthorizeSubscription(ctx, users[0].ID, roomID); err != nil || isSolo {
+		t.Fatalf("owner multiplayer authorization = (%v, %v)", isSolo, err)
+	}
+	if _, err := roomRepo.AuthorizeSubscription(ctx, users[1].ID, roomID); !errors.Is(err, repo.ErrRoomMissing) {
+		t.Fatalf("outsider subscription = %v", err)
+	}
+	if isSolo, err := roomRepo.AuthorizeSubscription(ctx, users[0].ID, soloRoom.ID); err != nil || !isSolo {
+		t.Fatalf("solo owner authorization = (%v, %v)", isSolo, err)
+	}
+	if _, err := roomRepo.AuthorizeSubscription(ctx, users[1].ID, soloRoom.ID); !errors.Is(err, repo.ErrRoomMissing) {
+		t.Fatalf("solo outsider subscription = %v", err)
+	}
 	if created.Version != 1 || len(created.RoomCode) != 8 || len(created.Members) != 1 || len(created.Characters) != 4 {
 		t.Fatalf("create snapshot: %#v", created)
 	}
@@ -134,6 +147,9 @@ func TestRoomServiceMySQL84CreateJoinAndCapacity(t *testing.T) {
 		t.Fatalf("joined snapshot: %#v", snapshot)
 	}
 	joinedID := snapshot.Members[1].User.ID
+	if isSolo, err := roomRepo.AuthorizeSubscription(ctx, joinedID, roomID); err != nil || isSolo {
+		t.Fatalf("member subscription = (%v, %v)", isSolo, err)
+	}
 	repeat, err := svc.Join(ctx, joinedID, created.RoomCode)
 	if err != nil || repeat.Version != snapshot.Version {
 		t.Fatalf("idempotent join: %#v, %v", repeat, err)
@@ -219,6 +235,9 @@ func TestRoomServiceMySQL84CreateJoinAndCapacity(t *testing.T) {
 	if _, err := svc.Get(ctx, ownerID, roomID); !errors.Is(err, ErrRoomNotFound) {
 		t.Fatalf("former member access: %v", err)
 	}
+	if _, err := roomRepo.AuthorizeSubscription(ctx, ownerID, roomID); !errors.Is(err, repo.ErrRoomMissing) {
+		t.Fatalf("left member subscription = %v", err)
+	}
 	selected, err = svc.Join(ctx, ownerID, created.RoomCode)
 	if err != nil || len(selected.Members) != 4 {
 		t.Fatalf("rejoin: %#v, %v", selected, err)
@@ -229,6 +248,9 @@ func TestRoomServiceMySQL84CreateJoinAndCapacity(t *testing.T) {
 	}
 	if _, err := svc.Join(ctx, ownerID, created.RoomCode); !errors.Is(err, ErrRoomRejoinDenied) {
 		t.Fatalf("removed rejoin: %v", err)
+	}
+	if _, err := roomRepo.AuthorizeSubscription(ctx, ownerID, roomID); !errors.Is(err, repo.ErrRoomMissing) {
+		t.Fatalf("removed member subscription = %v", err)
 	}
 	for _, member := range selected.Members {
 		if member.CharacterID == nil {

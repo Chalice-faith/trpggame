@@ -27,16 +27,25 @@ type room struct {
 
 // deliverRequest 一次服务端 → 客户端投递请求。userID 为 0 表示广播给整个房间。
 type deliverRequest struct {
-	roomID    uint
-	userID    uint
-	msgType   MessageType
-	data      json.RawMessage
-	requestID string
+	roomID          uint
+	userID          uint
+	revokeUserID    uint
+	currentSnapshot bool
+	msgType         MessageType
+	data            json.RawMessage
+	requestID       string
 }
 
 type registerRequest struct {
 	client *Client
 	result chan bool
+}
+
+type disconnectRequest struct {
+	roomID uint
+	userID uint
+	code   int
+	reason string
 }
 
 // GameActionHandler 处理已通过 JWT 与房间订阅鉴权的客户端行动。
@@ -50,6 +59,7 @@ type Hub struct {
 	// 全局注册/注销通道
 	register   chan registerRequest
 	unregister chan *Client
+	disconnect chan disconnectRequest
 
 	// 服务端 → 客户端投递通道
 	deliver       chan deliverRequest
@@ -67,6 +77,7 @@ func NewHub() *Hub {
 		rooms:      make(map[uint]*room),
 		register:   make(chan registerRequest, hubCommandBuffer),
 		unregister: make(chan *Client, hubCommandBuffer),
+		disconnect: make(chan disconnectRequest, hubCommandBuffer),
 		deliver:    make(chan deliverRequest, deliveryBuffer),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
@@ -83,6 +94,9 @@ func (h *Hub) Run() {
 
 		case client := <-h.unregister:
 			h.unregisterClient(client)
+
+		case request := <-h.disconnect:
+			h.disconnectUser(request)
 
 		case req := <-h.deliver:
 			h.deliverTo(req)
@@ -146,14 +160,38 @@ func (h *Hub) Unregister(client *Client) {
 	}
 }
 
+// DisconnectUser immediately removes the current room connection and closes it with a stable reason.
+func (h *Hub) DisconnectUser(roomID, userID uint, code int, reason string) {
+	if h == nil || roomID == 0 || userID == 0 {
+		return
+	}
+	select {
+	case h.disconnect <- disconnectRequest{roomID: roomID, userID: userID, code: code, reason: reason}:
+	case <-h.stop:
+	case <-h.done:
+	}
+}
+
 // BroadcastToRoom 向房间内所有订阅客户端广播消息。
 func (h *Hub) BroadcastToRoom(roomID uint, msgType MessageType, data json.RawMessage) {
 	h.queueDelivery(deliverRequest{roomID: roomID, msgType: msgType, data: data})
 }
 
+// BroadcastAndRevoke gives the affected connection the committed final event, removes it
+// from the room immediately, and then closes it. Later room events cannot reach that user.
+func (h *Hub) BroadcastAndRevoke(roomID, userID uint, msgType MessageType, data json.RawMessage) {
+	h.queueDelivery(deliverRequest{roomID: roomID, revokeUserID: userID, msgType: msgType, data: data})
+}
+
 // SendToUser 向房间内指定客户端发送消息。
 func (h *Hub) SendToUser(roomID, userID uint, msgType MessageType, data json.RawMessage) {
 	h.SendToUserWithRequestID(roomID, userID, msgType, data, "")
+}
+
+// SendRoomSnapshot sends a baseline snapshot at the current room sequence without
+// advancing or retaining the transient per-connection delivery in replay history.
+func (h *Hub) SendRoomSnapshot(roomID, userID uint, data json.RawMessage) {
+	h.queueDelivery(deliverRequest{roomID: roomID, userID: userID, msgType: MsgRoomSnapshot, data: data, currentSnapshot: true})
 }
 
 // SendToUserWithRequestID 向指定客户端发送带行动关联 ID 的事件。
@@ -314,12 +352,45 @@ func (h *Hub) unregisterClient(client *Client) {
 	log.Printf("[WS] User %d left room %d", client.UserID, client.RoomID)
 }
 
+func (h *Hub) disconnectUser(request disconnectRequest) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r := h.rooms[request.roomID]
+	if r == nil {
+		return
+	}
+	client := r.clients[request.userID]
+	if client == nil {
+		return
+	}
+	delete(r.clients, request.userID)
+	if len(r.clients) == 0 {
+		delete(h.rooms, request.roomID)
+	}
+	client.requestClose(clientCloseCommand{code: request.code, reason: request.reason})
+}
+
 func (h *Hub) deliverTo(req deliverRequest) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	r := h.rooms[req.roomID]
 	if r == nil {
+		return
+	}
+	if req.currentSnapshot {
+		client := r.clients[req.userID]
+		if client == nil {
+			return
+		}
+		payload, err := json.Marshal(Message{
+			Type: req.msgType, RoomID: req.roomID, Seq: r.seq, Data: req.data, Timestamp: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			log.Printf("[WS] Marshal error: %v", err)
+			return
+		}
+		h.enqueue(client, payload)
 		return
 	}
 	r.seq++
@@ -337,6 +408,23 @@ func (h *Hub) deliverTo(req deliverRequest) {
 		return
 	}
 	r.recent = appendRecent(r.recent, msg, recentCapacity)
+	if req.revokeUserID != 0 {
+		for userID, client := range r.clients {
+			if userID == req.revokeUserID {
+				delete(r.clients, userID)
+				client.requestClose(clientCloseCommand{
+					code: realtime.CloseCodeRoomAccessRevoked, reason: realtime.CloseReasonRoomAccessRevoked,
+					finalPayload: payload,
+				})
+				continue
+			}
+			h.enqueue(client, payload)
+		}
+		if len(r.clients) == 0 {
+			delete(h.rooms, req.roomID)
+		}
+		return
+	}
 
 	if req.userID != 0 {
 		if client, ok := r.clients[req.userID]; ok {

@@ -1,8 +1,8 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.3-D + M2.4-B（房间 REST 已提交 `6a2ed79` 并通过 CI；实时大厅与 Vue 尚未实现）
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.3-D + M2.4-C（房间 REST 已提交 `6a2ed79` 并通过 CI；实时大厅本地验证完成待提交/CI，Vue 尚未实现）
 >
-> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-15 核对）。
+> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-21 核对）。
 >
 > 状态：接口字段和错误码已按源码整理至 M2.2-D；聊天前端、自动化回归、CI 与真实双账号浏览器联调均已通过，结果见 [M2.2 验收记录](./M2.2验收记录.md)。
 
@@ -516,7 +516,7 @@ curl.exe -sS -X POST "$GO_BASE_URL/api/v1/internal/scripts/$SCRIPT_ID/status" `
 ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 ```
 
-连接成功后，服务端第一条消息为 `subscribed`。业务投递事件包含房间 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳和 `subscribed` 不占用该序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后用 `sync` 补推 `seq` 大于本地值的消息。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
+连接成功后，服务端第一条消息为 `subscribed`。多人房间随后返回当前权威 `room_snapshot` 基线，该基线沿用当前水位且不推进序号。业务变更事件包含房间 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳、`subscribed` 和初始 `room_snapshot` 不占用新序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后先采用快照，再用 `sync` 补推 `seq` 大于本地值的消息；状态合并只接受更高的 `version`。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
 
 游戏 WebSocket 已启用 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 白名单。浏览器 Origin 必须精确匹配配置；无 Origin 的原生客户端仍可继续 JWT 鉴权。不允许的 Origin 优先返回 `403 / 1508 / origin not allowed`，不会暴露 Token 或房间状态。
 
@@ -595,7 +595,19 @@ ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 
 WebSocket 专用错误码：`1500` 缺少 token、`1501` token 无效、`1502` room_id 非法、`1503` 无房间访问权、`1504` sync 请求非法、`1505` 不支持的消息类型、`1506` 行动载荷非法、`1507` 行动处理器不可用、`1508` Origin 不允许。行动业务错误沿用 `1310`–`1319`，未知错误为 `1317`。
 
-### 4.4 浏览器控制台冒烟测试
+### 4.4 多人等待大厅事件
+
+单人房间仍只允许房主连接；多人房间允许有效成员连接。连接后快照与每次提交成功的大厅事件都在 `data` 中携带 REST 同结构的房间、成员和候选角色权威快照：
+
+```json
+{"type":"room_snapshot","room_id":42,"data":{"id":42,"status":"waiting","version":5,"owner_id":7,"members":[],"characters":[]},"timestamp":1720000000000}
+```
+
+变更事件类型：`room_member_joined`、`room_member_left`、`room_ready_changed`、`room_character_selected`、`room_snapshot`（房主转让）和 `game_started`。事务失败或幂等无变化时不推送。
+
+成员离房或被踢后，失权连接会先收到最终的 `room_member_left`，随后以应用关闭码 `4003`、reason `room_access_revoked` 断开；该连接不会收到更高版本事件，重新握手返回 `403 / 1503`。
+
+### 4.5 浏览器控制台冒烟测试
 
 ```javascript
 const ws = new WebSocket(
@@ -615,7 +627,7 @@ ws.onopen = () => {
 };
 ```
 
-### 4.5 Phase 2 IM WebSocket
+### 4.6 Phase 2 IM WebSocket
 
 用户级 IM 实时通道连接地址：
 
