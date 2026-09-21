@@ -1,6 +1,6 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.3-D + M2.4-D（房间 REST `6a2ed79` 与实时大厅 `bfa6efe` 已提交并通过 CI；M2.4-D Vue 大厅与三账号验收完成，待当前提交 CI 收口）
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.4-D（房间 REST `6a2ed79`、实时大厅 `bfa6efe` 与 Vue 大厅 `8cb1ded` 已提交并通过 CI；M2.0/M2.1 已补充本地真实浏览器验收）
 >
 > 契约来源：当前 Go、Python 和 Vue 代码（2026-09-21 核对）。
 >
@@ -846,11 +846,11 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 
 ### 6.4 好友与在线状态
 
-- [ ] 使用两个真实账号完成搜索、申请、接受、拒绝、删除与删除后重加。
-- [ ] 两个账号同时连接 `/ws/im`，验证 online/offline 实时变化。
-- [ ] 关系变化触发 `friendship_updated`，刷新 REST 后双方列表一致。
-- [ ] 同账号第二页面接管连接，旧页面收到事件并以 4001 关闭，且不再重连。
-- [ ] 关闭 Redis 时好友 REST 将 presence 降级为 unknown，不泄露非好友状态。
+- [x] 使用两个本地验收账号完成 ID/用户名/昵称搜索、申请、接受、拒绝、删除与删除后重加。
+- [x] 两个账号同时连接 `/ws/im`，验证 online/offline 实时变化。
+- [x] 关系变化触发 `friendship_updated`，刷新 REST 后双方列表一致。
+- [x] 同账号第二页面接管连接，旧页面收到事件并以 4001 关闭，且不再重连。
+- [x] 关闭临时 Redis 时好友 REST 将 presence 降级为 unknown；非好友状态隔离由自动化测试覆盖。
 
 ### 6.5 私聊与可靠消息
 
