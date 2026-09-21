@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { useAuthStore } from './auth'
 import { useGameStore, type GameDiceRoll } from './game'
+import { useRoomsStore } from './rooms'
+import type { RoomSnapshot } from '@/api/rooms'
 
 interface ServerMessage {
   type: string
@@ -50,9 +52,20 @@ export const useWebSocketStore = defineStore('websocket', () => {
       console.log('[WS] Connected')
     }
 
-    socket.value.onclose = () => {
+    socket.value.onclose = (event) => {
       isConnected.value = false
       console.log('[WS] Disconnected')
+      if (event.code === 4003) {
+        intentionalDisconnect.value = true
+        lastError.value = '你已离开或被移出该房间'
+        useRoomsStore().handleAccessRevoked(targetRoomId)
+        return
+      }
+      if (event.code === 4001) {
+        intentionalDisconnect.value = true
+        lastError.value = '此连接已被同账号的新连接接管'
+        return
+      }
       // 自动重连
       if (!intentionalDisconnect.value && reconnectAttempts.value < maxReconnectAttempts) {
         reconnectAttempts.value++
@@ -99,8 +112,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
   function dispatchSequenced(msg: ServerMessage) {
     const gameStore = useGameStore()
+    const roomsStore = useRoomsStore()
     if (typeof msg.seq === 'number') {
-      if (msg.seq <= lastSeq.value) return
+      if (msg.seq <= lastSeq.value) {
+        if (msg.type === 'room_snapshot') {
+          roomsStore.applyRealtimeSnapshot(msg.data as RoomSnapshot)
+        }
+        return
+      }
       lastSeq.value = msg.seq
     }
     switch (msg.type) {
@@ -115,6 +134,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
         break
       case 'status_update':
         gameStore.applyStatusUpdate(msg.data ?? {})
+        break
+      case 'room_snapshot':
+      case 'room_member_joined':
+      case 'room_member_left':
+      case 'room_ready_changed':
+      case 'room_character_selected':
+      case 'game_started':
+        roomsStore.applyRealtimeSnapshot(msg.data as RoomSnapshot)
         break
       case 'error':
         gameStore.failNarrative()

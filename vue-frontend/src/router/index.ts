@@ -11,6 +11,8 @@ const GroupsView = () => import('@/views/GroupsView.vue')
 const ScriptDetailView = () => import('@/views/ScriptDetailView.vue')
 const GameSoloView = () => import('@/views/GameSoloView.vue')
 const GamePlayView = () => import('@/views/GamePlayView.vue')
+const RoomsView = () => import('@/views/RoomsView.vue')
+const RoomLobbyView = () => import('@/views/RoomLobbyView.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -57,6 +59,18 @@ const routes: RouteRecordRaw[] = [
     path: '/scripts/:id',
     name: 'ScriptDetail',
     component: ScriptDetailView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/rooms',
+    name: 'Rooms',
+    component: RoomsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/lobby/:roomId',
+    name: 'RoomLobby',
+    component: RoomLobbyView,
     meta: { requiresAuth: true }
   },
   {
