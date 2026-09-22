@@ -1,14 +1,18 @@
 package imws
 
 import (
+	"context"
 	"log"
 	"sync"
 	"time"
+
+	"trpggame/internal/realtimebus"
 )
 
 const (
 	hubCommandBuffer = 256
 	deliveryBuffer   = 512
+	busOperationWait = 2 * time.Second
 )
 
 type registerRequest struct {
@@ -28,6 +32,13 @@ type refreshRequest struct {
 	result chan bool
 }
 
+type userEventBus interface {
+	PublishUser(context.Context, realtimebus.UserEvent) error
+	ClaimConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) error
+	RefreshConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) (bool, error)
+	ReleaseConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) (bool, error)
+}
+
 // PresenceObserver 接收已经过 Hub 当前连接校验的生命周期事件。
 type PresenceObserver interface {
 	OnConnected(userID uint, connectionID string)
@@ -43,8 +54,10 @@ type Hub struct {
 	unregister chan *Client
 	deliver    chan deliverRequest
 	refresh    chan refreshRequest
+	replace    chan realtimebus.ControlEvent
 	observer   PresenceObserver
 	inbound    InboundHandler
+	bus        userEventBus
 
 	stop     chan struct{}
 	done     chan struct{}
@@ -59,8 +72,42 @@ func NewHub() *Hub {
 		unregister: make(chan *Client, hubCommandBuffer),
 		deliver:    make(chan deliverRequest, deliveryBuffer),
 		refresh:    make(chan refreshRequest, hubCommandBuffer),
+		replace:    make(chan realtimebus.ControlEvent, hubCommandBuffer),
 		stop:       make(chan struct{}),
 		done:       make(chan struct{}),
+	}
+}
+
+// SetRealtimeBus enables cross-instance IM delivery and distributed connection ownership.
+// It must be called before Run.
+func (h *Hub) SetRealtimeBus(bus userEventBus) {
+	if h != nil {
+		h.bus = bus
+	}
+}
+
+// HandleUserEvent is registered as the process-local Redis user event consumer.
+func (h *Hub) HandleUserEvent(event realtimebus.UserEvent) {
+	if h == nil || event.UserID == 0 || len(event.Payload) == 0 {
+		return
+	}
+	request := deliverRequest{
+		userID: event.UserID, payload: event.Payload, result: make(chan bool, 1),
+	}
+	select {
+	case h.deliver <- request:
+	case <-h.done:
+	}
+}
+
+// HandleControl closes the exact superseded connection without affecting a newer local connection.
+func (h *Hub) HandleControl(event realtimebus.ControlEvent) {
+	if h == nil || event.Scope != realtimebus.ScopeIM || event.UserID == 0 || event.ConnectionID == "" {
+		return
+	}
+	select {
+	case h.replace <- event:
+	case <-h.done:
 	}
 }
 
@@ -99,6 +146,8 @@ func (h *Hub) Run() {
 			request.result <- h.deliverTo(request)
 		case request := <-h.refresh:
 			request.result <- h.refreshClient(request.client)
+		case event := <-h.replace:
+			h.replaceClient(event)
 		case <-h.stop:
 			h.closeAllClients()
 			return
@@ -186,7 +235,16 @@ func (h *Hub) PublishUserEvent(userID uint, eventType string, data any) bool {
 	if err != nil {
 		return false
 	}
-	return h.deliverPayload(userID, "", payload)
+	if h.bus == nil {
+		return h.deliverPayload(userID, "", payload)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+	defer cancel()
+	if err := h.bus.PublishUser(ctx, realtimebus.UserEvent{UserID: userID, Payload: payload}); err != nil {
+		log.Printf("[IMWS] Publish distributed user event: %v", err)
+		return false
+	}
+	return true
 }
 
 func (h *Hub) sendToClient(client *Client, payload []byte) bool {
@@ -231,6 +289,15 @@ func (h *Hub) registerClient(client *Client) bool {
 	if client == nil || client.UserID == 0 || client.ConnectionID == "" {
 		return false
 	}
+	if h.bus != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+		err := h.bus.ClaimConnection(ctx, realtimebus.ScopeIM, 0, client.UserID, client.ConnectionID)
+		cancel()
+		if err != nil {
+			log.Printf("[IMWS] Claim distributed connection: %v", err)
+			return false
+		}
+	}
 
 	connected, err := MarshalServerMessage(
 		MsgConnected,
@@ -239,6 +306,7 @@ func (h *Hub) registerClient(client *Client) bool {
 		ConnectedData{UserID: client.UserID, ConnectionID: client.ConnectionID},
 	)
 	if err != nil {
+		h.releaseConnection(client)
 		return false
 	}
 
@@ -251,6 +319,7 @@ func (h *Hub) registerClient(client *Client) bool {
 			h.clients[client.UserID] = previous
 		}
 		client.closeNow()
+		h.releaseConnection(client)
 		return false
 	}
 
@@ -292,6 +361,7 @@ func (h *Hub) unregisterClient(client *Client) {
 	if h.observer != nil {
 		h.observer.OnDisconnected(client.UserID, client.ConnectionID)
 	}
+	h.releaseConnection(client)
 	log.Printf("[IMWS] User %d disconnected connection %s", client.UserID, client.ConnectionID)
 }
 
@@ -311,6 +381,7 @@ func (h *Hub) deliverTo(request deliverRequest) bool {
 	if h.observer != nil {
 		h.observer.OnDisconnected(client.UserID, client.ConnectionID)
 	}
+	h.releaseConnection(client)
 	log.Printf("[IMWS] Closing slow connection %s for user %d", client.ConnectionID, client.UserID)
 	return false
 }
@@ -322,6 +393,7 @@ func (h *Hub) closeAllClients() {
 		if h.observer != nil {
 			h.observer.OnDisconnected(client.UserID, client.ConnectionID)
 		}
+		h.releaseConnection(client)
 	}
 }
 
@@ -333,8 +405,58 @@ func (h *Hub) refreshClient(client *Client) bool {
 	if current != client || current.ConnectionID != client.ConnectionID {
 		return false
 	}
+	if h.bus != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+		refreshed, err := h.bus.RefreshConnection(
+			ctx, realtimebus.ScopeIM, 0, client.UserID, client.ConnectionID,
+		)
+		cancel()
+		if err != nil || !refreshed {
+			if err != nil {
+				log.Printf("[IMWS] Refresh distributed connection: %v", err)
+			}
+			return false
+		}
+	}
 	if h.observer != nil {
 		h.observer.OnRefreshed(client.UserID, client.ConnectionID)
 	}
 	return true
+}
+
+func (h *Hub) replaceClient(event realtimebus.ControlEvent) {
+	client := h.clients[event.UserID]
+	if client == nil || client.ConnectionID != event.ConnectionID {
+		return
+	}
+	delete(h.clients, event.UserID)
+	replacement, err := MarshalServerMessage(
+		MsgConnectionReplaced,
+		"",
+		time.Now().UnixMilli(),
+		ConnectionReplacedData{Reason: CloseReasonConnectionReplaced},
+	)
+	if err != nil {
+		client.closeNow()
+	} else {
+		client.requestClose(closeCommand{
+			payload: replacement, code: CloseCodeConnectionReplaced, reason: CloseReasonConnectionReplaced,
+		})
+	}
+	if h.observer != nil {
+		h.observer.OnDisconnected(client.UserID, client.ConnectionID)
+	}
+}
+
+func (h *Hub) releaseConnection(client *Client) {
+	if h.bus == nil || client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+	defer cancel()
+	if _, err := h.bus.ReleaseConnection(
+		ctx, realtimebus.ScopeIM, 0, client.UserID, client.ConnectionID,
+	); err != nil {
+		log.Printf("[IMWS] Release distributed connection: %v", err)
+	}
 }

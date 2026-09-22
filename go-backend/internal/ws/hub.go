@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"trpggame/internal/realtime"
+	"trpggame/internal/realtimebus"
 )
 
 // recentCapacity 每个房间保留的近期服务端消息数，超出后丢弃最旧的，用于重连补推。
@@ -16,13 +17,15 @@ const recentCapacity = 200
 const (
 	hubCommandBuffer = 256
 	deliveryBuffer   = 512
+	busOperationWait = 2 * time.Second
 )
 
 // room 一个房间的订阅状态。内部字段只在持有 Hub.mu 时访问。
 type room struct {
-	clients map[uint]*Client
-	seq     int64 // 按房间单调递增的消息序号
-	recent  []Message
+	clients      map[uint]*Client
+	seq          int64 // 房间全局消息水位
+	deliveredSeq int64 // 本实例已消费的 Redis Pub/Sub 水位，用于抑制重复投递
+	recent       []Message
 }
 
 // deliverRequest 一次服务端 → 客户端投递请求。userID 为 0 表示广播给整个房间。
@@ -31,6 +34,7 @@ type deliverRequest struct {
 	userID          uint
 	revokeUserID    uint
 	currentSnapshot bool
+	unsequenced     bool
 	msgType         MessageType
 	data            json.RawMessage
 	requestID       string
@@ -42,10 +46,20 @@ type registerRequest struct {
 }
 
 type disconnectRequest struct {
-	roomID uint
-	userID uint
-	code   int
-	reason string
+	roomID       uint
+	userID       uint
+	connectionID string
+	code         int
+	reason       string
+}
+
+type roomEventBus interface {
+	PublishRoom(context.Context, realtimebus.RoomEvent) (int64, error)
+	CurrentRoomSequence(context.Context, uint) (int64, error)
+	ReplayRoom(context.Context, uint, uint, int64) (realtimebus.ReplayResult, error)
+	ClaimConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) error
+	RefreshConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) (bool, error)
+	ReleaseConnection(context.Context, realtimebus.ConnectionScope, uint, uint, string) (bool, error)
 }
 
 // GameActionHandler 处理已通过 JWT 与房间订阅鉴权的客户端行动。
@@ -63,7 +77,9 @@ type Hub struct {
 
 	// 服务端 → 客户端投递通道
 	deliver       chan deliverRequest
+	distributed   chan realtimebus.RoomEvent
 	actionHandler GameActionHandler
+	bus           roomEventBus
 
 	mu       sync.RWMutex
 	stop     chan struct{}
@@ -74,13 +90,14 @@ type Hub struct {
 // NewHub 创建新的 Hub 实例。
 func NewHub() *Hub {
 	return &Hub{
-		rooms:      make(map[uint]*room),
-		register:   make(chan registerRequest, hubCommandBuffer),
-		unregister: make(chan *Client, hubCommandBuffer),
-		disconnect: make(chan disconnectRequest, hubCommandBuffer),
-		deliver:    make(chan deliverRequest, deliveryBuffer),
-		stop:       make(chan struct{}),
-		done:       make(chan struct{}),
+		rooms:       make(map[uint]*room),
+		register:    make(chan registerRequest, hubCommandBuffer),
+		unregister:  make(chan *Client, hubCommandBuffer),
+		disconnect:  make(chan disconnectRequest, hubCommandBuffer),
+		deliver:     make(chan deliverRequest, deliveryBuffer),
+		distributed: make(chan realtimebus.RoomEvent, deliveryBuffer),
+		stop:        make(chan struct{}),
+		done:        make(chan struct{}),
 	}
 }
 
@@ -101,11 +118,50 @@ func (h *Hub) Run() {
 		case req := <-h.deliver:
 			h.deliverTo(req)
 
+		case event := <-h.distributed:
+			h.deliverDistributed(event)
+
 		case <-h.stop:
 			log.Println("[WS] Hub stopping...")
 			h.closeAllClients()
 			return
 		}
+	}
+}
+
+// SetRealtimeBus enables Redis-backed sequencing, replay and distributed connection ownership.
+// It must be called before Run.
+func (h *Hub) SetRealtimeBus(bus roomEventBus) {
+	if h != nil {
+		h.bus = bus
+	}
+}
+
+// HandleRoomEvent is registered as the process-local Redis room event consumer.
+func (h *Hub) HandleRoomEvent(event realtimebus.RoomEvent) {
+	if h == nil || event.RoomID == 0 || event.Seq <= 0 || len(event.Message) == 0 {
+		return
+	}
+	select {
+	case h.distributed <- event:
+	case <-h.stop:
+	case <-h.done:
+	}
+}
+
+// HandleControl closes a superseded connection only when its immutable connection ID still matches.
+func (h *Hub) HandleControl(event realtimebus.ControlEvent) {
+	if h == nil || event.Scope != realtimebus.ScopeGame || event.RoomID == 0 ||
+		event.UserID == 0 || event.ConnectionID == "" {
+		return
+	}
+	select {
+	case h.disconnect <- disconnectRequest{
+		roomID: event.RoomID, userID: event.UserID, connectionID: event.ConnectionID,
+		code: realtime.CloseCodeConnectionReplaced, reason: realtime.CloseReasonConnectionReplaced,
+	}:
+	case <-h.stop:
+	case <-h.done:
 	}
 }
 
@@ -172,6 +228,26 @@ func (h *Hub) DisconnectUser(roomID, userID uint, code int, reason string) {
 	}
 }
 
+// RefreshConnection renews distributed ownership for a still-current game connection.
+func (h *Hub) RefreshConnection(client *Client) bool {
+	if !h.isCurrentClient(client) {
+		return false
+	}
+	if h.bus == nil {
+		return true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+	defer cancel()
+	refreshed, err := h.bus.RefreshConnection(
+		ctx, realtimebus.ScopeGame, client.RoomID, client.UserID, client.ConnectionID,
+	)
+	if err != nil {
+		log.Printf("[WS] Refresh distributed connection: %v", err)
+		return false
+	}
+	return refreshed
+}
+
 // BroadcastToRoom 向房间内所有订阅客户端广播消息。
 func (h *Hub) BroadcastToRoom(roomID uint, msgType MessageType, data json.RawMessage) {
 	h.queueDelivery(deliverRequest{roomID: roomID, msgType: msgType, data: data})
@@ -210,7 +286,7 @@ func (h *Hub) SendToUserWithRequestID(
 func (h *Hub) SendErrorToUser(roomID, userID uint, code int, message, requestID string) {
 	data := mustJSON(ErrorData{Code: code, Message: message, RequestID: requestID})
 	h.queueDelivery(deliverRequest{
-		roomID: roomID, userID: userID, msgType: MsgError, data: data, requestID: requestID,
+		roomID: roomID, userID: userID, msgType: MsgError, data: data, requestID: requestID, unsequenced: true,
 	})
 }
 
@@ -277,17 +353,34 @@ func (h *Hub) handleGameAction(c *Client, data json.RawMessage) {
 }
 
 func (h *Hub) registerClient(client *Client) bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if client == nil || client.UserID == 0 || client.RoomID == 0 ||
 		client.ConnectionID == "" || client.isClosed() {
 		return false
 	}
+	globalSeq := int64(0)
+	if h.bus != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+		err := h.bus.ClaimConnection(
+			ctx, realtimebus.ScopeGame, client.RoomID, client.UserID, client.ConnectionID,
+		)
+		if err == nil {
+			globalSeq, err = h.bus.CurrentRoomSequence(ctx, client.RoomID)
+		}
+		cancel()
+		if err != nil {
+			log.Printf("[WS] Claim distributed connection: %v", err)
+			return false
+		}
+	}
+
+	h.mu.Lock()
 	r := h.rooms[client.RoomID]
 	if r == nil {
 		r = &room{clients: make(map[uint]*Client)}
 		h.rooms[client.RoomID] = r
+	}
+	if globalSeq > r.seq {
+		r.seq = globalSeq
 	}
 
 	// 订阅确认是客户端的首条消息，直接投递（不占用房间序号）。
@@ -298,6 +391,8 @@ func (h *Hub) registerClient(client *Client) bool {
 		Timestamp: time.Now().UnixMilli(),
 	})
 	if err != nil {
+		h.mu.Unlock()
+		h.releaseConnection(client)
 		log.Printf("[WS] Marshal error: %v", err)
 		return false
 	}
@@ -314,6 +409,8 @@ func (h *Hub) registerClient(client *Client) bool {
 			r.clients[client.UserID] = previous
 		}
 		client.closeNow()
+		h.mu.Unlock()
+		h.releaseConnection(client)
 		return false
 	}
 
@@ -323,6 +420,7 @@ func (h *Hub) registerClient(client *Client) bool {
 			reason: realtime.CloseReasonConnectionReplaced,
 		})
 	}
+	h.mu.Unlock()
 	log.Printf(
 		"[WS] User %d subscribed to room %d with connection %s",
 		client.UserID,
@@ -334,33 +432,40 @@ func (h *Hub) registerClient(client *Client) bool {
 
 func (h *Hub) unregisterClient(client *Client) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	client.closeNow()
 	r, ok := h.rooms[client.RoomID]
 	if !ok {
+		h.mu.Unlock()
 		return
 	}
 	current, exists := r.clients[client.UserID]
 	if !exists || current != client || current.ConnectionID != client.ConnectionID {
+		h.mu.Unlock()
 		return
 	}
 	delete(r.clients, client.UserID)
 	if len(r.clients) == 0 {
 		delete(h.rooms, client.RoomID)
 	}
+	h.mu.Unlock()
+	h.releaseConnection(client)
 	log.Printf("[WS] User %d left room %d", client.UserID, client.RoomID)
 }
 
 func (h *Hub) disconnectUser(request disconnectRequest) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	r := h.rooms[request.roomID]
 	if r == nil {
+		h.mu.Unlock()
 		return
 	}
 	client := r.clients[request.userID]
 	if client == nil {
+		h.mu.Unlock()
+		return
+	}
+	if request.connectionID != "" && client.ConnectionID != request.connectionID {
+		h.mu.Unlock()
 		return
 	}
 	delete(r.clients, request.userID)
@@ -368,29 +473,41 @@ func (h *Hub) disconnectUser(request disconnectRequest) {
 		delete(h.rooms, request.roomID)
 	}
 	client.requestClose(clientCloseCommand{code: request.code, reason: request.reason})
+	h.mu.Unlock()
+	h.releaseConnection(client)
 }
 
 func (h *Hub) deliverTo(req deliverRequest) {
+	if req.currentSnapshot || req.unsequenced {
+		h.deliverUnsequenced(req)
+		return
+	}
+	if h.bus != nil {
+		msg := Message{
+			Type: req.msgType, RoomID: req.roomID, UserID: req.userID,
+			Data: req.data, Timestamp: time.Now().UnixMilli(), RequestID: req.requestID,
+		}
+		payload, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("[WS] Marshal error: %v", err)
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+		_, err = h.bus.PublishRoom(ctx, realtimebus.RoomEvent{
+			RoomID: req.roomID, UserID: req.userID, RevokeUserID: req.revokeUserID, Message: payload,
+		})
+		cancel()
+		if err != nil {
+			log.Printf("[WS] Publish distributed room event: %v", err)
+		}
+		return
+	}
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	r := h.rooms[req.roomID]
 	if r == nil {
-		return
-	}
-	if req.currentSnapshot {
-		client := r.clients[req.userID]
-		if client == nil {
-			return
-		}
-		payload, err := json.Marshal(Message{
-			Type: req.msgType, RoomID: req.roomID, Seq: r.seq, Data: req.data, Timestamp: time.Now().UnixMilli(),
-		})
-		if err != nil {
-			log.Printf("[WS] Marshal error: %v", err)
-			return
-		}
-		h.enqueue(client, payload)
 		return
 	}
 	r.seq++
@@ -437,6 +554,90 @@ func (h *Hub) deliverTo(req deliverRequest) {
 	}
 }
 
+func (h *Hub) deliverUnsequenced(req deliverRequest) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	r := h.rooms[req.roomID]
+	if r == nil {
+		return
+	}
+	client := r.clients[req.userID]
+	if client == nil {
+		return
+	}
+	seq := int64(0)
+	if req.currentSnapshot {
+		seq = r.seq
+	}
+	payload, err := json.Marshal(Message{
+		Type: req.msgType, RoomID: req.roomID, Seq: seq, Data: req.data,
+		Timestamp: time.Now().UnixMilli(), RequestID: req.requestID,
+	})
+	if err != nil {
+		log.Printf("[WS] Marshal error: %v", err)
+		return
+	}
+	h.enqueue(client, payload)
+}
+
+func (h *Hub) deliverDistributed(event realtimebus.RoomEvent) {
+	var msg Message
+	if err := json.Unmarshal(event.Message, &msg); err != nil {
+		log.Printf("[WS] Decode distributed room event: %v", err)
+		return
+	}
+	msg.RoomID = event.RoomID
+	msg.UserID = event.UserID
+	msg.Seq = event.Seq
+	payload, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+
+	h.mu.Lock()
+	r := h.rooms[event.RoomID]
+	if r == nil || event.Seq <= r.deliveredSeq {
+		h.mu.Unlock()
+		return
+	}
+	r.deliveredSeq = event.Seq
+	if event.Seq > r.seq {
+		r.seq = event.Seq
+	}
+	if event.RevokeUserID != 0 {
+		var revoked *Client
+		for userID, client := range r.clients {
+			if userID == event.RevokeUserID {
+				delete(r.clients, userID)
+				revoked = client
+				client.requestClose(clientCloseCommand{
+					code: realtime.CloseCodeRoomAccessRevoked, reason: realtime.CloseReasonRoomAccessRevoked,
+					finalPayload: payload,
+				})
+				continue
+			}
+			h.enqueue(client, payload)
+		}
+		if len(r.clients) == 0 {
+			delete(h.rooms, event.RoomID)
+		}
+		h.mu.Unlock()
+		h.releaseConnection(revoked)
+		return
+	}
+	if event.UserID != 0 {
+		if client := r.clients[event.UserID]; client != nil {
+			h.enqueue(client, payload)
+		}
+		h.mu.Unlock()
+		return
+	}
+	for _, client := range r.clients {
+		h.enqueue(client, payload)
+	}
+	h.mu.Unlock()
+}
+
 func (h *Hub) handleSync(c *Client, data json.RawMessage) {
 	var req SyncRequestData
 	if len(data) > 0 {
@@ -446,9 +647,48 @@ func (h *Hub) handleSync(c *Client, data json.RawMessage) {
 		}
 	}
 
+	if h.bus != nil {
+		if !h.isCurrentClient(c) {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+		replay, err := h.bus.ReplayRoom(ctx, c.RoomID, c.UserID, req.SinceSeq)
+		cancel()
+		if err != nil {
+			h.sendErrorTo(c, 1508, "room sync unavailable", "")
+			return
+		}
+		if !h.isCurrentClient(c) {
+			return
+		}
+		messageType := MsgSyncBatch
+		var responseData json.RawMessage
+		if replay.SnapshotRequired {
+			messageType = MsgSnapshotRequired
+			responseData = mustJSON(SnapshotRequiredData{NextSeq: replay.NextSeq})
+		} else {
+			messages := make([]Message, 0, len(replay.Events))
+			for _, event := range replay.Events {
+				var message Message
+				if json.Unmarshal(event.Message, &message) != nil {
+					continue
+				}
+				message.RoomID, message.UserID, message.Seq = event.RoomID, event.UserID, event.Seq
+				messages = append(messages, message)
+			}
+			responseData = mustJSON(SyncBatchData{Messages: messages, NextSeq: replay.NextSeq})
+		}
+		payload, err := json.Marshal(Message{
+			Type: messageType, RoomID: c.RoomID, Data: responseData, Timestamp: time.Now().UnixMilli(),
+		})
+		if err == nil {
+			h.sendToClient(c, payload)
+		}
+		return
+	}
+
 	h.mu.RLock()
 	defer h.mu.RUnlock()
-
 	r := h.rooms[c.RoomID]
 	if r == nil {
 		return
@@ -537,13 +777,31 @@ func (h *Hub) enqueue(client *Client, payload []byte) bool {
 
 func (h *Hub) closeAllClients() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	clients := make([]*Client, 0)
 	for _, r := range h.rooms {
 		for _, client := range r.clients {
 			client.closeNow()
+			clients = append(clients, client)
 		}
 	}
 	h.rooms = make(map[uint]*room)
+	h.mu.Unlock()
+	for _, client := range clients {
+		h.releaseConnection(client)
+	}
+}
+
+func (h *Hub) releaseConnection(client *Client) {
+	if h.bus == nil || client == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), busOperationWait)
+	defer cancel()
+	if _, err := h.bus.ReleaseConnection(
+		ctx, realtimebus.ScopeGame, client.RoomID, client.UserID, client.ConnectionID,
+	); err != nil {
+		log.Printf("[WS] Release distributed connection: %v", err)
+	}
 }
 
 func appendRecent(recent []Message, msg Message, limit int) []Message {

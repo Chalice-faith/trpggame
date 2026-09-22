@@ -16,6 +16,7 @@ import (
 	"trpggame/internal/handler"
 	"trpggame/internal/imws"
 	"trpggame/internal/realtime"
+	"trpggame/internal/realtimebus"
 	"trpggame/internal/repo"
 	"trpggame/internal/router"
 	"trpggame/internal/service"
@@ -124,9 +125,14 @@ func main() {
 	gameHandler := handler.NewGameHandler(gameService)
 	userRepo := repo.NewUserRepo(db)
 	friendRepo := repo.NewFriendRepo(db)
+	realtimeBus, err := realtimebus.New(redisClient, realtimebus.Options{})
+	if err != nil {
+		log.Fatalf("Failed to initialize realtime bus: %v", err)
+	}
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
+	hub.SetRealtimeBus(realtimeBus)
 	hub.SetGameActionHandler(func(ctx context.Context, client *ws.Client, request ws.GameActionData) {
 		if request.ExpectedTurn == nil {
 			hub.SendErrorToUser(client.RoomID, client.UserID, 1506, "invalid game action", request.RequestID)
@@ -205,6 +211,23 @@ func main() {
 		log.Fatalf("Failed to initialize presence repository: %v", err)
 	}
 	imHub := imws.NewHub()
+	imHub.SetRealtimeBus(realtimeBus)
+	realtimeBus.SetRoomHandler(hub.HandleRoomEvent)
+	realtimeBus.SetUserHandler(imHub.HandleUserEvent)
+	realtimeBus.SetControlHandler(func(event realtimebus.ControlEvent) {
+		switch event.Scope {
+		case realtimebus.ScopeGame:
+			hub.HandleControl(event)
+		case realtimebus.ScopeIM:
+			imHub.HandleControl(event)
+		}
+	})
+	realtimeStartContext, cancelRealtimeStart := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := realtimeBus.Start(realtimeStartContext); err != nil {
+		cancelRealtimeStart()
+		log.Fatalf("Failed to start realtime bus: %v", err)
+	}
+	cancelRealtimeStart()
 	presenceCoordinator := service.NewPresenceCoordinator(presenceRepo, friendRepo, imHub)
 	imHub.SetPresenceObserver(presenceCoordinator)
 	go presenceCoordinator.Run()
@@ -264,6 +287,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// 关闭 WebSocket Hub
+	realtimeBus.Stop()
 	imHub.Stop()
 	presenceCoordinator.Stop()
 	hub.Stop()

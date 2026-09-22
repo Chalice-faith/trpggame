@@ -165,6 +165,7 @@ func (c *Client) readPump() {
 				nil,
 			)
 			if marshalErr == nil && c.Hub != nil {
+				c.Hub.RefreshPresence(c)
 				c.Hub.sendToClient(c, payload)
 			}
 		case MsgChatMessage, MsgImSync:

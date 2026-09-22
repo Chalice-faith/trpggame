@@ -516,7 +516,7 @@ curl.exe -sS -X POST "$GO_BASE_URL/api/v1/internal/scripts/$SCRIPT_ID/status" `
 ${GO_WS_URL}?token=<ACCESS_TOKEN>&room_id=<ROOM_ID>
 ```
 
-连接成功后，服务端第一条消息为 `subscribed`。多人房间随后返回当前权威 `room_snapshot` 基线，该基线沿用当前水位且不推进序号。业务变更事件包含房间 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳、`subscribed` 和初始 `room_snapshot` 不占用新序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后先采用快照，再用 `sync` 补推 `seq` 大于本地值的消息；状态合并只接受更高的 `version`。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
+连接成功后，服务端第一条消息为 `subscribed`。多人房间随后返回当前权威 `room_snapshot` 基线，该基线沿用当前水位且不推进序号。业务变更事件包含由 Redis 分配的房间全局 `seq` 并按房间单调递增；`pong`、`error`、`sync_batch` 外壳、`snapshot_required`、`subscribed` 和初始 `room_snapshot` 不占用新序号（`sync_batch.data.messages` 内的历史业务事件仍带 `seq`）。重连后用 `sync` 补推 `seq` 大于本地值的消息；当 `since_seq` 已早于有界日志或高于当前水位时，服务端返回 `snapshot_required / {next_seq}`，客户端必须重新拉取 REST 快照。状态合并只接受更高的 `version`。客户端不应自行填写 `room_id`、`user_id` 或 `seq`。
 
 游戏 WebSocket 已启用 `TRPG_WEBSOCKET_ALLOWEDORIGINS` 白名单。浏览器 Origin 必须精确匹配配置；无 Origin 的原生客户端仍可继续 JWT 鉴权。不允许的 Origin 优先返回 `403 / 1508 / origin not allowed`，不会暴露 Token 或房间状态。
 

@@ -25,6 +25,7 @@ const (
 	MsgSystem                MessageType = "system"
 	MsgError                 MessageType = "error"
 	MsgSyncBatch             MessageType = "sync_batch"
+	MsgSnapshotRequired      MessageType = "snapshot_required"
 	MsgPresence              MessageType = "presence"
 	MsgTurnStart             MessageType = "turn_start"
 	MsgTurnSkip              MessageType = "turn_skip"
@@ -74,6 +75,11 @@ type GameActionData struct {
 type SyncBatchData struct {
 	Messages []Message `json:"messages"`
 	NextSeq  int64     `json:"next_seq"`
+}
+
+// SnapshotRequiredData indicates that the requested sequence predates the bounded Redis log.
+type SnapshotRequiredData struct {
+	NextSeq int64 `json:"next_seq"`
 }
 
 // ErrorData 服务端错误事件。

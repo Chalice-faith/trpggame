@@ -84,6 +84,9 @@ func (c *Client) readPump() {
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 		c.isAlive.Store(true)
+		if c.Hub != nil {
+			c.Hub.RefreshConnection(c)
+		}
 		return nil
 	})
 
@@ -117,6 +120,7 @@ func (c *Client) readPump() {
 			pong := &Message{Type: MsgPong, Timestamp: time.Now().UnixMilli()}
 			pongData, _ := json.Marshal(pong)
 			if c.Hub != nil {
+				c.Hub.RefreshConnection(c)
 				c.Hub.sendToClient(c, pongData)
 			}
 			continue
