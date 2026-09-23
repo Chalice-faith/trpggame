@@ -23,6 +23,9 @@ type fakeGameStartService struct {
 	actionResult  *service.SubmitGameActionResult
 	actionErr     error
 	actionRequest *service.SubmitGameActionRequest
+	skipResult    *model.MultiplayerSkipResult
+	skipErr       error
+	skipRequest   *service.SkipMultiplayerTurnRequest
 	saveResult    *service.CreateManualSaveResult
 	saveErr       error
 	saveRequest   *service.CreateManualSaveRequest
@@ -97,6 +100,39 @@ func (s *fakeGameStartService) SubmitAction(
 ) (*service.SubmitGameActionResult, error) {
 	s.actionRequest = req
 	return s.actionResult, s.actionErr
+}
+
+func (s *fakeGameStartService) SkipMultiplayerTurn(_ context.Context, req *service.SkipMultiplayerTurnRequest) (*model.MultiplayerSkipResult, error) {
+	s.skipRequest = req
+	return s.skipResult, s.skipErr
+}
+
+func TestGameHandlerSkipMultiplayerTurn(t *testing.T) {
+	fake := &fakeGameStartService{skipResult: &model.MultiplayerSkipResult{
+		Generation: "550e8400-e29b-41d4-a716-446655440001", SkippedUserID: 7,
+		CurrentTurn: 1, CurrentActorID: 8, DeadlineAt: time.Now().UTC(), Reason: "manual",
+	}}
+	g := gin.New()
+	g.POST("/games/:roomId/skip", func(c *gin.Context) {
+		c.Set("user_id", uint(7))
+		NewGameHandler(fake).SkipTurn(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/games/41/skip", bytes.NewBufferString(`{"request_id":"550e8400-e29b-41d4-a716-446655440000","expected_turn":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	g.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || fake.skipRequest == nil || fake.skipRequest.RoomID != 41 ||
+		fake.skipRequest.UserID != 7 || fake.skipRequest.ExpectedTurn != 0 {
+		t.Fatalf("skip response=%d request=%#v body=%s", response.Code, fake.skipRequest, response.Body.String())
+	}
+	fake.skipErr = service.ErrMultiplayerActionInProgress
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/games/41/skip", bytes.NewBufferString(`{"request_id":"550e8400-e29b-41d4-a716-446655440000","expected_turn":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	g.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte(`"code":1923`)) {
+		t.Fatalf("in-progress response=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func (s *fakeGameStartService) StartSoloGame(

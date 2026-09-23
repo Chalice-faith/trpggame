@@ -85,11 +85,12 @@ func (c *Client) DeleteScriptVectors(ctx context.Context, scriptID uint) error {
 
 // GameActionRequest 游戏行动推理请求
 type GameActionRequest struct {
-	RoomID      uint   `json:"room_id"`
-	UserID      uint   `json:"user_id"`
-	Action      string `json:"action"`
-	ScriptID    uint   `json:"script_id"`
-	CharacterID uint   `json:"character_id"`
+	RoomID       uint              `json:"room_id"`
+	UserID       uint              `json:"user_id"`
+	Action       string            `json:"action"`
+	ScriptID     uint              `json:"script_id"`
+	CharacterID  uint              `json:"character_id"`
+	Participants []GameParticipant `json:"participants,omitempty"`
 }
 
 // DiceRollData 是 Python AI 服务返回的服务端骰子结果。

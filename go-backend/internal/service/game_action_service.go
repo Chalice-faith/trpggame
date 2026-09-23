@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -40,19 +41,29 @@ type ActionDiceRoll struct {
 
 // SubmitGameActionResult 是可缓存并幂等重放的玩家行动结果。
 type SubmitGameActionResult struct {
-	Narrative   string          `json:"narrative"`
-	DiceRoll    *ActionDiceRoll `json:"dice_roll,omitempty"`
-	Effects     *ActionEffects  `json:"effects"`
-	CurrentTurn int             `json:"current_turn"`
-	Duplicate   bool            `json:"-"`
+	Narrative          string                    `json:"narrative"`
+	DiceRoll           *ActionDiceRoll           `json:"dice_roll,omitempty"`
+	Effects            *ActionEffects            `json:"effects,omitempty"`
+	MultiplayerEffects *MultiplayerActionEffects `json:"multiplayer_effects,omitempty"`
+	Generation         string                    `json:"generation,omitempty"`
+	CurrentTurn        int                       `json:"current_turn"`
+	RoundNumber        int                       `json:"round_number,omitempty"`
+	CurrentActorID     uint                      `json:"current_actor_id,omitempty"`
+	DeadlineAt         *time.Time                `json:"deadline_at,omitempty"`
+	Duplicate          bool                      `json:"-"`
 }
 
 // GameActionStreamEvent 是游戏层向 WebSocket 层暴露的稳定事件。
 // 只有 narrative_chunk 在 AI 调用期间发送；其余事件均在运行态提交成功后发送。
 type GameActionStreamEvent struct {
-	Type    string
-	Content string
-	Result  *SubmitGameActionResult
+	Type        string
+	Content     string
+	Result      *SubmitGameActionResult
+	Multiplayer bool
+	Generation  string
+	CurrentTurn int
+	PlayerID    uint
+	Reason      string
 }
 
 // ActionStreamObserver 接收一次行动的流式事件。
@@ -91,12 +102,26 @@ func (s *GameService) submitAction(
 	room, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, req.RoomID, req.UserID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrGameRoomNotFound
+			multiplayerRepo, ok := s.gameRepo.(MultiplayerGameRepository)
+			if !ok {
+				return nil, ErrGameRoomNotFound
+			}
+			room, err = multiplayerRepo.FindRoomByID(ctx, req.RoomID)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, ErrGameRoomNotFound
+				}
+				return nil, fmt.Errorf("%w: find multiplayer room: %v", ErrInternal, err)
+			}
+			if room == nil || room.IsSolo {
+				return nil, ErrGameRoomNotFound
+			}
+		} else {
+			return nil, fmt.Errorf("%w: find game room: %v", ErrInternal, err)
 		}
-		return nil, fmt.Errorf("%w: find game room: %v", ErrInternal, err)
 	}
 	if !room.IsSolo {
-		return nil, ErrGameRoomNotFound
+		return s.submitMultiplayerAction(ctx, req, room, action, requestID, fingerprint, observer)
 	}
 	player, err := s.gameRepo.FindPlayer(ctx, room.ID, req.UserID)
 	if err != nil {

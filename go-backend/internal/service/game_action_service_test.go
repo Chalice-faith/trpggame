@@ -77,11 +77,11 @@ func TestGameServiceSubmitActionCommitsAuthoritativeEffects(t *testing.T) {
 	}
 }
 
-func TestGameServiceSubmitActionDoesNotEnterMultiplayerRuntime(t *testing.T) {
+func TestGameServiceSubmitActionDoesNotTouchSoloRuntimeForMultiplayer(t *testing.T) {
 	gameService, gameRepository, _, runtimeRepository := actionServiceFixture()
 	gameRepository.room.IsSolo = false
-	if _, err := gameService.SubmitAction(context.Background(), validSubmitGameActionRequest()); !errors.Is(err, ErrGameRoomNotFound) {
-		t.Fatalf("multiplayer action = %v, want room not found", err)
+	if _, err := gameService.SubmitAction(context.Background(), validSubmitGameActionRequest()); !errors.Is(err, ErrGameRuntimeUnavailable) {
+		t.Fatalf("multiplayer action = %v, want unavailable without multiplayer dependencies", err)
 	}
 	if runtimeRepository.findCalls != 0 || runtimeRepository.beginCalls != 0 {
 		t.Fatalf("multiplayer action touched solo runtime: %#v", runtimeRepository)

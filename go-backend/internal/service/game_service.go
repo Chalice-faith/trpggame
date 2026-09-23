@@ -98,10 +98,12 @@ type GameRuntimeRepository interface {
 
 // GameService 单人游戏业务逻辑。
 type GameService struct {
-	gameRepo    GameRepository
-	scriptRepo  GameScriptRepository
-	aiClient    GameInferenceClient
-	runtimeRepo GameRuntimeRepository
+	gameRepo             GameRepository
+	scriptRepo           GameScriptRepository
+	aiClient             GameInferenceClient
+	runtimeRepo          GameRuntimeRepository
+	multiplayerPublisher MultiplayerActionPublisher
+	now                  func() time.Time
 }
 
 // StartSoloGameRequest 是单人快速开始的服务层请求。
@@ -130,6 +132,13 @@ func NewGameService(
 		scriptRepo:  scriptRepository,
 		aiClient:    aiClient,
 		runtimeRepo: runtimeRepository,
+		now:         time.Now,
+	}
+}
+
+func (s *GameService) ConfigureMultiplayer(publisher MultiplayerActionPublisher) {
+	if s != nil {
+		s.multiplayerPublisher = publisher
 	}
 }
 

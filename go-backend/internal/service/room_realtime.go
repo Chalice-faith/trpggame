@@ -58,3 +58,74 @@ func (r *RoomRealtime) PublishMultiplayerRuntime(snapshot *model.MultiplayerRunt
 		r.hub.BroadcastToRoom(snapshot.RoomID, ws.MsgTurnStart, turnPayload)
 	}
 }
+
+func (r *RoomRealtime) PublishMultiplayerActionEvent(roomID uint, requestID string, event GameActionStreamEvent) {
+	if r == nil || r.hub == nil || roomID == 0 || !event.Multiplayer || event.Generation == "" {
+		return
+	}
+	var messageType ws.MessageType
+	var payload any
+	switch event.Type {
+	case "action_started":
+		messageType = ws.MsgActionStarted
+		payload = ws.ActionStartedData{Generation: event.Generation, CurrentTurn: event.CurrentTurn, PlayerID: event.PlayerID}
+	case "action_cancelled":
+		messageType = ws.MsgActionCancelled
+		payload = ws.ActionCancelledData{Generation: event.Generation, CurrentTurn: event.CurrentTurn, PlayerID: event.PlayerID, Reason: event.Reason}
+	case "narrative_chunk":
+		messageType = ws.MsgNarrativeChunk
+		payload = ws.NarrativeChunkData{Generation: event.Generation, CurrentTurn: event.CurrentTurn, Content: event.Content}
+	case "dice_roll":
+		if event.Result == nil || event.Result.DiceRoll == nil {
+			return
+		}
+		messageType = ws.MsgDiceRoll
+		payload = struct {
+			Generation  string          `json:"generation"`
+			CurrentTurn int             `json:"current_turn"`
+			DiceRoll    *ActionDiceRoll `json:"dice_roll"`
+		}{event.Generation, event.CurrentTurn, event.Result.DiceRoll}
+	case "status_update":
+		if event.Result == nil || event.Result.MultiplayerEffects == nil {
+			return
+		}
+		var effects *MultiplayerPlayerEffects
+		for index := range event.Result.MultiplayerEffects.Players {
+			if event.Result.MultiplayerEffects.Players[index].UserID == event.PlayerID {
+				effects = &event.Result.MultiplayerEffects.Players[index]
+				break
+			}
+		}
+		if effects == nil {
+			return
+		}
+		messageType = ws.MsgStatusUpdate
+		payload = ws.StatusUpdateData{Generation: event.Generation, CurrentTurn: event.CurrentTurn, PlayerID: event.PlayerID, Changes: map[string]any{
+			"player_state_changes": effects.PlayerStateChanges, "items": effects.Items, "buffs": effects.Buffs,
+		}}
+	case "narrative_complete":
+		if event.Result == nil {
+			return
+		}
+		messageType = ws.MsgNarrativeComplete
+		payload = ws.NarrativeCompleteData{Generation: event.Generation, Narrative: event.Result.Narrative, CurrentTurn: event.Result.CurrentTurn}
+	case "turn_skip":
+		messageType = ws.MsgTurnSkip
+		payload = ws.TurnSkipData{Generation: event.Generation, SkippedUserID: event.PlayerID, CurrentTurn: event.CurrentTurn, Reason: event.Reason}
+	case "turn_start":
+		if event.Result == nil || event.Result.DeadlineAt == nil {
+			return
+		}
+		messageType = ws.MsgTurnStart
+		payload = ws.TurnStartData{Generation: event.Generation, CurrentTurn: event.Result.CurrentTurn,
+			RoundNumber: event.Result.RoundNumber, CurrentActorID: event.Result.CurrentActorID,
+			DeadlineAt: event.Result.DeadlineAt.UTC().Format(time.RFC3339Nano)}
+	default:
+		return
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	r.hub.BroadcastToRoomWithRequestID(roomID, messageType, encoded, requestID)
+}

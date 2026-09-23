@@ -1164,6 +1164,51 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ApiError'}
 
+  /api/v1/games/{roomId}/skip:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 当前行动者主动跳过多人回合
+      operationId: skipMultiplayerTurn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkipTurnRequest'}
+      responses:
+        '200':
+          description: 回合已跳过或幂等重放
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkipTurnResponse'}
+        '400':
+          description: 请求无效（1310）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403':
+          description: 不是当前行动者（1922）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '404':
+          description: 房间或成员不存在（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 回合冲突、已有行动或请求 ID 冲突（1921/1923/1924）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 多人运行态不可用（1920）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
   /api/v1/games/{roomId}/save:
     parameters:
       - $ref: '#/components/parameters/RoomId'
@@ -2782,9 +2827,35 @@ components:
           items:
             $ref: '#/components/schemas/KeyEventMutation'
 
+    MultiplayerPlayerEffects:
+      type: object
+      required: [user_id, player_state_changes, items, buffs]
+      properties:
+        user_id: {type: integer, format: int64, minimum: 1}
+        player_state_changes:
+          type: object
+          additionalProperties: {type: string}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ItemMutation'}
+        buffs:
+          type: array
+          items: {$ref: '#/components/schemas/BuffMutation'}
+
+    MultiplayerActionEffects:
+      type: object
+      required: [players, events]
+      properties:
+        players:
+          type: array
+          items: {$ref: '#/components/schemas/MultiplayerPlayerEffects'}
+        events:
+          type: array
+          items: {$ref: '#/components/schemas/KeyEventMutation'}
+
     SubmitActionData:
       type: object
-      required: [narrative, effects, current_turn]
+      required: [narrative, current_turn]
       properties:
         narrative:
           type: string
@@ -2793,9 +2864,15 @@ components:
           $ref: '#/components/schemas/DiceRoll'
         effects:
           $ref: '#/components/schemas/ActionEffects'
+        multiplayer_effects:
+          $ref: '#/components/schemas/MultiplayerActionEffects'
+        generation: {type: string, format: uuid}
         current_turn:
           type: integer
           minimum: 1
+        round_number: {type: integer, minimum: 0}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at: {type: string, format: date-time}
 
     SubmitActionResponse:
       type: object
@@ -2809,6 +2886,33 @@ components:
           example: ok
         data:
           $ref: '#/components/schemas/SubmitActionData'
+
+    SkipTurnRequest:
+      type: object
+      required: [request_id, expected_turn]
+      properties:
+        request_id: {type: string, format: uuid}
+        expected_turn: {type: integer, minimum: 0}
+
+    SkipTurnData:
+      type: object
+      required: [generation, skipped_user_id, current_turn, round_number, current_actor_id, deadline_at, reason]
+      properties:
+        generation: {type: string, format: uuid}
+        skipped_user_id: {type: integer, format: int64, minimum: 1}
+        current_turn: {type: integer, minimum: 1}
+        round_number: {type: integer, minimum: 0}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at: {type: string, format: date-time}
+        reason: {type: string, enum: [manual, timeout]}
+
+    SkipTurnResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/SkipTurnData'}
 
     ManualSaveRequest:
       type: object

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -67,10 +68,24 @@ type submitActionRequest struct {
 }
 
 type submitActionResponse struct {
-	Narrative   string                  `json:"narrative"`
-	DiceRoll    *service.ActionDiceRoll `json:"dice_roll,omitempty"`
-	Effects     *service.ActionEffects  `json:"effects"`
-	CurrentTurn int                     `json:"current_turn"`
+	Narrative          string                            `json:"narrative"`
+	DiceRoll           *service.ActionDiceRoll           `json:"dice_roll,omitempty"`
+	Effects            *service.ActionEffects            `json:"effects,omitempty"`
+	MultiplayerEffects *service.MultiplayerActionEffects `json:"multiplayer_effects,omitempty"`
+	Generation         string                            `json:"generation,omitempty"`
+	CurrentTurn        int                               `json:"current_turn"`
+	RoundNumber        int                               `json:"round_number,omitempty"`
+	CurrentActorID     uint                              `json:"current_actor_id,omitempty"`
+	DeadlineAt         *time.Time                        `json:"deadline_at,omitempty"`
+}
+
+type skipTurnRequest struct {
+	RequestID    string `json:"request_id" binding:"required"`
+	ExpectedTurn *int   `json:"expected_turn" binding:"required,gte=0"`
+}
+
+type multiplayerSkipService interface {
+	SkipMultiplayerTurn(context.Context, *service.SkipMultiplayerTurnRequest) (*model.MultiplayerSkipResult, error)
 }
 
 type manualSaveRequest struct {
@@ -262,7 +277,7 @@ func (h *GameHandler) SubmitAction(c *gin.Context) {
 		return
 	}
 	if result == nil || strings.TrimSpace(result.Narrative) == "" ||
-		result.Effects == nil || result.CurrentTurn <= 0 {
+		(result.Effects == nil && result.MultiplayerEffects == nil) || result.CurrentTurn <= 0 {
 		log.Print("submit game action: service returned an invalid result")
 		writeSubmitActionError(c, service.ErrInternal)
 		return
@@ -272,16 +287,56 @@ func (h *GameHandler) SubmitAction(c *gin.Context) {
 		"code":    0,
 		"message": "ok",
 		"data": submitActionResponse{
-			Narrative:   strings.TrimSpace(result.Narrative),
-			DiceRoll:    result.DiceRoll,
-			Effects:     result.Effects,
-			CurrentTurn: result.CurrentTurn,
+			Narrative: strings.TrimSpace(result.Narrative), DiceRoll: result.DiceRoll,
+			Effects: result.Effects, MultiplayerEffects: result.MultiplayerEffects,
+			Generation: result.Generation, CurrentTurn: result.CurrentTurn,
+			RoundNumber: result.RoundNumber, CurrentActorID: result.CurrentActorID, DeadlineAt: result.DeadlineAt,
 		},
 	})
 }
 
+func (h *GameHandler) SkipTurn(c *gin.Context) {
+	userID, ok := gameUserID(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1002, "message": "invalid authentication context"})
+		return
+	}
+	roomID, valid := gameRoomID(c)
+	serviceWithSkip, supported := h.svc.(multiplayerSkipService)
+	var request skipTurnRequest
+	if !valid || !supported || c.ShouldBindJSON(&request) != nil || request.ExpectedTurn == nil {
+		writeSubmitActionError(c, service.ErrInvalidGameAction)
+		return
+	}
+	result, err := serviceWithSkip.SkipMultiplayerTurn(c.Request.Context(), &service.SkipMultiplayerTurnRequest{
+		UserID: userID, RoomID: roomID, RequestID: request.RequestID, ExpectedTurn: *request.ExpectedTurn,
+	})
+	if err != nil {
+		writeSubmitActionError(c, err)
+		return
+	}
+	if result == nil || result.Generation == "" || result.CurrentTurn <= 0 || result.CurrentActorID == 0 || result.DeadlineAt.IsZero() {
+		log.Print("skip multiplayer turn: service returned an invalid result")
+		writeSubmitActionError(c, service.ErrInternal)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": result})
+}
+
 func writeSubmitActionError(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1920, "message": "multiplayer runtime unavailable"})
+	case errors.Is(err, service.ErrMultiplayerTurnConflict):
+		c.JSON(http.StatusConflict, gin.H{"code": 1921, "message": "multiplayer generation or turn conflict"})
+	case errors.Is(err, service.ErrMultiplayerNotActor):
+		c.JSON(http.StatusForbidden, gin.H{"code": 1922, "message": "user is not current actor"})
+	case errors.Is(err, service.ErrMultiplayerActionInProgress):
+		c.JSON(http.StatusConflict, gin.H{"code": 1923, "message": "multiplayer action in progress"})
+	case errors.Is(err, service.ErrMultiplayerRequestConflict):
+		c.JSON(http.StatusConflict, gin.H{"code": 1924, "message": "multiplayer request ID conflict"})
+	case errors.Is(err, service.ErrMultiplayerAIUnavailable):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1927, "message": "multiplayer AI unavailable"})
 	case errors.Is(err, service.ErrInvalidGameAction):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1310, "message": service.ErrInvalidGameAction.Error()})
 	case errors.Is(err, service.ErrGameRoomNotFound):

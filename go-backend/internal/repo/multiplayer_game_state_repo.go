@@ -94,7 +94,8 @@ if redis.call('TYPE', KEYS[1]).ok ~= 'string' or redis.call('TYPE', KEYS[2]).ok 
    redis.call('TYPE', KEYS[3]).ok ~= 'string' or redis.call('TYPE', KEYS[4]).ok ~= 'string' or
    redis.call('TYPE', KEYS[5]).ok ~= 'list' or redis.call('TYPE', KEYS[6]).ok ~= 'string' or
    redis.call('TYPE', KEYS[7]).ok ~= 'string' or redis.call('TYPE', KEYS[8]).ok ~= 'list' or
-   redis.call('TYPE', KEYS[9]).ok ~= 'list' then return {0} end
+   redis.call('TYPE', KEYS[9]).ok ~= 'list' or
+   (redis.call('TYPE', KEYS[10]).ok ~= 'none' and redis.call('TYPE', KEYS[10]).ok ~= 'hash') then return {0} end
 local players = redis.call('LRANGE', KEYS[9], 0, -1)
 local player_data = {}
 for _, user_id in ipairs(players) do
@@ -110,7 +111,8 @@ for _, key in ipairs(KEYS) do redis.call('EXPIRE', key, ARGV[1]) end
 return {
   1, redis.call('GET', KEYS[1]), redis.call('GET', KEYS[2]), redis.call('GET', KEYS[3]),
   redis.call('GET', KEYS[4]), redis.call('LRANGE', KEYS[5], 0, -1), redis.call('GET', KEYS[6]),
-  redis.call('GET', KEYS[7]), redis.call('LRANGE', KEYS[8], 0, -1), player_data
+  redis.call('GET', KEYS[7]), redis.call('LRANGE', KEYS[8], 0, -1), player_data,
+  redis.call('HGETALL', KEYS[10])
 }`)
 
 func (r *RedisGameStateRepo) AcquireMultiplayerStartLease(
@@ -241,7 +243,7 @@ func (r *RedisGameStateRepo) GetMultiplayerRoom(
 	values, err := readMultiplayerRuntimeScript.Run(
 		ctx,
 		r.client,
-		multiplayerCommonRuntimeKeys(roomID),
+		append(multiplayerCommonRuntimeKeys(roomID), multiplayerActionLeaseKey(roomID)),
 		int64(r.ttl/time.Second), fmt.Sprintf("room:%d:player:", roomID),
 	).Slice()
 	if err != nil {
@@ -315,7 +317,7 @@ func validateMultiplayerRuntimeState(state *model.MultiplayerRuntimeState) error
 }
 
 func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.MultiplayerRuntimeSnapshot, error) {
-	if len(values) != 10 {
+	if len(values) != 11 {
 		return nil, fmt.Errorf("%w: invalid multiplayer runtime result", ErrGameRuntimeUnavailable)
 	}
 	code, ok := redisInt64(values[0])
@@ -368,7 +370,14 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 		parsed := time.UnixMilli(millis).UTC()
 		deadline = &parsed
 	}
-	if statusText == string(model.RoomStatusPlaying) && deadline == nil {
+	lease, err := decodeMultiplayerActionLease(values[10], generation, int(turn), order[int(turn)%len(order)])
+	if err != nil {
+		return nil, err
+	}
+	if statusText == string(model.RoomStatusPlaying) && deadline == nil && lease == nil {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	if deadline != nil && lease != nil {
 		return nil, ErrGameRuntimeUnavailable
 	}
 	summary, ok := redisString(values[7])
@@ -402,7 +411,33 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 		Status: model.RoomStatus(statusText), Generation: generation,
 		CurrentTurn: currentTurn, RoundNumber: currentTurn / len(order), TurnOrder: order,
 		CurrentActorID: order[currentTurn%len(order)], DeadlineAt: deadline,
-		Players: players, SummaryMemory: summary, RecentMessages: messages,
+		Players: players, SummaryMemory: summary, RecentMessages: messages, ActionLease: lease,
+	}, nil
+}
+
+func decodeMultiplayerActionLease(raw any, generation string, turn int, actor uint) (*model.MultiplayerActionLease, error) {
+	fields, ok := redisStringSlice(raw)
+	if !ok || len(fields)%2 != 0 {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	if len(fields) == 0 {
+		return nil, nil
+	}
+	values := make(map[string]string, len(fields)/2)
+	for index := 0; index < len(fields); index += 2 {
+		values[fields[index]] = fields[index+1]
+	}
+	leaseTurn, turnErr := strconv.Atoi(values["turn"])
+	userID, userErr := strconv.ParseUint(values["user_id"], 10, 64)
+	claimedAt, claimedErr := strconv.ParseInt(values["claimed_at"], 10, 64)
+	if len(values) != 6 || values["generation"] != generation || leaseTurn != turn ||
+		userID != uint64(actor) || uuid.Validate(values["request_id"]) != nil ||
+		len(values["fingerprint"]) != 64 || turnErr != nil || userErr != nil || claimedErr != nil || claimedAt <= 0 {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	return &model.MultiplayerActionLease{
+		Generation: generation, Turn: turn, UserID: actor, RequestID: values["request_id"],
+		Fingerprint: values["fingerprint"], ClaimedAt: time.UnixMilli(claimedAt).UTC(),
 	}, nil
 }
 

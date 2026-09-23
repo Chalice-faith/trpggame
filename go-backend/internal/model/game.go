@@ -106,15 +106,15 @@ type ActionRuntimeMutation struct {
 
 // RuntimeItemMutation 是 Redis 道具 SET 中的数量变化。
 type RuntimeItemMutation struct {
-	Name          string
-	QuantityDelta int
-	Description   string
+	Name          string `json:"name"`
+	QuantityDelta int    `json:"quantity_delta"`
+	Description   string `json:"description"`
 }
 
 // RuntimeBuffMutation 是 Redis Buff HASH 中的持续回合设置。
 type RuntimeBuffMutation struct {
-	Name     string
-	Duration int
+	Name     string `json:"name"`
+	Duration int    `json:"duration"`
 }
 
 // RuntimeItem 是游戏运行态快照中的道具。
@@ -186,6 +186,84 @@ type MultiplayerRuntimeSnapshot struct {
 	Players        []MultiplayerRuntimePlayer `json:"players"`
 	SummaryMemory  string                     `json:"summary_memory"`
 	RecentMessages []RuntimeMessage           `json:"recent_messages"`
+	ActionLease    *MultiplayerActionLease    `json:"-"`
+}
+
+// MultiplayerActionLease is internal recovery metadata for an in-flight turn.
+type MultiplayerActionLease struct {
+	Generation  string
+	Turn        int
+	UserID      uint
+	RequestID   string
+	Fingerprint string
+	ClaimedAt   time.Time
+}
+
+// MultiplayerPlayerMutation groups authoritative effects for one frozen player.
+type MultiplayerPlayerMutation struct {
+	UserID             uint
+	PlayerStateChanges map[string]string
+	ItemMutations      []RuntimeItemMutation
+	BuffMutations      []RuntimeBuffMutation
+}
+
+// MultiplayerActionMutation is committed only while the matching action lease is current.
+type MultiplayerActionMutation struct {
+	RoomID             uint
+	UserID             uint
+	Generation         string
+	ExpectedTurn       int
+	RequestID          string
+	RequestFingerprint string
+	PlayerMutations    []MultiplayerPlayerMutation
+	Messages           []RuntimeMessage
+	ResponseJSON       json.RawMessage
+	NextDeadline       time.Time
+}
+
+type MultiplayerActionAcquireResult struct {
+	Generation   string
+	Duplicate    bool
+	ResponseJSON json.RawMessage
+}
+
+type MultiplayerActionCommitResult struct {
+	Duplicate    bool
+	CurrentTurn  int
+	ResponseJSON json.RawMessage
+	Snapshot     *MultiplayerRuntimeSnapshot
+}
+
+type MultiplayerSkipRequest struct {
+	RoomID             uint
+	UserID             uint
+	Generation         string
+	ExpectedTurn       int
+	RequestID          string
+	RequestFingerprint string
+	ResponseJSON       json.RawMessage
+	Reason             string
+	Now                time.Time
+	NextDeadline       time.Time
+	Timeout            bool
+}
+
+type MultiplayerSkipResult struct {
+	Duplicate      bool      `json:"-"`
+	Generation     string    `json:"generation"`
+	SkippedUserID  uint      `json:"skipped_user_id"`
+	CurrentTurn    int       `json:"current_turn"`
+	RoundNumber    int       `json:"round_number"`
+	CurrentActorID uint      `json:"current_actor_id"`
+	DeadlineAt     time.Time `json:"deadline_at"`
+	Reason         string    `json:"reason"`
+}
+
+type MultiplayerDeadlineTask struct {
+	RoomID     uint
+	Generation string
+	Turn       int
+	Member     string
 }
 
 // ActionCommitResult 是 Redis 行动提交或幂等重放的结果。

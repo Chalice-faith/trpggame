@@ -165,3 +165,61 @@ func TestRoomRealtimePublishesMultiplayerStartupSequence(t *testing.T) {
 		}
 	}
 }
+
+func TestRoomRealtimeBroadcastsMultiplayerActionToEveryClient(t *testing.T) {
+	hub := ws.NewHub()
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+	clients := []*ws.Client{ws.NewClient(hub, nil, 7, 41), ws.NewClient(hub, nil, 8, 41)}
+	for _, client := range clients {
+		if !hub.Register(client) {
+			t.Fatal("register failed")
+		}
+		select {
+		case <-client.Send:
+		case <-time.After(time.Second):
+			t.Fatal("subscribed timeout")
+		}
+	}
+	deadline := time.Now().UTC().Add(time.Minute)
+	result := &SubmitGameActionResult{
+		Narrative: "门开了", Generation: "bc624606-57a3-49c5-bf51-f5a04e5f299f",
+		CurrentTurn: 1, CurrentActorID: 8, DeadlineAt: &deadline,
+		MultiplayerEffects: &MultiplayerActionEffects{Players: []MultiplayerPlayerEffects{
+			{UserID: 8, PlayerStateChanges: map[string]string{"hp": "5"}},
+		}},
+	}
+	requestID := "550e8400-e29b-41d4-a716-446655440000"
+	realtime := NewRoomRealtime(hub)
+	for _, event := range []GameActionStreamEvent{
+		{Type: "action_started", Generation: result.Generation, CurrentTurn: 0, PlayerID: 7},
+		{Type: "narrative_chunk", Generation: result.Generation, CurrentTurn: 0, Content: "门"},
+		{Type: "status_update", Generation: result.Generation, CurrentTurn: 1, PlayerID: 8, Result: result},
+		{Type: "narrative_complete", Generation: result.Generation, CurrentTurn: 1, Result: result},
+		{Type: "turn_start", Generation: result.Generation, CurrentTurn: 1, PlayerID: 8, Result: result},
+	} {
+		event.Multiplayer = true
+		realtime.PublishMultiplayerActionEvent(41, requestID, event)
+	}
+	want := []ws.MessageType{ws.MsgActionStarted, ws.MsgNarrativeChunk, ws.MsgStatusUpdate, ws.MsgNarrativeComplete, ws.MsgTurnStart}
+	for _, client := range clients {
+		for index, messageType := range want {
+			select {
+			case raw := <-client.Send:
+				var message ws.Message
+				if err := json.Unmarshal(raw, &message); err != nil || message.Type != messageType ||
+					message.Seq != int64(index+1) || message.RequestID != requestID {
+					t.Fatalf("client %d event %d = %#v, err=%v", client.UserID, index, message, err)
+				}
+				if messageType == ws.MsgStatusUpdate {
+					var update ws.StatusUpdateData
+					if err := json.Unmarshal(message.Data, &update); err != nil || update.PlayerID != 8 || update.Generation != result.Generation {
+						t.Fatalf("status update = %#v, err=%v", update, err)
+					}
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("client %d missed %s", client.UserID, messageType)
+			}
+		}
+	}
+}

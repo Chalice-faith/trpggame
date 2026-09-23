@@ -36,6 +36,8 @@ const (
 	MsgRoomCharacterSelected MessageType = "room_character_selected"
 	MsgGameStarted           MessageType = "game_started"
 	MsgGameRuntimeSnapshot   MessageType = "game_runtime_snapshot"
+	MsgActionStarted         MessageType = "action_started"
+	MsgActionCancelled       MessageType = "action_cancelled"
 )
 
 type TurnStartData struct {
@@ -44,6 +46,26 @@ type TurnStartData struct {
 	RoundNumber    int    `json:"round_number"`
 	CurrentActorID uint   `json:"current_actor_id"`
 	DeadlineAt     string `json:"deadline_at"`
+}
+
+type ActionStartedData struct {
+	Generation  string `json:"generation"`
+	CurrentTurn int    `json:"current_turn"`
+	PlayerID    uint   `json:"player_id"`
+}
+
+type ActionCancelledData struct {
+	Generation  string `json:"generation"`
+	CurrentTurn int    `json:"current_turn"`
+	PlayerID    uint   `json:"player_id"`
+	Reason      string `json:"reason"`
+}
+
+type TurnSkipData struct {
+	Generation    string `json:"generation"`
+	SkippedUserID uint   `json:"skipped_user_id"`
+	CurrentTurn   int    `json:"current_turn"`
+	Reason        string `json:"reason"`
 }
 
 // Message WebSocket 消息结构。
@@ -100,8 +122,10 @@ type ErrorData struct {
 
 // NarrativeChunkData AI 叙事流式片段
 type NarrativeChunkData struct {
-	Content string `json:"content"`
-	IsFinal bool   `json:"is_final"`
+	Generation  string `json:"generation,omitempty"`
+	CurrentTurn int    `json:"current_turn,omitempty"`
+	Content     string `json:"content"`
+	IsFinal     bool   `json:"is_final"`
 }
 
 // NarrativeCompleteData 是一次行动提交成功后的最终叙事与回合水位。
@@ -126,8 +150,10 @@ type DiceRollData struct {
 
 // StatusUpdateData 角色状态变更
 type StatusUpdateData struct {
-	PlayerID uint           `json:"player_id"`
-	Changes  map[string]any `json:"changes"`
+	Generation  string         `json:"generation,omitempty"`
+	CurrentTurn int            `json:"current_turn,omitempty"`
+	PlayerID    uint           `json:"player_id"`
+	Changes     map[string]any `json:"changes"`
 }
 
 // ScriptProgressData 剧本解析进度

@@ -32,6 +32,18 @@ type roomAuthorizer struct {
 
 func gameActionErrorCode(err error) int {
 	switch {
+	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
+		return 1920
+	case errors.Is(err, service.ErrMultiplayerTurnConflict):
+		return 1921
+	case errors.Is(err, service.ErrMultiplayerNotActor):
+		return 1922
+	case errors.Is(err, service.ErrMultiplayerActionInProgress):
+		return 1923
+	case errors.Is(err, service.ErrMultiplayerRequestConflict):
+		return 1924
+	case errors.Is(err, service.ErrMultiplayerAIUnavailable):
+		return 1927
 	case errors.Is(err, service.ErrInvalidGameAction):
 		return 1310
 	case errors.Is(err, service.ErrGameRoomNotFound):
@@ -133,6 +145,8 @@ func main() {
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
 	hub.SetRealtimeBus(realtimeBus)
+	roomRealtime := service.NewRoomRealtime(hub)
+	gameService.ConfigureMultiplayer(roomRealtime)
 	hub.SetGameActionHandler(func(ctx context.Context, client *ws.Client, request ws.GameActionData) {
 		if request.ExpectedTurn == nil {
 			hub.SendErrorToUser(client.RoomID, client.UserID, 1506, "invalid game action", request.RequestID)
@@ -228,6 +242,8 @@ func main() {
 		log.Fatalf("Failed to start realtime bus: %v", err)
 	}
 	cancelRealtimeStart()
+	deadlineWorker := service.NewMultiplayerDeadlineWorker(gameStateRepo, gameService)
+	go deadlineWorker.Run()
 	presenceCoordinator := service.NewPresenceCoordinator(presenceRepo, friendRepo, imHub)
 	imHub.SetPresenceObserver(presenceCoordinator)
 	go presenceCoordinator.Run()
@@ -251,7 +267,7 @@ func main() {
 	roomRepo := repo.NewRoomRepo(db)
 	roomService := service.NewRoomService(roomRepo)
 	roomService.ConfigureMultiplayer(gameStateRepo, aiClient, realtimeBus)
-	roomService.SetMutationPublisher(service.NewRoomRealtime(hub))
+	roomService.SetMutationPublisher(roomRealtime)
 	roomHandler := handler.NewRoomHandler(roomService)
 	imHub.SetInboundHandler(chatRealtime)
 
@@ -288,6 +304,7 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// 关闭 WebSocket Hub
+	deadlineWorker.Stop()
 	realtimeBus.Stop()
 	imHub.Stop()
 	presenceCoordinator.Stop()

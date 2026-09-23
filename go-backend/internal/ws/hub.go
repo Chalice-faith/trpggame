@@ -253,6 +253,10 @@ func (h *Hub) BroadcastToRoom(roomID uint, msgType MessageType, data json.RawMes
 	h.queueDelivery(deliverRequest{roomID: roomID, msgType: msgType, data: data})
 }
 
+func (h *Hub) BroadcastToRoomWithRequestID(roomID uint, msgType MessageType, data json.RawMessage, requestID string) {
+	h.queueDelivery(deliverRequest{roomID: roomID, msgType: msgType, data: data, requestID: requestID})
+}
+
 // BroadcastAndRevoke gives the affected connection the committed final event, removes it
 // from the room immediately, and then closes it. Later room events cannot reach that user.
 func (h *Hub) BroadcastAndRevoke(roomID, userID uint, msgType MessageType, data json.RawMessage) {

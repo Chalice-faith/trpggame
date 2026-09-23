@@ -135,6 +135,23 @@ func (r *GameRepo) AdvanceRoomProgress(
 	return result.RowsAffected == 1, result.Error
 }
 
+// AdvanceMultiplayerRoomProgress monotonically persists the V2 action-slot and completed-round watermarks.
+func (r *GameRepo) AdvanceMultiplayerRoomProgress(ctx context.Context, roomID uint, turn, round int) (bool, error) {
+	if roomID == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid multiplayer room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND is_solo = ? AND status IN ?", roomID, false, []model.RoomStatus{
+			model.RoomStatusPlaying, model.RoomStatusPaused,
+		}).
+		Updates(map[string]any{
+			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
+			"round_number": gorm.Expr("GREATEST(round_number, ?)", round),
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
 // ReplacePausedRoomProgress 在读档隔离状态下用存档回合替换持久化进度。
 func (r *GameRepo) ReplacePausedRoomProgress(
 	ctx context.Context,
