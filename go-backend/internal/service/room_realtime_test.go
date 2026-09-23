@@ -166,6 +166,55 @@ func TestRoomRealtimePublishesMultiplayerStartupSequence(t *testing.T) {
 	}
 }
 
+func TestRoomRealtimePublishesMultiplayerPauseResumeAndEnd(t *testing.T) {
+	hub := ws.NewHub()
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+	client := ws.NewClient(hub, nil, 7, 41)
+	if !hub.Register(client) {
+		t.Fatal("register failed")
+	}
+	select {
+	case <-client.Send:
+	case <-time.After(time.Second):
+		t.Fatal("subscribed timeout")
+	}
+	realtime := NewRoomRealtime(hub)
+	deadline := time.Date(2026, 9, 23, 10, 1, 0, 0, time.UTC)
+	realtime.PublishMultiplayerLifecycle(&model.MultiplayerRuntimeSnapshot{
+		RoomID: 41, Generation: "bc624606-57a3-49c5-bf51-f5a04e5f299f", Status: model.RoomStatusPaused,
+		CurrentTurn: 4, RoundNumber: 2, CurrentActorID: 7,
+	})
+	realtime.PublishMultiplayerLifecycle(&model.MultiplayerRuntimeSnapshot{
+		RoomID: 41, Generation: "32624606-57a3-49c5-bf51-f5a04e5f299f", Status: model.RoomStatusPlaying,
+		CurrentTurn: 4, RoundNumber: 2, CurrentActorID: 7, DeadlineAt: &deadline,
+	})
+	realtime.PublishMultiplayerEnded(41, "42624606-57a3-49c5-bf51-f5a04e5f299f", 4, 2)
+	want := []ws.MessageType{
+		ws.MsgGameStatusChanged,
+		ws.MsgGameStatusChanged, ws.MsgTurnStart,
+		ws.MsgGameEnded,
+	}
+	for index, messageType := range want {
+		select {
+		case raw := <-client.Send:
+			var message ws.Message
+			if err := json.Unmarshal(raw, &message); err != nil || message.Type != messageType || message.Seq != int64(index+1) {
+				t.Fatalf("message %d = %#v, err=%v", index, message, err)
+			}
+			if message.Type == ws.MsgGameStatusChanged && index == 1 {
+				var status ws.GameStatusChangedData
+				if err := json.Unmarshal(message.Data, &status); err != nil || status.Status != string(model.RoomStatusPlaying) ||
+					status.DeadlineAt == nil || *status.DeadlineAt != deadline.Format(time.RFC3339Nano) {
+					t.Fatalf("game status = %#v, err=%v", status, err)
+				}
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timeout waiting for %s", messageType)
+		}
+	}
+}
+
 func TestRoomRealtimeBroadcastsMultiplayerActionToEveryClient(t *testing.T) {
 	hub := ws.NewHub()
 	go hub.Run()

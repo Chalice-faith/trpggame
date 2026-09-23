@@ -554,6 +554,8 @@ func writeLoadGameError(c *gin.Context, err error) {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1333, "message": service.ErrGameSaveNotFound.Error()})
 	case errors.Is(err, service.ErrGameSaveCorrupt):
 		c.JSON(http.StatusConflict, gin.H{"code": 1334, "message": service.ErrGameSaveCorrupt.Error()})
+	case errors.Is(err, service.ErrMultiplayerSaveIncompatible):
+		c.JSON(http.StatusConflict, gin.H{"code": 1925, "message": service.ErrMultiplayerSaveIncompatible.Error()})
 	case errors.Is(err, service.ErrGameRoomNotLoadable):
 		c.JSON(http.StatusConflict, gin.H{"code": 1335, "message": service.ErrGameRoomNotLoadable.Error()})
 	case errors.Is(err, service.ErrGameRuntimeUnavailable):

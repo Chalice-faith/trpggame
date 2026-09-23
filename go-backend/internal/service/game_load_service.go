@@ -47,7 +47,7 @@ func (s *GameService) LoadGame(
 	if room == nil || room.ID != req.RoomID || room.OwnerID != req.UserID {
 		return nil, fmt.Errorf("%w: invalid room repository result", ErrInternal)
 	}
-	if !room.IsSolo || (room.Status != model.RoomStatusPlaying && room.Status != model.RoomStatusPaused) {
+	if room.Status != model.RoomStatusPlaying && room.Status != model.RoomStatusPaused {
 		return nil, ErrGameRoomNotLoadable
 	}
 
@@ -57,6 +57,9 @@ func (s *GameService) LoadGame(
 			return nil, ErrGameSaveNotFound
 		}
 		return nil, fmt.Errorf("%w: find game save for load: %v", ErrInternal, err)
+	}
+	if !room.IsSolo {
+		return s.loadMultiplayerSave(ctx, req, room, save)
 	}
 	snapshot, err := decodeGameSaveSnapshot(save, room.ID, req.UserID, req.SaveID)
 	if err != nil {

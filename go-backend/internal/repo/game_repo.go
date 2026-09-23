@@ -152,6 +152,70 @@ func (r *GameRepo) AdvanceMultiplayerRoomProgress(ctx context.Context, roomID ui
 	return result.RowsAffected == 1, result.Error
 }
 
+func (r *GameRepo) ReplacePausedMultiplayerRoomProgress(ctx context.Context, roomID, ownerID uint, turn, round int) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid paused multiplayer progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND is_solo = ? AND status = ?", roomID, ownerID, false, model.RoomStatusPaused).
+		Updates(map[string]any{"current_turn": turn, "round_number": round})
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var room model.GameRoom
+	err := r.db.WithContext(ctx).Select("id").Where(
+		"id = ? AND owner_id = ? AND is_solo = ? AND status = ? AND current_turn = ? AND round_number = ?",
+		roomID, ownerID, false, model.RoomStatusPaused, turn, round,
+	).First(&room).Error
+	return err == nil, err
+}
+
+// EndMultiplayerRoom atomically records the final V2 watermark with the terminal room status.
+func (r *GameRepo) EndMultiplayerRoom(ctx context.Context, roomID, ownerID uint, from []model.RoomStatus, turn, round int) (bool, error) {
+	if roomID == 0 || ownerID == 0 || len(from) == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid multiplayer room end")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND is_solo = ? AND status IN ?", roomID, ownerID, false, from).
+		Updates(map[string]any{
+			"status": model.RoomStatusEnded, "ended_at": time.Now().UTC(),
+			"current_turn": turn, "round_number": round,
+		})
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var room model.GameRoom
+	err := r.db.WithContext(ctx).Select("id").Where(
+		"id = ? AND owner_id = ? AND is_solo = ? AND status = ? AND current_turn = ? AND round_number = ?",
+		roomID, ownerID, false, model.RoomStatusEnded, turn, round,
+	).First(&room).Error
+	return err == nil, err
+}
+
+func (r *GameRepo) ListPlayingMultiplayerUsers(ctx context.Context, userIDs []uint) (map[uint]bool, error) {
+	result := make(map[uint]bool, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	var ids []uint
+	err := r.db.WithContext(ctx).
+		Table("room_players AS rp").
+		Distinct("rp.user_id").
+		Joins("JOIN game_rooms AS gr ON gr.id = rp.room_id").
+		Where("rp.user_id IN ? AND rp.status = ? AND gr.is_solo = ? AND gr.status = ?", userIDs,
+			model.RoomPlayerStatusActive, false, model.RoomStatusPlaying).
+		Pluck("rp.user_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		result[id] = true
+	}
+	return result, nil
+}
+
 // ReplacePausedRoomProgress 在读档隔离状态下用存档回合替换持久化进度。
 func (r *GameRepo) ReplacePausedRoomProgress(
 	ctx context.Context,

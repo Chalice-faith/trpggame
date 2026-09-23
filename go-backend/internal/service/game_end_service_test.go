@@ -81,7 +81,7 @@ func TestGameServiceEndGameValidatesOwnedSoloRoom(t *testing.T) {
 		}, ErrInternal},
 		{"multiplayer room", func(repository *fakeGameRepository) {
 			repository.room.IsSolo = false
-		}, ErrGameRoomNotEndable},
+		}, ErrGameRuntimeUnavailable},
 		{"waiting room", func(repository *fakeGameRepository) {
 			repository.room.Status = model.RoomStatusWaiting
 		}, ErrGameRoomNotEndable},

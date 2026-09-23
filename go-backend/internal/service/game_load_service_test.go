@@ -89,7 +89,8 @@ func TestGameServiceLoadGameValidatesRoomAndScopedSave(t *testing.T) {
 		}, ErrInternal},
 		{"multiplayer room", func(repository *fakeGameRepository) {
 			repository.room.IsSolo = false
-		}, ErrGameRoomNotLoadable},
+			repository.findSaveErr = gorm.ErrRecordNotFound
+		}, ErrGameSaveNotFound},
 		{"ended room", func(repository *fakeGameRepository) {
 			repository.room.Status = model.RoomStatusEnded
 		}, ErrGameRoomNotLoadable},

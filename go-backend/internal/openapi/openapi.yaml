@@ -1329,7 +1329,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
         '409':
-          description: 存档损坏（1334）或当前房间状态不可读档（1335）
+          description: 存档损坏（1334）、房间状态不可读档（1335）或 V2 多人存档阵容与冻结成员不兼容（1925）
           content:
             application/json:
               schema:

@@ -1215,6 +1215,7 @@ func TestGameHandlerLoadGameMapsSafeServiceErrors(t *testing.T) {
 		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
 		{"save not found", service.ErrGameSaveNotFound, http.StatusNotFound, 1333},
 		{"corrupt save", service.ErrGameSaveCorrupt, http.StatusConflict, 1334},
+		{"incompatible multiplayer save", service.ErrMultiplayerSaveIncompatible, http.StatusConflict, 1925},
 		{"room not loadable", service.ErrGameRoomNotLoadable, http.StatusConflict, 1335},
 		{
 			"runtime unavailable", fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),

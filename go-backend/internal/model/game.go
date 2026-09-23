@@ -266,6 +266,11 @@ type MultiplayerDeadlineTask struct {
 	Member     string
 }
 
+type PendingMultiplayerAutoSave struct {
+	Generation string
+	Snapshot   *MultiplayerRuntimeSnapshot
+}
+
 // ActionCommitResult 是 Redis 行动提交或幂等重放的结果。
 type ActionCommitResult struct {
 	Duplicate        bool

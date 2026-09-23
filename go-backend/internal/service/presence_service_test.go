@@ -64,6 +64,41 @@ func (r staticAcceptedFriends) ListAcceptedPeerIDs(context.Context, uint) ([]uin
 	return append([]uint(nil), r.ids...), nil
 }
 
+type staticGamePresence struct{ playing map[uint]bool }
+
+func (r staticGamePresence) ListPlayingMultiplayerUsers(_ context.Context, ids []uint) (map[uint]bool, error) {
+	result := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		if r.playing[id] {
+			result[id] = true
+		}
+	}
+	return result, nil
+}
+
+type mutableGamePresence struct {
+	mu      sync.Mutex
+	playing map[uint]bool
+}
+
+func (r *mutableGamePresence) ListPlayingMultiplayerUsers(_ context.Context, ids []uint) (map[uint]bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	result := make(map[uint]bool, len(ids))
+	for _, id := range ids {
+		if r.playing[id] {
+			result[id] = true
+		}
+	}
+	return result, nil
+}
+
+func (r *mutableGamePresence) set(userID uint, playing bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.playing[userID] = playing
+}
+
 type mutableAcceptedFriends struct {
 	mu  sync.Mutex
 	ids []uint
@@ -147,6 +182,37 @@ func TestRedisPresenceProviderMapsLeaseState(t *testing.T) {
 	statuses, err := provider.Statuses(context.Background(), []uint{7, 8})
 	if err != nil || statuses[7] != PresenceOnline || statuses[8] != PresenceOffline {
 		t.Fatalf("Statuses() = (%#v, %v)", statuses, err)
+	}
+}
+
+func TestRedisPresenceProviderMapsOnlineMultiplayerMembersToGaming(t *testing.T) {
+	leases := newMemoryPresenceLeases()
+	leases.values[7], leases.values[8] = "connection-7", "connection-8"
+	provider := NewRedisPresenceProvider(leases)
+	provider.SetGamePresenceRepository(staticGamePresence{playing: map[uint]bool{7: true, 8: false, 9: true}})
+	statuses, err := provider.Statuses(context.Background(), []uint{7, 8, 9})
+	if err != nil || statuses[7] != PresenceGaming || statuses[8] != PresenceOnline || statuses[9] != PresenceOffline {
+		t.Fatalf("Statuses() = (%#v, %v)", statuses, err)
+	}
+}
+
+func TestPresenceCoordinatorRecomputesGamingAfterGameLifecycle(t *testing.T) {
+	leases := newMemoryPresenceLeases()
+	friends := staticAcceptedFriends{ids: []uint{8}}
+	publisher := &recordingUserPublisher{}
+	games := &mutableGamePresence{playing: map[uint]bool{7: true}}
+	coordinator := NewPresenceCoordinator(leases, friends, publisher)
+	coordinator.SetGamePresenceRepository(games)
+	coordinator.process(presenceEvent{kind: presenceConnected, userID: 7, connectionID: "connection-7"})
+	games.set(7, false)
+	coordinator.process(presenceEvent{kind: presenceGameStatusChanged, userID: 7})
+	if len(publisher.events) != 2 {
+		t.Fatalf("presence events = %#v", publisher.events)
+	}
+	first := publisher.events[0].data.(PresenceEventData)
+	second := publisher.events[1].data.(PresenceEventData)
+	if first.Status != PresenceGaming || second.Status != PresenceOnline {
+		t.Fatalf("statuses = %q then %q", first.Status, second.Status)
 	}
 }
 

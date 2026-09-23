@@ -80,7 +80,69 @@ end
 return 1
 `)
 
-var commitMultiplayerActionScript = redis.NewScript(`
+const multiplayerAutoSaveSnapshotLua = `
+local function saveMultiplayerRoundSnapshot(room_id, generation, response, order_key, players_key, rounds_key, summary_key, pending_key, pending_rooms_key)
+  local current_turn = tonumber(response.current_turn)
+  local round_number = tonumber(response.round_number)
+  local order_ids = redis.call('LRANGE', order_key, 0, -1)
+  if not current_turn or not round_number or round_number <= 0 or round_number % 5 ~= 0 or
+     #order_ids < 2 or current_turn % #order_ids ~= 0 or current_turn / #order_ids ~= round_number then
+    return false
+  end
+  local players = {}
+  for _, user_text in ipairs(redis.call('LRANGE', players_key, 0, -1)) do
+    local player_key = 'room:' .. tostring(room_id) .. ':player:' .. user_text
+    local raw_state = redis.call('HGETALL', player_key)
+    local state = {}
+    local character_id = nil
+    for index = 1, #raw_state, 2 do
+      if raw_state[index] == 'character_id' then
+        character_id = tonumber(raw_state[index + 1])
+      else
+        state[raw_state[index]] = raw_state[index + 1]
+      end
+    end
+    local items = {}
+    for _, encoded in ipairs(redis.call('SMEMBERS', player_key .. ':items')) do
+      local ok, item = pcall(cjson.decode, encoded)
+      if not ok or type(item) ~= 'table' then return false end
+      table.insert(items, item)
+    end
+    if #items == 0 then items = {cjson.null} end
+    local buffs = {}
+    local raw_buffs = redis.call('HGETALL', player_key .. ':buffs')
+    for index = 1, #raw_buffs, 2 do
+      table.insert(buffs, {name = raw_buffs[index], duration = tonumber(raw_buffs[index + 1])})
+    end
+    if #buffs == 0 then buffs = {cjson.null} end
+    table.insert(players, {user_id = tonumber(user_text), character_id = character_id, player_state = state, items = items, buffs = buffs})
+  end
+  if #players ~= #order_ids then return false end
+  local turn_order = {}
+  for _, user_text in ipairs(order_ids) do table.insert(turn_order, tonumber(user_text)) end
+  local rounds = redis.call('LRANGE', rounds_key, 0, -1)
+  local messages = {}
+  for index = #rounds, 1, -1 do
+    local ok, message = pcall(cjson.decode, rounds[index])
+    if not ok or type(message) ~= 'table' then return false end
+    table.insert(messages, message)
+  end
+  local snapshot = {
+    version = 2, room_id = tonumber(room_id), status = 'playing', generation = generation,
+    current_turn = current_turn, round_number = round_number, turn_order = turn_order,
+    current_actor_id = tonumber(response.current_actor_id), deadline_at = response.deadline_at,
+    players = players, summary_memory = redis.call('GET', summary_key) or '', recent_messages = messages,
+  }
+  local encoded = cjson.encode(snapshot)
+  encoded = string.gsub(encoded, '"items":%[null%]', '"items":[]')
+  encoded = string.gsub(encoded, '"buffs":%[null%]', '"buffs":[]')
+  redis.call('HSET', pending_key, tostring(round_number), encoded)
+  redis.call('ZADD', pending_rooms_key, 0, tostring(room_id))
+  return true
+end
+`
+
+var commitMultiplayerActionScript = redis.NewScript(multiplayerAutoSaveSnapshotLua + `
 local cached = redis.call('HGET', KEYS[9], ARGV[4])
 if cached then
   if redis.call('GET', KEYS[3]) ~= ARGV[1] then return {4, -1, ''} end
@@ -101,14 +163,14 @@ if redis.call('HGET', KEYS[8], 'generation') ~= ARGV[1] or
    redis.call('HGET', KEYS[8], 'fingerprint') ~= ARGV[5] then return {6, current, ''} end
 
 local mutation_count = tonumber(ARGV[13])
-if not mutation_count or mutation_count < 0 or #KEYS ~= 10 + mutation_count * 3 then return {7, current, ''} end
+if not mutation_count or mutation_count < 0 or #KEYS ~= 14 + mutation_count * 3 then return {7, current, ''} end
 local plans = {}
 for index = 1, mutation_count do
   local ok, mutation = pcall(cjson.decode, ARGV[13 + index])
   if not ok or type(mutation) ~= 'table' then return {7, current, ''} end
-  local player_key = KEYS[10 + (index - 1) * 3 + 1]
-  local items_key = KEYS[10 + (index - 1) * 3 + 2]
-  local buffs_key = KEYS[10 + (index - 1) * 3 + 3]
+  local player_key = KEYS[14 + (index - 1) * 3 + 1]
+  local items_key = KEYS[14 + (index - 1) * 3 + 2]
+  local buffs_key = KEYS[14 + (index - 1) * 3 + 3]
   local member = false
   for order_index = 0, order_count - 1 do
     if redis.call('LINDEX', KEYS[5], order_index) == tostring(mutation.user_id) then member = true break end
@@ -174,16 +236,24 @@ redis.call('DEL', KEYS[8])
 redis.call('SET', KEYS[6], ARGV[9])
 redis.call('ZREM', KEYS[10], ARGV[10])
 redis.call('ZADD', KEYS[10], ARGV[9], ARGV[11])
+local response = cjson.decode(ARGV[6]).response
+if response and tonumber(response.current_turn) and tonumber(response.round_number) and
+   tonumber(response.round_number) % 5 == 0 and tonumber(response.current_turn) % order_count == 0 then
+  saveMultiplayerRoundSnapshot(ARGV[14 + mutation_count], ARGV[1], response, KEYS[5], KEYS[11], KEYS[7], KEYS[12], KEYS[13], KEYS[14])
+end
 for index = 1, 9 do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
-for index = 11, #KEYS do
+for index = 11, 12 do
+  if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
+end
+for index = 15, #KEYS do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
 return {1, next_turn, ''}
 `)
 
-var skipMultiplayerTurnScript = redis.NewScript(`
+var skipMultiplayerTurnScript = redis.NewScript(multiplayerAutoSaveSnapshotLua + `
 local cached = redis.call('HGET', KEYS[8], ARGV[4])
 if cached then
   if redis.call('GET', KEYS[3]) ~= ARGV[1] then return {4, ''} end
@@ -217,9 +287,18 @@ redis.call('SET', KEYS[6], ARGV[10])
 redis.call('HSET', KEYS[8], ARGV[4], ARGV[6])
 redis.call('ZREM', KEYS[9], ARGV[9])
 redis.call('ZADD', KEYS[9], ARGV[10], ARGV[11])
+local response = cjson.decode(ARGV[5])
+if tonumber(response.current_turn) and tonumber(response.round_number) and
+   tonumber(response.round_number) % 5 == 0 and tonumber(response.current_turn) % count == 0 then
+  saveMultiplayerRoundSnapshot(ARGV[13], ARGV[1], response, KEYS[5], KEYS[10], KEYS[14], KEYS[11], KEYS[12], KEYS[13])
+end
 for index = 1, 8 do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
+for index = 10, 11 do
+  if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
+end
+if redis.call('EXISTS', KEYS[14]) == 1 then redis.call('EXPIRE', KEYS[14], ARGV[12]) end
 return {1, ARGV[5]}
 `)
 
@@ -381,8 +460,10 @@ func (r *RedisGameStateRepo) SkipMultiplayerTurn(ctx context.Context, request *m
 	values, err := skipMultiplayerTurnScript.Run(ctx, r.client, []string{
 		multiplayerRuntimeVersionKey(request.RoomID), runtimeStatusKey(request.RoomID), runtimeGenerationKey(request.RoomID), runtimeTurnKey(request.RoomID),
 		multiplayerTurnOrderKey(request.RoomID), multiplayerDeadlineKey(request.RoomID), multiplayerActionLeaseKey(request.RoomID), actionResultsKey(request.RoomID), multiplayerDeadlineQueueKey(),
+		multiplayerRuntimePlayersKey(request.RoomID), multiplayerSummaryKey(request.RoomID), pendingMultiplayerAutoSavesKey(request.RoomID),
+		pendingMultiplayerAutoSaveRoomsKey(), multiplayerRoundsKey(request.RoomID),
 	}, request.Generation, request.ExpectedTurn, request.UserID, requestID, string(request.ResponseJSON), string(cached), request.Now.UTC().UnixMilli(), mode,
-		currentMember, request.NextDeadline.UTC().UnixMilli(), nextMember, int64(r.ttl/time.Second)).Slice()
+		currentMember, request.NextDeadline.UTC().UnixMilli(), nextMember, int64(r.ttl/time.Second), request.RoomID).Slice()
 	if err != nil {
 		return nil, fmt.Errorf("%w: skip multiplayer turn: %v", ErrGameRuntimeUnavailable, err)
 	}
@@ -494,7 +575,8 @@ func (r *RedisGameStateRepo) multiplayerCommitArguments(mutation *model.Multipla
 	keys := []string{
 		multiplayerRuntimeVersionKey(mutation.RoomID), runtimeStatusKey(mutation.RoomID), runtimeGenerationKey(mutation.RoomID), runtimeTurnKey(mutation.RoomID),
 		multiplayerTurnOrderKey(mutation.RoomID), multiplayerDeadlineKey(mutation.RoomID), multiplayerRoundsKey(mutation.RoomID), multiplayerActionLeaseKey(mutation.RoomID),
-		actionResultsKey(mutation.RoomID), multiplayerDeadlineQueueKey(),
+		actionResultsKey(mutation.RoomID), multiplayerDeadlineQueueKey(), multiplayerRuntimePlayersKey(mutation.RoomID),
+		multiplayerSummaryKey(mutation.RoomID), pendingMultiplayerAutoSavesKey(mutation.RoomID), pendingMultiplayerAutoSaveRoomsKey(),
 	}
 	arguments := []any{mutation.Generation, mutation.ExpectedTurn, mutation.UserID, requestID, fingerprint, string(cached), encodedMessages[0], encodedMessages[1],
 		mutation.NextDeadline.UTC().UnixMilli(), multiplayerDeadlineMember(mutation.RoomID, mutation.Generation, mutation.ExpectedTurn),
@@ -539,6 +621,7 @@ func (r *RedisGameStateRepo) multiplayerCommitArguments(mutation *model.Multipla
 		arguments = append(arguments, string(encoded))
 		keys = append(keys, runtimePlayerKey(mutation.RoomID, player.UserID), itemStateKey(mutation.RoomID, player.UserID), buffStateKey(mutation.RoomID, player.UserID))
 	}
+	arguments = append(arguments, mutation.RoomID)
 	return keys, arguments, fingerprint, nil
 }
 

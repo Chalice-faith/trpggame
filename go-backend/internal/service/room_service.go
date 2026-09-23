@@ -129,12 +129,19 @@ type RoomService struct {
 	runtime   MultiplayerRuntimeRepository
 	ai        MultiplayerOpeningClient
 	sequences RoomSequenceProvider
+	presence  GamePresenceNotifier
 	now       func() time.Time
 }
 
 func (s *RoomService) SetMutationPublisher(publisher RoomMutationPublisher) {
 	if s != nil {
 		s.publisher = publisher
+	}
+}
+
+func (s *RoomService) SetPresenceNotifier(notifier GamePresenceNotifier) {
+	if s != nil {
+		s.presence = notifier
 	}
 }
 
@@ -349,6 +356,9 @@ func (s *RoomService) startMultiplayer(ctx context.Context, actorID, roomID uint
 	snapshot := s.roomMutationResult(record)
 	if publisher, ok := s.publisher.(MultiplayerRuntimePublisher); ok {
 		publisher.PublishMultiplayerRuntime(runtimeSnapshot)
+	}
+	if s.presence != nil {
+		s.presence.NotifyGameStatusChanged(ctx, append([]uint(nil), state.TurnOrder...))
 	}
 	return snapshot, nil
 }

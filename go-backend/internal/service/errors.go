@@ -45,6 +45,7 @@ var (
 	ErrInvalidGameLoad             = errors.New("invalid game load request")
 	ErrGameSaveNotFound            = errors.New("game save not found")
 	ErrGameSaveCorrupt             = errors.New("game save is corrupt")
+	ErrMultiplayerSaveIncompatible = errors.New("multiplayer save is incompatible with the frozen room")
 	ErrGameRoomNotLoadable         = errors.New("game room cannot be loaded")
 	ErrInvalidGamePause            = errors.New("invalid game pause request")
 	ErrGameRoomNotPausable         = errors.New("game room cannot be paused")

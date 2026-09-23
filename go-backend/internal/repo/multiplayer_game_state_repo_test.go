@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -390,6 +391,203 @@ func TestRedisMultiplayerOldGenerationCannotCommit(t *testing.T) {
 	}
 	if current, getErr := server.Get(runtimeTurnKey(state.RoomID)); getErr != nil || current != "0" {
 		t.Fatalf("turn after old-generation commit = %q, %v", current, getErr)
+	}
+}
+
+func TestRedisMultiplayerLifecycleRotatesGenerationAndRestoresV2(t *testing.T) {
+	server, repository := newMultiplayerRuntimeRepository(t)
+	ctx := context.Background()
+	state := validMultiplayerRuntimeState()
+	if err := repository.InitializeMultiplayerRoom(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	if _, err := repository.ActivateMultiplayerRoom(ctx, state.RoomID, state.Generation, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	requestID, fingerprint := uuid.NewString(), strings.Repeat("f", 64)
+	if _, err := repository.AcquireMultiplayerAction(ctx, state.RoomID, 7, state.Generation, 0, requestID, fingerprint, now); err != nil {
+		t.Fatal(err)
+	}
+	pausedGeneration := uuid.NewString()
+	if turn, err := repository.TransitionMultiplayerRoom(ctx, state.RoomID, state.Generation, pausedGeneration,
+		model.RoomStatusPlaying, model.RoomStatusPaused, time.Time{}); err != nil || turn != 0 {
+		t.Fatalf("pause transition=(%d,%v)", turn, err)
+	}
+	paused, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil || paused.Status != model.RoomStatusPaused || paused.Generation != pausedGeneration ||
+		paused.DeadlineAt != nil || paused.ActionLease != nil {
+		t.Fatalf("paused runtime=%#v error=%v", paused, err)
+	}
+	if members, _ := server.ZMembers(multiplayerDeadlineQueueKey()); len(members) != 0 {
+		t.Fatalf("pause left deadline members: %#v", members)
+	}
+
+	playingGeneration := uuid.NewString()
+	deadline := now.Add(3 * time.Minute)
+	if turn, err := repository.TransitionMultiplayerRoom(ctx, state.RoomID, pausedGeneration, playingGeneration,
+		model.RoomStatusPaused, model.RoomStatusPlaying, deadline); err != nil || turn != 0 {
+		t.Fatalf("resume transition=(%d,%v)", turn, err)
+	}
+	playing, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil || playing.Generation != playingGeneration || playing.DeadlineAt == nil || !playing.DeadlineAt.Equal(deadline) {
+		t.Fatalf("resumed runtime=%#v error=%v", playing, err)
+	}
+	finalPausedGeneration := uuid.NewString()
+	if _, err := repository.TransitionMultiplayerRoom(ctx, state.RoomID, playingGeneration, finalPausedGeneration,
+		model.RoomStatusPlaying, model.RoomStatusPaused, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot.CurrentTurn, snapshot.RoundNumber, snapshot.CurrentActorID = 3, 1, 8
+	snapshot.Players[1].PlayerState["hp"] = "4"
+	snapshot.Players[1].Items = []model.RuntimeItem{{Name: "key", Quantity: 2, Description: "brass"}}
+	snapshot.Players[0].Buffs = []model.RuntimeBuff{{Name: "focus", Duration: 3}}
+	snapshot.RecentMessages = []model.RuntimeMessage{
+		{Role: "assistant", Content: "opening"}, {Role: "user", Content: "open the door"}, {Role: "assistant", Content: "a key"},
+	}
+	newGeneration := uuid.NewString()
+	snapshot.Generation = newGeneration
+	if err := repository.RestoreMultiplayerRoom(ctx, finalPausedGeneration, snapshot); err != nil {
+		t.Fatalf("RestoreMultiplayerRoom() error = %v", err)
+	}
+	restored, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil || restored.Status != model.RoomStatusPaused || restored.Generation != newGeneration ||
+		restored.CurrentTurn != 3 || restored.RoundNumber != 1 || restored.CurrentActorID != 8 ||
+		restored.Players[1].PlayerState["hp"] != "4" || len(restored.Players[1].Items) != 1 ||
+		len(restored.Players[0].Buffs) != 1 || len(restored.RecentMessages) != 3 {
+		t.Fatalf("restored runtime=%#v error=%v", restored, err)
+	}
+	if members, _ := server.ZMembers(multiplayerDeadlineQueueKey()); len(members) != 0 {
+		t.Fatalf("restore unexpectedly activated a deadline: %#v", members)
+	}
+}
+
+func TestRedisMultiplayerRoundBoundaryCreatesAndAcknowledgesAtomicAutoSave(t *testing.T) {
+	server, repository := newMultiplayerRuntimeRepository(t)
+	ctx := context.Background()
+	state := validMultiplayerRuntimeState()
+	if err := repository.InitializeMultiplayerRoom(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().UTC().Add(time.Minute).Truncate(time.Millisecond)
+	if _, err := repository.ActivateMultiplayerRoom(ctx, state.RoomID, state.Generation, deadline); err != nil {
+		t.Fatal(err)
+	}
+	for expectedTurn := 0; expectedTurn < 10; expectedTurn++ {
+		snapshot, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextDeadline := deadline.Add(time.Minute)
+		result := model.MultiplayerSkipResult{
+			Generation: snapshot.Generation, SkippedUserID: snapshot.CurrentActorID, CurrentTurn: expectedTurn + 1,
+			RoundNumber:    (expectedTurn + 1) / len(snapshot.TurnOrder),
+			CurrentActorID: snapshot.TurnOrder[(expectedTurn+1)%len(snapshot.TurnOrder)],
+			DeadlineAt:     nextDeadline, Reason: "manual",
+		}
+		response, _ := json.Marshal(result)
+		fingerprint := fmt.Sprintf("%064x", expectedTurn+1)
+		_, err = repository.SkipMultiplayerTurn(ctx, &model.MultiplayerSkipRequest{
+			RoomID: state.RoomID, UserID: snapshot.CurrentActorID, Generation: snapshot.Generation,
+			ExpectedTurn: expectedTurn, RequestID: uuid.NewString(), RequestFingerprint: fingerprint,
+			ResponseJSON: response, Reason: "manual", Now: deadline.Add(-time.Second), NextDeadline: nextDeadline,
+		})
+		if err != nil {
+			t.Fatalf("SkipMultiplayerTurn(turn=%d): %v", expectedTurn, err)
+		}
+		deadline = nextDeadline
+	}
+	roomIDs, err := repository.ListPendingMultiplayerAutoSaveRooms(ctx, 16)
+	if err != nil || len(roomIDs) != 1 || roomIDs[0] != state.RoomID {
+		t.Fatalf("pending room IDs = %#v, error = %v", roomIDs, err)
+	}
+	pending, err := repository.ListPendingMultiplayerAutoSaves(ctx, state.RoomID)
+	if err != nil || len(pending) != 1 {
+		t.Fatalf("pending snapshots = %#v, error = %v", pending, err)
+	}
+	snapshot := pending[0].Snapshot
+	if snapshot.RoundNumber != 5 || snapshot.CurrentTurn != 10 || snapshot.Status != model.RoomStatusPlaying ||
+		snapshot.CurrentActorID != 7 || snapshot.DeadlineAt == nil || len(snapshot.Players) != 2 ||
+		snapshot.Players[0].Items == nil || snapshot.Players[0].Buffs == nil || len(snapshot.RecentMessages) != 1 {
+		t.Fatalf("auto-save snapshot = %#v", snapshot)
+	}
+	generation := pending[0].Generation
+	if err := repository.AcknowledgeMultiplayerAutoSave(ctx, state.RoomID, 5, generation); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = repository.ListPendingMultiplayerAutoSaves(ctx, state.RoomID)
+	roomIDs, roomErr := repository.ListPendingMultiplayerAutoSaveRooms(ctx, 16)
+	if err != nil || roomErr != nil || len(pending) != 0 || len(roomIDs) != 0 || server.Exists(pendingMultiplayerAutoSavesKey(state.RoomID)) {
+		t.Fatalf("after ack pending=%#v rooms=%#v errors=(%v,%v)", pending, roomIDs, err, roomErr)
+	}
+	if err := repository.AcknowledgeMultiplayerAutoSave(ctx, state.RoomID, 5, generation); err != nil {
+		t.Fatalf("idempotent acknowledge: %v", err)
+	}
+}
+
+func TestRedisMultiplayerActionCommitCapturesRoundBoundaryAutoSave(t *testing.T) {
+	_, repository := newMultiplayerRuntimeRepository(t)
+	ctx := context.Background()
+	state := validMultiplayerRuntimeState()
+	if err := repository.InitializeMultiplayerRoom(ctx, state); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().UTC().Add(time.Minute).Truncate(time.Millisecond)
+	if _, err := repository.ActivateMultiplayerRoom(ctx, state.RoomID, state.Generation, deadline); err != nil {
+		t.Fatal(err)
+	}
+	for expectedTurn := 0; expectedTurn < 9; expectedTurn++ {
+		snapshot, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextDeadline := deadline.Add(time.Minute)
+		result := model.MultiplayerSkipResult{
+			Generation: snapshot.Generation, SkippedUserID: snapshot.CurrentActorID, CurrentTurn: expectedTurn + 1,
+			RoundNumber:    (expectedTurn + 1) / len(snapshot.TurnOrder),
+			CurrentActorID: snapshot.TurnOrder[(expectedTurn+1)%len(snapshot.TurnOrder)],
+			DeadlineAt:     nextDeadline, Reason: "manual",
+		}
+		response, _ := json.Marshal(result)
+		_, err = repository.SkipMultiplayerTurn(ctx, &model.MultiplayerSkipRequest{
+			RoomID: state.RoomID, UserID: snapshot.CurrentActorID, Generation: snapshot.Generation,
+			ExpectedTurn: expectedTurn, RequestID: uuid.NewString(), RequestFingerprint: fmt.Sprintf("%064x", expectedTurn+1),
+			ResponseJSON: response, Reason: "manual", Now: deadline.Add(-time.Second), NextDeadline: nextDeadline,
+		})
+		if err != nil {
+			t.Fatalf("SkipMultiplayerTurn(turn=%d): %v", expectedTurn, err)
+		}
+		deadline = nextDeadline
+	}
+	snapshot, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil || snapshot.CurrentTurn != 9 || snapshot.CurrentActorID != 8 {
+		t.Fatalf("before action snapshot=%#v error=%v", snapshot, err)
+	}
+	requestID, fingerprint := uuid.NewString(), strings.Repeat("a", 64)
+	if _, err := repository.AcquireMultiplayerAction(ctx, state.RoomID, 8, snapshot.Generation, 9,
+		requestID, fingerprint, deadline.Add(-time.Second)); err != nil {
+		t.Fatalf("AcquireMultiplayerAction() error = %v", err)
+	}
+	nextDeadline := deadline.Add(time.Minute)
+	response, _ := json.Marshal(map[string]any{
+		"current_turn": 10, "round_number": 5, "current_actor_id": 7, "deadline_at": nextDeadline,
+	})
+	commit, err := repository.CommitMultiplayerAction(ctx, &model.MultiplayerActionMutation{
+		RoomID: state.RoomID, UserID: 8, Generation: snapshot.Generation, ExpectedTurn: 9,
+		RequestID: requestID, RequestFingerprint: fingerprint, ResponseJSON: response, NextDeadline: nextDeadline,
+		Messages: []model.RuntimeMessage{{Role: "user", Content: "I open the gate."}, {Role: "assistant", Content: "The gate yields."}},
+	})
+	if err != nil || commit == nil || commit.CurrentTurn != 10 {
+		t.Fatalf("CommitMultiplayerAction() = (%#v, %v)", commit, err)
+	}
+	pending, err := repository.ListPendingMultiplayerAutoSaves(ctx, state.RoomID)
+	if err != nil || len(pending) != 1 || pending[0].Snapshot.CurrentTurn != 10 || pending[0].Snapshot.RoundNumber != 5 ||
+		len(pending[0].Snapshot.RecentMessages) != 3 {
+		t.Fatalf("pending action auto-save = %#v, error=%v", pending, err)
 	}
 }
 

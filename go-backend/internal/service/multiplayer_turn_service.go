@@ -89,6 +89,7 @@ func (s *GameService) submitMultiplayerAction(
 		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
 			return nil, err
 		}
+		s.flushAutoSaveBestEffort(ctx, room.ID)
 		return result, nil
 	}
 	if room.Status != model.RoomStatusPlaying {
@@ -119,6 +120,7 @@ func (s *GameService) submitMultiplayerAction(
 		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
 			return nil, err
 		}
+		s.flushAutoSaveBestEffort(ctx, room.ID)
 		return result, nil
 	}
 	generation := acquired.Generation
@@ -226,6 +228,7 @@ func (s *GameService) submitMultiplayerAction(
 				if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
 					return nil, err
 				}
+				s.flushAutoSaveBestEffort(ctx, room.ID)
 				s.publishCommittedMultiplayerAction(room.ID, requestID, committed)
 				return committed, nil
 			}
@@ -240,6 +243,7 @@ func (s *GameService) submitMultiplayerAction(
 	if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
 		return nil, err
 	}
+	s.flushAutoSaveBestEffort(ctx, room.ID)
 	if !commit.Duplicate {
 		s.publishCommittedMultiplayerAction(room.ID, requestID, committed)
 	}
@@ -291,6 +295,7 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
 			return nil, err
 		}
+		s.flushAutoSaveBestEffort(ctx, room.ID)
 		return &result, nil
 	}
 	if snapshot.CurrentTurn != req.ExpectedTurn {
@@ -377,6 +382,7 @@ func (s *GameService) skipMultiplayer(ctx context.Context, gameRepo MultiplayerG
 	if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
 		return nil, err
 	}
+	s.flushAutoSaveBestEffort(ctx, room.ID)
 	if !committed.Duplicate {
 		s.publishMultiplayer(room.ID, requestID, GameActionStreamEvent{
 			Type: "turn_skip", Multiplayer: true, Generation: committed.Generation,
@@ -390,6 +396,12 @@ func (s *GameService) skipMultiplayer(ctx context.Context, gameRepo MultiplayerG
 		})
 	}
 	return committed, nil
+}
+
+func (s *GameService) flushAutoSaveBestEffort(ctx context.Context, roomID uint) {
+	if err := s.FlushPendingMultiplayerAutoSaves(ctx, roomID); err != nil {
+		log.Printf("flush multiplayer auto-save room=%d: %v", roomID, err)
+	}
 }
 
 func (s *GameService) multiplayerDependencies() (MultiplayerGameRepository, MultiplayerTurnRepository, error) {

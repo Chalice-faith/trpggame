@@ -129,3 +129,40 @@ func (r *RoomRealtime) PublishMultiplayerActionEvent(roomID uint, requestID stri
 	}
 	r.hub.BroadcastToRoomWithRequestID(roomID, messageType, encoded, requestID)
 }
+
+func (r *RoomRealtime) PublishMultiplayerLifecycle(snapshot *model.MultiplayerRuntimeSnapshot) {
+	if r == nil || r.hub == nil || snapshot == nil {
+		return
+	}
+	var deadline *string
+	if snapshot.DeadlineAt != nil {
+		formatted := snapshot.DeadlineAt.UTC().Format(time.RFC3339Nano)
+		deadline = &formatted
+	}
+	payload, err := json.Marshal(ws.GameStatusChangedData{
+		Generation: snapshot.Generation, Status: string(snapshot.Status), CurrentTurn: snapshot.CurrentTurn,
+		RoundNumber: snapshot.RoundNumber, CurrentActorID: snapshot.CurrentActorID, DeadlineAt: deadline,
+	})
+	if err == nil {
+		r.hub.BroadcastToRoom(snapshot.RoomID, ws.MsgGameStatusChanged, payload)
+	}
+	if snapshot.Status == model.RoomStatusPlaying && snapshot.DeadlineAt != nil {
+		turnPayload, marshalErr := json.Marshal(ws.TurnStartData{
+			Generation: snapshot.Generation, CurrentTurn: snapshot.CurrentTurn, RoundNumber: snapshot.RoundNumber,
+			CurrentActorID: snapshot.CurrentActorID, DeadlineAt: snapshot.DeadlineAt.UTC().Format(time.RFC3339Nano),
+		})
+		if marshalErr == nil {
+			r.hub.BroadcastToRoom(snapshot.RoomID, ws.MsgTurnStart, turnPayload)
+		}
+	}
+}
+
+func (r *RoomRealtime) PublishMultiplayerEnded(roomID uint, generation string, turn, round int) {
+	if r == nil || r.hub == nil || roomID == 0 || generation == "" {
+		return
+	}
+	payload, err := json.Marshal(ws.GameEndedData{Generation: generation, CurrentTurn: turn, RoundNumber: round})
+	if err == nil {
+		r.hub.BroadcastToRoom(roomID, ws.MsgGameEnded, payload)
+	}
+}

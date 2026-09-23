@@ -245,14 +245,18 @@ func main() {
 	deadlineWorker := service.NewMultiplayerDeadlineWorker(gameStateRepo, gameService)
 	go deadlineWorker.Run()
 	presenceCoordinator := service.NewPresenceCoordinator(presenceRepo, friendRepo, imHub)
+	presenceCoordinator.SetGamePresenceRepository(gameRepo)
+	gameService.ConfigurePresence(presenceCoordinator)
 	imHub.SetPresenceObserver(presenceCoordinator)
 	go presenceCoordinator.Run()
 	go imHub.Run()
 	friendshipPublisher := service.NewRealtimeFriendshipPublisher(userRepo, imHub)
+	presenceProvider := service.NewRedisPresenceProvider(presenceRepo)
+	presenceProvider.SetGamePresenceRepository(gameRepo)
 	friendService := service.NewFriendService(
 		friendRepo,
 		userRepo,
-		service.NewRedisPresenceProvider(presenceRepo),
+		presenceProvider,
 		friendshipPublisher,
 	)
 	friendHandler := handler.NewFriendHandler(friendService)
@@ -268,6 +272,7 @@ func main() {
 	roomService := service.NewRoomService(roomRepo)
 	roomService.ConfigureMultiplayer(gameStateRepo, aiClient, realtimeBus)
 	roomService.SetMutationPublisher(roomRealtime)
+	roomService.SetPresenceNotifier(presenceCoordinator)
 	roomHandler := handler.NewRoomHandler(roomService)
 	imHub.SetInboundHandler(chatRealtime)
 

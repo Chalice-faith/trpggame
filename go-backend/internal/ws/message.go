@@ -38,7 +38,24 @@ const (
 	MsgGameRuntimeSnapshot   MessageType = "game_runtime_snapshot"
 	MsgActionStarted         MessageType = "action_started"
 	MsgActionCancelled       MessageType = "action_cancelled"
+	MsgGameStatusChanged     MessageType = "game_status_changed"
+	MsgGameEnded             MessageType = "game_ended"
 )
+
+type GameStatusChangedData struct {
+	Generation     string  `json:"generation"`
+	Status         string  `json:"status"`
+	CurrentTurn    int     `json:"current_turn"`
+	RoundNumber    int     `json:"round_number"`
+	CurrentActorID uint    `json:"current_actor_id"`
+	DeadlineAt     *string `json:"deadline_at,omitempty"`
+}
+
+type GameEndedData struct {
+	Generation  string `json:"generation"`
+	CurrentTurn int    `json:"current_turn"`
+	RoundNumber int    `json:"round_number"`
+}
 
 type TurnStartData struct {
 	Generation     string `json:"generation"`

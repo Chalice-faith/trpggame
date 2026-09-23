@@ -42,7 +42,7 @@ func (s *GameService) EndGame(
 		return nil, fmt.Errorf("%w: invalid room repository result", ErrInternal)
 	}
 	if !room.IsSolo {
-		return nil, ErrGameRoomNotEndable
+		return s.endMultiplayerGame(ctx, req, room)
 	}
 	if room.Status == model.RoomStatusEnded {
 		return s.finishEndedGameCleanup(ctx, room.ID, req.UserID)

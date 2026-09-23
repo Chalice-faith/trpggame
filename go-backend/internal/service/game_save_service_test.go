@@ -110,7 +110,7 @@ func TestGameServiceCreateManualSaveValidatesOwnedRoom(t *testing.T) {
 		}, ErrGameRoomNotSavable, false},
 		{"multiplayer room", func(repository *fakeGameRepository) {
 			repository.room.IsSolo = false
-		}, ErrGameRoomNotSavable, false},
+		}, ErrGameRuntimeUnavailable, false},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

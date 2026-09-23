@@ -88,7 +88,7 @@ func TestGameServiceResumeGameValidatesOwnedRoom(t *testing.T) {
 		}, ErrGameRoomNotResumable},
 		{"multiplayer room", func(repository *fakeGameRepository) {
 			repository.room.IsSolo = false
-		}, ErrGameRoomNotResumable},
+		}, ErrGameRuntimeUnavailable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

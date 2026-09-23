@@ -45,6 +45,7 @@ type PresenceStatus string
 const (
 	PresenceOffline PresenceStatus = "offline"
 	PresenceOnline  PresenceStatus = "online"
+	PresenceGaming  PresenceStatus = "gaming"
 	PresenceUnknown PresenceStatus = "unknown"
 )
 

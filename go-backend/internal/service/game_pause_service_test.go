@@ -94,7 +94,7 @@ func TestGameServicePauseGameValidatesOwnedRoom(t *testing.T) {
 		}, ErrGameRoomNotPausable},
 		{"multiplayer room", func(repository *fakeGameRepository) {
 			repository.room.IsSolo = false
-		}, ErrGameRoomNotPausable},
+		}, ErrGameRuntimeUnavailable},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

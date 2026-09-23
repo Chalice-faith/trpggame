@@ -103,6 +103,7 @@ type GameService struct {
 	aiClient             GameInferenceClient
 	runtimeRepo          GameRuntimeRepository
 	multiplayerPublisher MultiplayerActionPublisher
+	presenceNotifier     GamePresenceNotifier
 	now                  func() time.Time
 }
 
@@ -139,6 +140,12 @@ func NewGameService(
 func (s *GameService) ConfigureMultiplayer(publisher MultiplayerActionPublisher) {
 	if s != nil {
 		s.multiplayerPublisher = publisher
+	}
+}
+
+func (s *GameService) ConfigurePresence(notifier GamePresenceNotifier) {
+	if s != nil {
+		s.presenceNotifier = notifier
 	}
 }
 

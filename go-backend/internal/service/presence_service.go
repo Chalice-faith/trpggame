@@ -26,16 +26,33 @@ type AcceptedFriendRepository interface {
 	ListAcceptedPeerIDs(context.Context, uint) ([]uint, error)
 }
 
+type GamePresenceRepository interface {
+	ListPlayingMultiplayerUsers(context.Context, []uint) (map[uint]bool, error)
+}
+
+type GamePresenceNotifier interface {
+	NotifyGameStatusChanged(context.Context, []uint)
+}
+
 // UserEventPublisher 由 IM Hub 实现；false 表示用户当前离线或连接不可投递。
 type UserEventPublisher interface {
 	PublishUserEvent(userID uint, eventType string, data any) bool
 }
 
 // RedisPresenceProvider 将租约状态映射为好友 REST 所需的 presence 语义。
-type RedisPresenceProvider struct{ leases PresenceLeaseRepository }
+type RedisPresenceProvider struct {
+	leases PresenceLeaseRepository
+	games  GamePresenceRepository
+}
 
 func NewRedisPresenceProvider(leases PresenceLeaseRepository) *RedisPresenceProvider {
 	return &RedisPresenceProvider{leases: leases}
+}
+
+func (p *RedisPresenceProvider) SetGamePresenceRepository(games GamePresenceRepository) {
+	if p != nil {
+		p.games = games
+	}
 }
 
 func (p *RedisPresenceProvider) Statuses(ctx context.Context, ids []uint) (map[uint]PresenceStatus, error) {
@@ -50,6 +67,17 @@ func (p *RedisPresenceProvider) Statuses(ctx context.Context, ids []uint) (map[u
 			result[id] = PresenceOnline
 		}
 	}
+	if p.games != nil {
+		playing, err := p.games.ListPlayingMultiplayerUsers(ctx, ids)
+		if err != nil {
+			return nil, err
+		}
+		for id, active := range playing {
+			if active && values[id] {
+				result[id] = PresenceGaming
+			}
+		}
+	}
 	return result, nil
 }
 
@@ -59,6 +87,7 @@ const (
 	presenceConnected presenceEventKind = iota + 1
 	presenceRefreshed
 	presenceDisconnected
+	presenceGameStatusChanged
 	presenceStop
 )
 
@@ -73,9 +102,24 @@ type PresenceCoordinator struct {
 	leases    PresenceLeaseRepository
 	friends   AcceptedFriendRepository
 	publisher UserEventPublisher
+	games     GamePresenceRepository
 	events    chan presenceEvent
 	done      chan struct{}
 	stopOnce  sync.Once
+}
+
+func (c *PresenceCoordinator) SetGamePresenceRepository(games GamePresenceRepository) {
+	if c != nil {
+		c.games = games
+	}
+}
+
+func (c *PresenceCoordinator) NotifyGameStatusChanged(_ context.Context, userIDs []uint) {
+	for _, userID := range userIDs {
+		if userID != 0 {
+			c.enqueue(presenceEvent{kind: presenceGameStatusChanged, userID: userID})
+		}
+	}
 }
 
 func NewPresenceCoordinator(leases PresenceLeaseRepository, friends AcceptedFriendRepository, publisher UserEventPublisher) *PresenceCoordinator {
@@ -135,7 +179,7 @@ func (c *PresenceCoordinator) process(event presenceEvent) {
 			return
 		}
 		if becameOnline {
-			c.broadcast(ctx, event.userID, PresenceOnline)
+			c.broadcastCurrent(ctx, event.userID)
 		}
 	case presenceRefreshed:
 		if _, err := c.leases.Refresh(ctx, event.userID, event.connectionID); err != nil {
@@ -148,9 +192,34 @@ func (c *PresenceCoordinator) process(event presenceEvent) {
 			return
 		}
 		if becameOffline {
-			c.broadcast(ctx, event.userID, PresenceOffline)
+			c.broadcastCurrent(ctx, event.userID)
+		}
+	case presenceGameStatusChanged:
+		c.broadcastCurrent(ctx, event.userID)
+	}
+}
+
+func (c *PresenceCoordinator) broadcastCurrent(ctx context.Context, userID uint) {
+	statuses, err := c.leases.Statuses(ctx, []uint{userID})
+	if err != nil {
+		log.Printf("read presence for user %d: %v", userID, err)
+		return
+	}
+	status := PresenceOffline
+	if statuses[userID] {
+		status = PresenceOnline
+		if c.games != nil {
+			playing, gameErr := c.games.ListPlayingMultiplayerUsers(ctx, []uint{userID})
+			if gameErr != nil {
+				log.Printf("read game presence for user %d: %v", userID, gameErr)
+				return
+			}
+			if playing[userID] {
+				status = PresenceGaming
+			}
 		}
 	}
+	c.broadcast(ctx, userID, status)
 }
 
 func (c *PresenceCoordinator) broadcast(ctx context.Context, userID uint, status PresenceStatus) {
