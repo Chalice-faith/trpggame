@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,24 +11,29 @@ import (
 	"unicode/utf8"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/google/uuid"
 
+	"trpggame/internal/ai_client"
 	"trpggame/internal/model"
 	"trpggame/internal/repo"
 )
 
 var (
-	ErrInvalidRoomRequest         = errors.New("invalid room request")
-	ErrRoomNotFound               = errors.New("room not found")
-	ErrRoomScriptUnavailable      = errors.New("room script unavailable")
-	ErrRoomCharactersInsufficient = errors.New("not enough script characters")
-	ErrRoomCapacityReached        = errors.New("room capacity reached")
-	ErrRoomNotWaiting             = errors.New("room not waiting")
-	ErrRoomRejoinDenied           = errors.New("room rejoin denied")
-	ErrRoomPermissionDenied       = errors.New("room permission denied")
-	ErrRoomInvalidCharacter       = errors.New("invalid room character")
-	ErrRoomCharacterTaken         = errors.New("room character taken")
-	ErrRoomStartConditions        = errors.New("room start conditions unmet")
-	ErrRoomOwnerLeave             = errors.New("owner must transfer before leaving")
+	ErrInvalidRoomRequest            = errors.New("invalid room request")
+	ErrRoomNotFound                  = errors.New("room not found")
+	ErrRoomScriptUnavailable         = errors.New("room script unavailable")
+	ErrRoomCharactersInsufficient    = errors.New("not enough script characters")
+	ErrRoomCapacityReached           = errors.New("room capacity reached")
+	ErrRoomNotWaiting                = errors.New("room not waiting")
+	ErrRoomRejoinDenied              = errors.New("room rejoin denied")
+	ErrRoomPermissionDenied          = errors.New("room permission denied")
+	ErrRoomInvalidCharacter          = errors.New("invalid room character")
+	ErrRoomCharacterTaken            = errors.New("room character taken")
+	ErrRoomStartConditions           = errors.New("room start conditions unmet")
+	ErrRoomOwnerLeave                = errors.New("owner must transfer before leaving")
+	ErrMultiplayerRuntimeUnavailable = errors.New("multiplayer runtime unavailable")
+	ErrMultiplayerAIUnavailable      = errors.New("multiplayer AI unavailable")
+	ErrMultiplayerStartInProgress    = errors.New("multiplayer start in progress")
 )
 
 type RoomRepository interface {
@@ -86,9 +92,43 @@ type RoomMutationPublisher interface {
 	PublishRoomMutation(RoomMutation)
 }
 
+type MultiplayerRuntimeRepository interface {
+	AcquireMultiplayerStartLease(context.Context, uint, string, time.Duration) error
+	ReleaseMultiplayerStartLease(context.Context, uint, string) error
+	InitializeMultiplayerRoom(context.Context, *model.MultiplayerRuntimeState) error
+	ActivateMultiplayerRoom(context.Context, uint, string, time.Time) (*model.MultiplayerRuntimeSnapshot, error)
+	PauseMultiplayerRoom(context.Context, uint, string) error
+	DeleteProvisionalMultiplayerRoom(context.Context, *model.MultiplayerRuntimeState) error
+	GetMultiplayerRoom(context.Context, uint) (*model.MultiplayerRuntimeSnapshot, error)
+}
+
+type MultiplayerOpeningClient interface {
+	StartGame(context.Context, *ai_client.StartGameRequest) (*ai_client.StartGameResponse, error)
+}
+
+type RoomSequenceProvider interface {
+	CurrentRoomSequence(context.Context, uint) (int64, error)
+}
+
+type multiplayerStartCompensator interface {
+	PauseStarted(context.Context, uint, uint, uint64) (*repo.RoomRecord, error)
+}
+
+type MultiplayerRuntimePublisher interface {
+	PublishMultiplayerRuntime(*model.MultiplayerRuntimeSnapshot)
+}
+
+type MultiplayerGameState struct {
+	Seq int64 `json:"seq"`
+	*model.MultiplayerRuntimeSnapshot
+}
+
 type RoomService struct {
 	rooms     RoomRepository
 	publisher RoomMutationPublisher
+	runtime   MultiplayerRuntimeRepository
+	ai        MultiplayerOpeningClient
+	sequences RoomSequenceProvider
 	now       func() time.Time
 }
 
@@ -100,6 +140,18 @@ func (s *RoomService) SetMutationPublisher(publisher RoomMutationPublisher) {
 
 func NewRoomService(rooms RoomRepository) *RoomService {
 	return &RoomService{rooms: rooms, now: time.Now}
+}
+
+// ConfigureMultiplayer enables the M2.5 V2 start coordinator and read-only state endpoint.
+func (s *RoomService) ConfigureMultiplayer(
+	runtime MultiplayerRuntimeRepository,
+	ai MultiplayerOpeningClient,
+	sequences RoomSequenceProvider,
+) {
+	if s == nil {
+		return
+	}
+	s.runtime, s.ai, s.sequences = runtime, ai, sequences
 }
 
 func (s *RoomService) Create(ctx context.Context, userID, scriptID uint, name string, capacity int) (*RoomSnapshot, error) {
@@ -227,11 +279,218 @@ func (s *RoomService) Start(ctx context.Context, actorID, roomID uint, version u
 	if actorID == 0 || roomID == 0 || version == 0 {
 		return nil, ErrInvalidRoomRequest
 	}
-	record, err := s.rooms.Start(ctx, actorID, roomID, version)
+	if s.runtime == nil && s.ai == nil {
+		record, err := s.rooms.Start(ctx, actorID, roomID, version)
+		if err != nil {
+			return nil, mapRoomError(err)
+		}
+		return s.roomMutationResult(record), nil
+	}
+	if s.runtime == nil {
+		return nil, ErrMultiplayerRuntimeUnavailable
+	}
+	if s.ai == nil {
+		return nil, ErrMultiplayerAIUnavailable
+	}
+	return s.startMultiplayer(ctx, actorID, roomID, version)
+}
+
+func (s *RoomService) startMultiplayer(ctx context.Context, actorID, roomID uint, version uint64) (*RoomSnapshot, error) {
+	leaseToken := uuid.NewString()
+	if err := s.runtime.AcquireMultiplayerStartLease(ctx, roomID, leaseToken, repo.DefaultMultiplayerStartLeaseTTL); err != nil {
+		if errors.Is(err, repo.ErrMultiplayerStartInProgress) {
+			return nil, ErrMultiplayerStartInProgress
+		}
+		return nil, fmt.Errorf("%w: acquire start lease: %v", ErrMultiplayerRuntimeUnavailable, err)
+	}
+	defer s.releaseStartLease(roomID, leaseToken)
+
+	candidate, err := s.rooms.Get(ctx, actorID, roomID)
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	return s.roomMutationResult(record), nil
+	state, participants, err := multiplayerStartState(candidate, actorID, version)
+	if err != nil {
+		return nil, err
+	}
+	opening, err := s.ai.StartGame(ctx, &ai_client.StartGameRequest{
+		RoomID: roomID, ScriptID: candidate.Room.ScriptID,
+		UserID: state.TurnOrder[0], CharacterID: state.Players[0].CharacterID,
+		Participants: participants,
+	})
+	if err != nil || opening == nil || strings.TrimSpace(opening.Narrative) == "" {
+		return nil, fmt.Errorf("%w: generate opening narrative", ErrMultiplayerAIUnavailable)
+	}
+	state.Opening = model.RuntimeMessage{Role: "assistant", Content: strings.TrimSpace(opening.Narrative)}
+	if err := s.runtime.InitializeMultiplayerRoom(ctx, state); err != nil {
+		cleanupErr := s.deleteProvisional(state)
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("%w: initialize provisional runtime: %v; cleanup provisional runtime: %v", ErrMultiplayerRuntimeUnavailable, err, cleanupErr)
+		}
+		return nil, fmt.Errorf("%w: initialize provisional runtime: %v", ErrMultiplayerRuntimeUnavailable, err)
+	}
+
+	record, err := s.rooms.Start(ctx, actorID, roomID, version)
+	if err != nil {
+		if cleanupErr := s.deleteProvisional(state); cleanupErr != nil {
+			return nil, fmt.Errorf("%w: start room: %v; cleanup provisional runtime: %v", ErrMultiplayerRuntimeUnavailable, err, cleanupErr)
+		}
+		return nil, mapRoomError(err)
+	}
+	deadline := s.now().UTC().Add(state.TurnTimeout)
+	runtimeSnapshot, activateErr := s.runtime.ActivateMultiplayerRoom(ctx, roomID, state.Generation, deadline)
+	if activateErr != nil {
+		compensationErr := s.safePauseStartedRoom(actorID, state, record.Room.Version)
+		if compensationErr != nil {
+			return nil, fmt.Errorf("%w: activate runtime: %v; safe pause: %v", ErrMultiplayerRuntimeUnavailable, activateErr, compensationErr)
+		}
+		return nil, fmt.Errorf("%w: activate runtime: %v", ErrMultiplayerRuntimeUnavailable, activateErr)
+	}
+	snapshot := s.roomMutationResult(record)
+	if publisher, ok := s.publisher.(MultiplayerRuntimePublisher); ok {
+		publisher.PublishMultiplayerRuntime(runtimeSnapshot)
+	}
+	return snapshot, nil
+}
+
+func (s *RoomService) GetMultiplayerState(ctx context.Context, userID, roomID uint) (*MultiplayerGameState, error) {
+	if userID == 0 || roomID == 0 {
+		return nil, ErrInvalidRoomRequest
+	}
+	if s.runtime == nil {
+		return nil, ErrMultiplayerRuntimeUnavailable
+	}
+	record, err := s.rooms.Get(ctx, userID, roomID)
+	if err != nil {
+		return nil, mapRoomError(err)
+	}
+	if record.Room.IsSolo || (record.Room.Status != model.RoomStatusPlaying && record.Room.Status != model.RoomStatusPaused) {
+		return nil, ErrRoomNotFound
+	}
+	snapshot, err := s.runtime.GetMultiplayerRoom(ctx, roomID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMultiplayerRuntimeUnavailable, err)
+	}
+	if err := validateRuntimeAgainstRoom(snapshot, record); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrMultiplayerRuntimeUnavailable, err)
+	}
+	seq := int64(0)
+	if s.sequences != nil {
+		seq, err = s.sequences.CurrentRoomSequence(ctx, roomID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: read room sequence: %v", ErrMultiplayerRuntimeUnavailable, err)
+		}
+	}
+	return &MultiplayerGameState{Seq: seq, MultiplayerRuntimeSnapshot: snapshot}, nil
+}
+
+func multiplayerStartState(
+	record *repo.RoomRecord,
+	actorID uint,
+	expectedVersion uint64,
+) (*model.MultiplayerRuntimeState, []ai_client.GameParticipant, error) {
+	if record == nil || record.Room.ID == 0 || record.Room.OwnerID != actorID {
+		return nil, nil, ErrRoomPermissionDenied
+	}
+	if record.Room.Status != model.RoomStatusWaiting {
+		return nil, nil, ErrRoomNotWaiting
+	}
+	if record.Room.Version != expectedVersion {
+		return nil, nil, &repo.RoomVersionError{Current: record.Room.Version}
+	}
+	if len(record.Members) < 2 || record.Room.TurnTimeoutSeconds <= 0 {
+		return nil, nil, ErrRoomStartConditions
+	}
+	characters := make(map[uint]model.ScriptCharacter, len(record.Characters))
+	for _, character := range record.Characters {
+		characters[character.ID] = character
+	}
+	state := &model.MultiplayerRuntimeState{
+		RoomID: record.Room.ID, Generation: uuid.NewString(),
+		TurnOrder: make([]uint, 0, len(record.Members)), Players: make([]model.MultiplayerRuntimePlayer, 0, len(record.Members)),
+		Opening:     model.RuntimeMessage{Role: "assistant", Content: "pending"},
+		TurnTimeout: time.Duration(record.Room.TurnTimeoutSeconds) * time.Second,
+	}
+	participants := make([]ai_client.GameParticipant, 0, len(record.Members))
+	seenCharacters := make(map[uint]struct{}, len(record.Members))
+	for _, member := range record.Members {
+		if !member.Player.IsReady || member.Player.CharacterID == nil {
+			return nil, nil, ErrRoomStartConditions
+		}
+		characterID := *member.Player.CharacterID
+		character, exists := characters[characterID]
+		if !exists {
+			return nil, nil, ErrRoomStartConditions
+		}
+		if _, duplicate := seenCharacters[characterID]; duplicate {
+			return nil, nil, ErrRoomStartConditions
+		}
+		seenCharacters[characterID] = struct{}{}
+		playerState, err := characterRuntimeState(&character)
+		if err != nil {
+			return nil, nil, fmt.Errorf("invalid multiplayer character state: %w", err)
+		}
+		state.TurnOrder = append(state.TurnOrder, member.Player.UserID)
+		state.Players = append(state.Players, model.MultiplayerRuntimePlayer{
+			UserID: member.Player.UserID, CharacterID: characterID, PlayerState: playerState,
+			Items: []model.RuntimeItem{}, Buffs: []model.RuntimeBuff{},
+		})
+		participants = append(participants, ai_client.GameParticipant{UserID: member.Player.UserID, CharacterID: characterID})
+	}
+	return state, participants, nil
+}
+
+func validateRuntimeAgainstRoom(snapshot *model.MultiplayerRuntimeSnapshot, record *repo.RoomRecord) error {
+	if snapshot == nil || snapshot.RoomID != record.Room.ID || snapshot.Status != record.Room.Status || len(snapshot.Players) != len(record.Members) {
+		return errors.New("runtime room mismatch")
+	}
+	var persistedOrder []uint
+	if json.Unmarshal(record.Room.TurnOrder, &persistedOrder) != nil || len(persistedOrder) != len(snapshot.TurnOrder) {
+		return errors.New("invalid persisted turn order")
+	}
+	for index, userID := range persistedOrder {
+		if snapshot.TurnOrder[index] != userID {
+			return errors.New("runtime turn order mismatch")
+		}
+	}
+	players := make(map[uint]uint, len(snapshot.Players))
+	for _, player := range snapshot.Players {
+		players[player.UserID] = player.CharacterID
+	}
+	for _, member := range record.Members {
+		if member.Player.CharacterID == nil || players[member.Player.UserID] != *member.Player.CharacterID {
+			return errors.New("runtime roster mismatch")
+		}
+	}
+	return nil
+}
+
+func (s *RoomService) releaseStartLease(roomID uint, token string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.runtime.ReleaseMultiplayerStartLease(ctx, roomID, token)
+}
+
+func (s *RoomService) deleteProvisional(state *model.MultiplayerRuntimeState) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return s.runtime.DeleteProvisionalMultiplayerRoom(ctx, state)
+}
+
+func (s *RoomService) safePauseStartedRoom(ownerID uint, state *model.MultiplayerRuntimeState, expectedVersion uint64) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	errs := make([]error, 0, 2)
+	if err := s.runtime.PauseMultiplayerRoom(ctx, state.RoomID, state.Generation); err != nil {
+		errs = append(errs, err)
+	}
+	compensator, ok := s.rooms.(multiplayerStartCompensator)
+	if !ok {
+		errs = append(errs, errors.New("room repository cannot safe pause"))
+	} else if _, err := compensator.PauseStarted(ctx, ownerID, state.RoomID, expectedVersion); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 func (s *RoomService) roomMutationResult(record *repo.RoomRecord) *RoomSnapshot {

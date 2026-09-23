@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.dependencies import require_internal_secret
 from app.services.context_builder import AssembledContext, assemble_context
@@ -45,11 +45,51 @@ OPENING_ACTION_PROMPT = (
 )
 
 
+class GameParticipant(BaseModel):
+    user_id: int = Field(gt=0)
+    character_id: int = Field(gt=0)
+
+
+def _validate_multiplayer_participants(
+    user_id: int,
+    character_id: int,
+    participants: Sequence[GameParticipant],
+) -> None:
+    if not participants:
+        return
+    if len(participants) < 2:
+        raise ValueError("multiplayer participants must contain at least two players")
+    seen_users: set[int] = set()
+    seen_characters: set[int] = set()
+    current_matches = False
+    for participant in participants:
+        if participant.user_id in seen_users:
+            raise ValueError("participant user IDs must be unique")
+        if participant.character_id in seen_characters:
+            raise ValueError("participant character IDs must be unique")
+        seen_users.add(participant.user_id)
+        seen_characters.add(participant.character_id)
+        if participant.user_id == user_id:
+            current_matches = participant.character_id == character_id
+    if not current_matches:
+        raise ValueError("current player must match one participant")
+
+
 class StartGameRequest(BaseModel):
     room_id: int = Field(gt=0)
     script_id: int = Field(gt=0)
     character_id: int = Field(gt=0)
     user_id: int = Field(gt=0)
+    participants: list[GameParticipant] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_participants(self) -> "StartGameRequest":
+        _validate_multiplayer_participants(
+            self.user_id,
+            self.character_id,
+            self.participants,
+        )
+        return self
 
 
 class NarrativeResponse(BaseModel):
@@ -89,10 +129,18 @@ class OpeningNarrativeService:
                 raise OpeningNarrativeError(
                     "script has no retrievable opening context"
                 )
+            character_profile: dict[str, Any] = {
+                "character_id": request.character_id,
+            }
+            if request.participants:
+                character_profile["participants"] = [
+                    participant.model_dump()
+                    for participant in request.participants
+                ]
             context = self._context_builder(
                 OPENING_ACTION_PROMPT,
                 rag_chunks=rag_chunks,
-                character_profile={"character_id": request.character_id},
+                character_profile=character_profile,
                 player_state={
                     "room_id": request.room_id,
                     "user_id": request.user_id,
@@ -153,6 +201,7 @@ class GameActionRequest(BaseModel):
     action: str = Field(min_length=1, max_length=2_000)
     script_id: int = Field(gt=0)
     character_id: int = Field(gt=0)
+    participants: list[GameParticipant] = Field(default_factory=list, max_length=6)
 
     @field_validator("action")
     @classmethod
@@ -161,6 +210,15 @@ class GameActionRequest(BaseModel):
         if not value:
             raise ValueError("action must not be empty")
         return value
+
+    @model_validator(mode="after")
+    def validate_participants(self) -> "GameActionRequest":
+        _validate_multiplayer_participants(
+            self.user_id,
+            self.character_id,
+            self.participants,
+        )
+        return self
 
 
 class DiceRollData(BaseModel):
@@ -190,6 +248,7 @@ class GameContextProvider(Protocol):
         room_id: int,
         user_id: int,
         character_id: int,
+        participants: list[tuple[int, int]] | None = None,
     ) -> GameRuntimeContext: ...
 
 
@@ -222,8 +281,9 @@ class ActionEffectCollector:
         "trigger_event",
     )
 
-    def __init__(self, user_id: int) -> None:
+    def __init__(self, user_id: int, allowed_user_ids: set[int] | None = None) -> None:
         self._user_id = user_id
+        self._allowed_user_ids = allowed_user_ids or {user_id}
         self.calls: list[dict[str, Any]] = []
 
     def handlers(self) -> dict[str, FunctionHandler]:
@@ -235,7 +295,7 @@ class ActionEffectCollector:
     def _make_handler(self, name: str) -> FunctionHandler:
         def collect(arguments: dict[str, Any]) -> dict[str, bool]:
             player_id = arguments.get("player_id")
-            if player_id is not None and player_id != self._user_id:
+            if player_id is not None and player_id not in self._allowed_user_ids:
                 raise ValueError("function call targets another player")
             self.calls.append({"name": name, "arguments": dict(arguments)})
             return {"accepted": True}
@@ -273,22 +333,47 @@ class ActionInferenceService:
         self._stream_narrative_generator = stream_narrative_generator
         self._executor_factory = executor_factory
 
+    async def _load_runtime(
+        self,
+        request: GameActionRequest,
+    ) -> GameRuntimeContext:
+        if not request.participants:
+            return await self._context_provider.load(
+                request.room_id,
+                request.user_id,
+                request.character_id,
+            )
+        return await self._context_provider.load(
+            request.room_id,
+            request.user_id,
+            request.character_id,
+            [
+                (participant.user_id, participant.character_id)
+                for participant in request.participants
+            ],
+        )
+
+    @staticmethod
+    def _context_player_state(runtime: GameRuntimeContext) -> Mapping[str, Any]:
+        if not runtime.participants:
+            return runtime.player_state
+        return {
+            "current_player": runtime.player_state,
+            "participants": list(runtime.participants),
+        }
+
     async def infer(self, request: GameActionRequest) -> ActionInferenceResult:
         try:
             rag_chunks = await self._retriever(request.action, request.script_id)
             if not rag_chunks:
                 raise ActionInferenceError("script has no retrievable action context")
-            runtime = await self._context_provider.load(
-                request.room_id,
-                request.user_id,
-                request.character_id,
-            )
+            runtime = await self._load_runtime(request)
             context = self._context_builder(
                 request.action,
                 rag_chunks=rag_chunks,
                 summary_memory=runtime.summary_memory,
                 recent_history=runtime.recent_history,
-                player_state=runtime.player_state,
+                player_state=self._context_player_state(runtime),
                 character_profile=runtime.character_profile,
             )
             completion_result = await self._completion_generator(
@@ -332,17 +417,13 @@ class ActionInferenceService:
                 raise ActionInferenceError(
                     "script has no retrievable action context"
                 )
-            runtime = await self._context_provider.load(
-                request.room_id,
-                request.user_id,
-                request.character_id,
-            )
+            runtime = await self._load_runtime(request)
             context = self._context_builder(
                 request.action,
                 rag_chunks=rag_chunks,
                 summary_memory=runtime.summary_memory,
                 recent_history=runtime.recent_history,
-                player_state=runtime.player_state,
+                player_state=self._context_player_state(runtime),
                 character_profile=runtime.character_profile,
             )
             completion_result = await self._completion_generator(
@@ -367,7 +448,11 @@ class ActionInferenceService:
                 }
                 return
 
-            collector = ActionEffectCollector(request.user_id)
+            collector = ActionEffectCollector(
+                request.user_id,
+                {participant.user_id for participant in request.participants}
+                or {request.user_id},
+            )
             executor = self._executor_factory(collector.handlers())
             tool_results: list[dict[str, Any]] = []
             dice_roll: dict[str, Any] | None = None
@@ -439,7 +524,11 @@ class ActionInferenceService:
                 raise ActionInferenceError("LLM returned an empty narrative")
             return ActionInferenceResult(narrative=narrative)
 
-        collector = ActionEffectCollector(request.user_id)
+        collector = ActionEffectCollector(
+            request.user_id,
+            {participant.user_id for participant in request.participants}
+            or {request.user_id},
+        )
         executor = self._executor_factory(collector.handlers())
         tool_results: list[dict[str, Any]] = []
         dice_roll: dict[str, Any] | None = None

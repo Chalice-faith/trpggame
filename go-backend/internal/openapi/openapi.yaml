@@ -1132,6 +1132,38 @@ paths:
                 $ref: '#/components/schemas/ApiError'
               example: {code: 1320, message: internal error}
 
+  /api/v1/games/{roomId}/state:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 获取多人游戏 V2 运行态
+      description: 仅冻结成员可读；返回 Redis 权威水位、当前行动者、截止时间和全体公开状态。
+      operationId: getMultiplayerGameState
+      responses:
+        '200':
+          description: 多人运行态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MultiplayerGameStateResponse'
+        '400':
+          description: 请求无效（1900）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或当前用户不是冻结成员（1901）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 多人运行态不可用或不一致（1920）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
   /api/v1/games/{roomId}/save:
     parameters:
       - $ref: '#/components/parameters/RoomId'
@@ -2565,6 +2597,81 @@ components:
           example: ok
         data:
           $ref: '#/components/schemas/StartSoloGameData'
+
+    MultiplayerRuntimePlayer:
+      type: object
+      required: [user_id, character_id, player_state, items, buffs]
+      properties:
+        user_id: {type: integer, format: int64, minimum: 1}
+        character_id: {type: integer, format: int64, minimum: 1}
+        player_state:
+          type: object
+          additionalProperties: {type: string}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeItem'}
+        buffs:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeBuff'}
+
+    RuntimeItem:
+      type: object
+      required: [name, quantity, description]
+      properties:
+        name: {type: string}
+        quantity: {type: integer, minimum: 1}
+        description: {type: string}
+
+    RuntimeBuff:
+      type: object
+      required: [name, duration]
+      properties:
+        name: {type: string}
+        duration: {type: integer, minimum: 1}
+
+    RuntimeMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: {type: string, enum: [user, assistant, system]}
+        content: {type: string, minLength: 1}
+
+    MultiplayerGameStateData:
+      type: object
+      required: [seq, version, room_id, status, generation, current_turn, round_number, turn_order, current_actor_id, deadline_at, players, summary_memory, recent_messages]
+      properties:
+        seq: {type: integer, format: int64, minimum: 0}
+        version: {type: integer, enum: [2]}
+        room_id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [playing, paused]}
+        generation: {type: string, format: uuid}
+        current_turn: {type: integer, minimum: 0}
+        round_number: {type: integer, minimum: 0}
+        turn_order:
+          type: array
+          minItems: 2
+          items: {type: integer, format: int64, minimum: 1}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+        players:
+          type: array
+          minItems: 2
+          items: {$ref: '#/components/schemas/MultiplayerRuntimePlayer'}
+        summary_memory: {type: string}
+        recent_messages:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeMessage'}
+
+    MultiplayerGameStateResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/MultiplayerGameStateData'}
 
     SubmitActionRequest:
       type: object

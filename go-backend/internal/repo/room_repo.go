@@ -353,6 +353,21 @@ func (r *RoomRepo) Start(ctx context.Context, actorID, roomID uint, expectedVers
 	})
 }
 
+// PauseStarted moves a just-committed multiplayer room into a safe paused state when
+// Redis activation is uncertain. It never changes waiting or already-paused rooms.
+func (r *RoomRepo) PauseStarted(ctx context.Context, ownerID, roomID uint, expectedVersion uint64) (*RoomRecord, error) {
+	result := r.db.WithContext(ctx).Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND is_solo = ? AND status = ? AND version = ?", roomID, ownerID, false, model.RoomStatusPlaying, expectedVersion).
+		Updates(map[string]any{"status": model.RoomStatusPaused, "version": gorm.Expr("version + 1")})
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected != 1 {
+		return nil, ErrRoomClosed
+	}
+	return r.snapshot(ctx, 0, roomID)
+}
+
 func (r *RoomRepo) Join(ctx context.Context, userID uint, code string, now time.Time) (*RoomRecord, error) {
 	var roomID uint
 	changed := false

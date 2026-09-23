@@ -35,7 +35,16 @@ const (
 	MsgRoomReadyChanged      MessageType = "room_ready_changed"
 	MsgRoomCharacterSelected MessageType = "room_character_selected"
 	MsgGameStarted           MessageType = "game_started"
+	MsgGameRuntimeSnapshot   MessageType = "game_runtime_snapshot"
 )
+
+type TurnStartData struct {
+	Generation     string `json:"generation"`
+	CurrentTurn    int    `json:"current_turn"`
+	RoundNumber    int    `json:"round_number"`
+	CurrentActorID uint   `json:"current_actor_id"`
+	DeadlineAt     string `json:"deadline_at"`
+}
 
 // Message WebSocket 消息结构。
 //
@@ -97,6 +106,7 @@ type NarrativeChunkData struct {
 
 // NarrativeCompleteData 是一次行动提交成功后的最终叙事与回合水位。
 type NarrativeCompleteData struct {
+	Generation  string `json:"generation,omitempty"`
 	Narrative   string `json:"narrative"`
 	CurrentTurn int    `json:"current_turn"`
 	Duplicate   bool   `json:"duplicate,omitempty"`

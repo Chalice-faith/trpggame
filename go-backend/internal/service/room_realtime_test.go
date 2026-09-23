@@ -108,3 +108,60 @@ func TestRoomRealtimeBroadcastsSnapshotWithRoomMessageType(t *testing.T) {
 		}
 	}
 }
+
+func TestRoomRealtimePublishesMultiplayerStartupSequence(t *testing.T) {
+	hub := ws.NewHub()
+	go hub.Run()
+	t.Cleanup(hub.Stop)
+	client := ws.NewClient(hub, nil, 7, 41)
+	if !hub.Register(client) {
+		t.Fatal("register failed")
+	}
+	select {
+	case <-client.Send:
+	case <-time.After(time.Second):
+		t.Fatal("subscribed timeout")
+	}
+	deadline := time.Date(2026, 9, 22, 8, 2, 0, 0, time.UTC)
+	realtime := NewRoomRealtime(hub)
+	realtime.PublishRoomMutation(RoomMutation{
+		Type: "game_started", Snapshot: &RoomSnapshot{RoomSummary: RoomSummary{ID: 41, Version: 4}},
+	})
+	realtime.PublishMultiplayerRuntime(&model.MultiplayerRuntimeSnapshot{
+		Version: 2, RoomID: 41, Status: model.RoomStatusPlaying,
+		Generation:  "bc624606-57a3-49c5-bf51-f5a04e5f299f",
+		CurrentTurn: 0, RoundNumber: 0, TurnOrder: []uint{7, 8}, CurrentActorID: 7,
+		DeadlineAt: &deadline,
+		Players: []model.MultiplayerRuntimePlayer{
+			{UserID: 7, CharacterID: 101}, {UserID: 8, CharacterID: 102},
+		},
+		RecentMessages: []model.RuntimeMessage{{Role: "assistant", Content: "opening"}},
+	})
+
+	wantTypes := []ws.MessageType{
+		ws.MsgGameStarted, ws.MsgGameRuntimeSnapshot, ws.MsgNarrativeComplete, ws.MsgTurnStart,
+	}
+	for index, wantType := range wantTypes {
+		select {
+		case raw := <-client.Send:
+			var message ws.Message
+			if err := json.Unmarshal(raw, &message); err != nil || message.Type != wantType || message.Seq != int64(index+1) {
+				t.Fatalf("message %d = %#v, err=%v", index, message, err)
+			}
+			if message.Type == ws.MsgTurnStart {
+				var turn ws.TurnStartData
+				if err := json.Unmarshal(message.Data, &turn); err != nil || turn.CurrentActorID != 7 || turn.DeadlineAt != deadline.Format(time.RFC3339Nano) {
+					t.Fatalf("turn_start=%#v err=%v", turn, err)
+				}
+			}
+			if message.Type == ws.MsgNarrativeComplete {
+				var narrative ws.NarrativeCompleteData
+				if err := json.Unmarshal(message.Data, &narrative); err != nil || narrative.Generation != "bc624606-57a3-49c5-bf51-f5a04e5f299f" {
+					t.Fatalf("narrative_complete=%#v err=%v", narrative, err)
+				}
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timeout waiting for %s", wantType)
+		}
+	}
+}

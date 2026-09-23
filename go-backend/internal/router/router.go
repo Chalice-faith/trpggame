@@ -169,6 +169,7 @@ func Setup(
 			games := authorized.Group("/games")
 			{
 				games.POST("/solo/start", gameHandler.StartSoloGame)
+				games.GET("/:roomId/state", roomHandler.GameState)
 				games.POST("/:roomId/action", gameHandler.SubmitAction)
 				games.POST("/:roomId/save", gameHandler.ManualSave)
 				games.GET("/:roomId/saves", gameHandler.ListSaves)

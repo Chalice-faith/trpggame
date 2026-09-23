@@ -149,6 +149,45 @@ type SoloRuntimeSnapshot struct {
 	RecentMessages []RuntimeMessage  `json:"-"`
 }
 
+// MultiplayerRuntimeSnapshotVersion distinguishes the frozen-roster runtime from V1 solo saves.
+const MultiplayerRuntimeSnapshotVersion = 2
+
+// MultiplayerRuntimePlayer keeps each frozen member's character and mutable runtime state isolated.
+type MultiplayerRuntimePlayer struct {
+	UserID      uint              `json:"user_id"`
+	CharacterID uint              `json:"character_id"`
+	PlayerState map[string]string `json:"player_state"`
+	Items       []RuntimeItem     `json:"items"`
+	Buffs       []RuntimeBuff     `json:"buffs"`
+}
+
+// MultiplayerRuntimeState is the complete input for provisional V2 initialization.
+type MultiplayerRuntimeState struct {
+	RoomID        uint
+	Generation    string
+	TurnOrder     []uint
+	Players       []MultiplayerRuntimePlayer
+	Opening       RuntimeMessage
+	SummaryMemory string
+	TurnTimeout   time.Duration
+}
+
+// MultiplayerRuntimeSnapshot is the validated, client-safe V2 state.
+type MultiplayerRuntimeSnapshot struct {
+	Version        int                        `json:"version"`
+	RoomID         uint                       `json:"room_id"`
+	Status         RoomStatus                 `json:"status"`
+	Generation     string                     `json:"generation"`
+	CurrentTurn    int                        `json:"current_turn"`
+	RoundNumber    int                        `json:"round_number"`
+	TurnOrder      []uint                     `json:"turn_order"`
+	CurrentActorID uint                       `json:"current_actor_id"`
+	DeadlineAt     *time.Time                 `json:"deadline_at"`
+	Players        []MultiplayerRuntimePlayer `json:"players"`
+	SummaryMemory  string                     `json:"summary_memory"`
+	RecentMessages []RuntimeMessage           `json:"recent_messages"`
+}
+
 // ActionCommitResult 是 Redis 行动提交或幂等重放的结果。
 type ActionCommitResult struct {
 	Duplicate        bool

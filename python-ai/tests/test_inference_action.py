@@ -215,6 +215,69 @@ class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ActionInferenceError, "function call execution"):
             await service.infer(self._request())
 
+    async def test_multiplayer_context_allows_effects_for_roster_members(self):
+        provider_calls: list[tuple[object, ...]] = []
+        assembled: dict[str, object] = {}
+
+        class TeamContextProvider:
+            async def load(self, room_id, user_id, character_id, participants=None):
+                provider_calls.append((room_id, user_id, character_id, participants))
+                return GameRuntimeContext(
+                    summary_memory="队伍进入古宅。",
+                    recent_history=(),
+                    player_state={"hp": 18},
+                    character_profile={"character_id": character_id},
+                    participants=(
+                        {"user_id": 2, "character_id": 4, "player_state": {"hp": 18}},
+                        {"user_id": 8, "character_id": 9, "player_state": {"hp": 9}},
+                    ),
+                )
+
+        async def retriever(query: str, script_id: int) -> list[str]:
+            return ["context"]
+
+        async def completer(prompt: str, system: str, functions) -> ChatCompletion:
+            return ChatCompletion(
+                content="",
+                tool_calls=(ToolCall(
+                    id="heal-1",
+                    name="update_player_status",
+                    arguments='{"player_id":8,"field":"hp","value":11}',
+                ),),
+            )
+
+        def context_builder(action: str, **context) -> AssembledContext:
+            assembled.update(context)
+            return AssembledContext("system", "prompt", ())
+
+        async def generator(prompt: str, system: str) -> str:
+            return "同伴恢复了体力。"
+
+        service = ActionInferenceService(
+            retriever=retriever,
+            context_provider=TeamContextProvider(),
+            context_builder=context_builder,
+            completion_generator=completer,
+            narrative_generator=generator,
+        )
+        request = GameActionRequest(
+            room_id=1,
+            user_id=2,
+            action="我为同伴包扎",
+            script_id=3,
+            character_id=4,
+            participants=[
+                {"user_id": 2, "character_id": 4},
+                {"user_id": 8, "character_id": 9},
+            ],
+        )
+
+        result = await service.infer(request)
+
+        self.assertEqual(provider_calls, [(1, 2, 4, [(2, 4), (8, 9)])])
+        self.assertEqual(assembled["player_state"]["participants"][1]["user_id"], 8)
+        self.assertEqual(result.status_changes["calls"][0]["arguments"]["player_id"], 8)
+
     async def test_stream_emits_chunks_then_authoritative_completion(self):
         async def retriever(query: str, script_id: int) -> list[str]:
             return ["书架藏有线索。"]

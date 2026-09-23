@@ -217,10 +217,17 @@ func (c *Client) SubmitActionStream(
 
 // StartGameRequest 开局请求
 type StartGameRequest struct {
-	RoomID      uint `json:"room_id"`
-	ScriptID    uint `json:"script_id"`
-	CharacterID uint `json:"character_id"`
+	RoomID       uint              `json:"room_id"`
+	ScriptID     uint              `json:"script_id"`
+	CharacterID  uint              `json:"character_id"`
+	UserID       uint              `json:"user_id"`
+	Participants []GameParticipant `json:"participants,omitempty"`
+}
+
+// GameParticipant is a frozen multiplayer member passed to Python AI inference.
+type GameParticipant struct {
 	UserID      uint `json:"user_id"`
+	CharacterID uint `json:"character_id"`
 }
 
 // StartGameResponse 开局叙事响应

@@ -250,6 +250,7 @@ func main() {
 	groupHandler := handler.NewGroupHandler(groupService)
 	roomRepo := repo.NewRoomRepo(db)
 	roomService := service.NewRoomService(roomRepo)
+	roomService.ConfigureMultiplayer(gameStateRepo, aiClient, realtimeBus)
 	roomService.SetMutationPublisher(service.NewRoomRealtime(hub))
 	roomHandler := handler.NewRoomHandler(roomService)
 	imHub.SetInboundHandler(chatRealtime)

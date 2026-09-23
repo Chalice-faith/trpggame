@@ -23,6 +23,7 @@ class GameRuntimeContext:
     recent_history: tuple[dict[str, str], ...]
     player_state: dict[str, Any]
     character_profile: dict[str, Any]
+    participants: tuple[dict[str, Any], ...] = ()
 
 
 RedisFactory = Callable[..., Any]
@@ -54,6 +55,7 @@ class RedisGameContextProvider:
         room_id: int,
         user_id: int,
         character_id: int,
+        participants: list[tuple[int, int]] | None = None,
     ) -> GameRuntimeContext:
         client: Any | None = None
         try:
@@ -67,11 +69,29 @@ class RedisGameContextProvider:
             raw_player_state = await client.hgetall(
                 f"room:{room_id}:player:{user_id}"
             )
+            participant_states: list[dict[str, Any]] = []
+            for participant_user_id, participant_character_id in participants or []:
+                if participant_user_id == user_id:
+                    raw_participant_state = raw_player_state
+                else:
+                    raw_participant_state = await client.hgetall(
+                        f"room:{room_id}:player:{participant_user_id}"
+                    )
+                participant_states.append(
+                    {
+                        "user_id": participant_user_id,
+                        "character_id": participant_character_id,
+                        "player_state": self._parse_player_state(
+                            raw_participant_state
+                        ),
+                    }
+                )
             return GameRuntimeContext(
                 summary_memory=self._parse_summary(summary),
                 recent_history=self._parse_rounds(raw_rounds),
                 player_state=self._parse_player_state(raw_player_state),
                 character_profile={"character_id": character_id},
+                participants=tuple(participant_states),
             )
         except GameContextError:
             raise

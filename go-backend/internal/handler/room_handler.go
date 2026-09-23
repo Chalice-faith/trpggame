@@ -27,6 +27,10 @@ type RoomService interface {
 
 type RoomHandler struct{ svc RoomService }
 
+type multiplayerStateService interface {
+	GetMultiplayerState(context.Context, uint, uint) (*service.MultiplayerGameState, error)
+}
+
 func NewRoomHandler(svc RoomService) *RoomHandler { return &RoomHandler{svc: svc} }
 
 type createRoomRequest struct {
@@ -171,6 +175,17 @@ func (h *RoomHandler) Start(c *gin.Context) {
 	roomResult(c, result, err)
 }
 
+func (h *RoomHandler) GameState(c *gin.Context) {
+	actorID, roomID, ok := roomPath(c)
+	stateService, supported := h.svc.(multiplayerStateService)
+	if !ok || !supported {
+		roomError(c, service.ErrInvalidRoomRequest)
+		return
+	}
+	result, err := stateService.GetMultiplayerState(c.Request.Context(), actorID, roomID)
+	roomResult(c, result, err)
+}
+
 func roomResult(c *gin.Context, result any, err error) {
 	if err != nil {
 		roomError(c, err)
@@ -213,6 +228,12 @@ func roomError(c *gin.Context, err error) {
 		status, code, message = http.StatusConflict, 1912, "room start conditions unmet"
 	case errors.Is(err, service.ErrRoomOwnerLeave):
 		status, code, message = http.StatusConflict, 1913, "owner must transfer before leaving"
+	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
+		status, code, message = http.StatusServiceUnavailable, 1920, "multiplayer runtime unavailable"
+	case errors.Is(err, service.ErrMultiplayerStartInProgress):
+		status, code, message = http.StatusConflict, 1923, "multiplayer start in progress"
+	case errors.Is(err, service.ErrMultiplayerAIUnavailable):
+		status, code, message = http.StatusServiceUnavailable, 1927, "multiplayer AI unavailable"
 	default:
 		log.Printf("room handler: %v", err)
 	}
