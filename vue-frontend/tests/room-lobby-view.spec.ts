@@ -38,7 +38,7 @@ vi.mock('@/api/rooms', async (importOriginal) => ({
   ...roomApi
 }))
 
-function room(status: 'waiting' | 'playing' = 'waiting') {
+function room(status: 'waiting' | 'playing' | 'ended' = 'waiting') {
   return {
     id: 41,
     name: '迷雾庄园',
@@ -108,7 +108,7 @@ describe('RoomLobbyView', () => {
     wrapper.unmount()
   })
 
-  it('keeps a started room on the M2.4 completion screen instead of exposing turn actions', async () => {
+  it('lets a frozen-room member enter the multiplayer game', async () => {
     roomApi.getRoom.mockResolvedValue(room('playing'))
     const wrapper = mount(RoomLobbyView, {
       attachTo: document.body,
@@ -116,8 +116,22 @@ describe('RoomLobbyView', () => {
     })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('多人回合将在 M2.5 开放')
+    expect(wrapper.get('[data-testid="enter-game-button"]').text()).toContain('进入游戏')
     expect(wrapper.find('[data-testid="ready-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="start-room-button"]').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('links an ended room to its read-only recent record', async () => {
+    roomApi.getRoom.mockResolvedValue(room('ended'))
+    const wrapper = mount(RoomLobbyView, {
+      attachTo: document.body,
+      global: { plugins: [ElementPlus] }
+    })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('游戏已结束，可查看最近记录和存档')
+    expect(wrapper.get('[data-testid="enter-game-button"]').text()).toContain('查看最近记录')
     expect(wrapper.find('[data-testid="start-room-button"]').exists()).toBe(false)
     wrapper.unmount()
   })

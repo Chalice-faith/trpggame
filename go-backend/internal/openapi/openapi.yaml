@@ -1138,7 +1138,7 @@ paths:
     get:
       tags: [Games]
       summary: 获取多人游戏 V2 运行态
-      description: 仅冻结成员可读；返回 Redis 权威水位、当前行动者、截止时间和全体公开状态。
+      description: 仅冻结成员可读；返回 Redis 权威水位、当前行动者、截止时间和全体公开状态；已结束房间在运行态留存期间可只读查看最近记录。
       operationId: getMultiplayerGameState
       responses:
         '200':
@@ -2688,7 +2688,7 @@ components:
         seq: {type: integer, format: int64, minimum: 0}
         version: {type: integer, enum: [2]}
         room_id: {type: integer, format: int64, minimum: 1}
-        status: {type: string, enum: [playing, paused]}
+        status: {type: string, enum: [playing, paused, ended]}
         generation: {type: string, format: uuid}
         current_turn: {type: integer, minimum: 0}
         round_number: {type: integer, minimum: 0}

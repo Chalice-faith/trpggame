@@ -329,7 +329,7 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 		return nil, ErrGameRuntimeUnavailable
 	}
 	statusText, ok := redisString(values[2])
-	if !ok || (statusText != string(model.RoomStatusPlaying) && statusText != string(model.RoomStatusPaused)) {
+	if !ok || (statusText != string(model.RoomStatusPlaying) && statusText != string(model.RoomStatusPaused) && statusText != string(model.RoomStatusEnded)) {
 		return nil, ErrGameRuntimeStatusConflict
 	}
 	generation, ok := redisString(values[3])
@@ -378,6 +378,9 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 		return nil, ErrGameRuntimeUnavailable
 	}
 	if deadline != nil && lease != nil {
+		return nil, ErrGameRuntimeUnavailable
+	}
+	if statusText == string(model.RoomStatusEnded) && (deadline != nil || lease != nil) {
 		return nil, ErrGameRuntimeUnavailable
 	}
 	summary, ok := redisString(values[7])

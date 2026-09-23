@@ -6,6 +6,8 @@ import type { RoomSnapshot } from '@/api/rooms'
 import { useAuthStore } from '@/stores/auth'
 import { useRoomsStore } from '@/stores/rooms'
 import { useWebSocketStore } from '@/stores/websocket'
+import { useMultiplayerStore } from '@/stores/multiplayer'
+import { useGameStore } from '@/stores/game'
 
 class MockWebSocket {
   static readonly CONNECTING = 0
@@ -120,5 +122,43 @@ describe('game websocket room events', () => {
     expect(roomsStore.rooms).toEqual([])
     expect(MockWebSocket.instances).toHaveLength(1)
     vi.useRealTimers()
+  })
+
+  it('routes multiplayer chunks to a request-scoped draft without changing the solo timeline', () => {
+    const socketStore = useWebSocketStore()
+    const multiplayer = useMultiplayerStore()
+    const solo = useGameStore()
+    socketStore.connect(41)
+    const socket = MockWebSocket.instances[0]
+    socket.open()
+    socket.message({ type: 'subscribed', room_id: 41, data: { seq: 0 } })
+    socket.message({ type: 'game_runtime_snapshot', room_id: 41, seq: 1, data: {
+      version: 2, room_id: 41, status: 'playing', generation: 'generation-a', current_turn: 0,
+      round_number: 0, turn_order: [7, 8], current_actor_id: 7, deadline_at: '2099-01-01T00:00:00Z',
+      players: [], summary_memory: '', recent_messages: [{ role: 'assistant', content: 'Opening' }]
+    } })
+    socket.message({ type: 'action_started', room_id: 41, seq: 2, request_id: 'request-1', data: {
+      generation: 'generation-a', current_turn: 0, player_id: 7
+    } })
+    socket.message({ type: 'narrative_chunk', room_id: 41, seq: 3, request_id: 'request-1', data: {
+      generation: 'generation-a', current_turn: 0, content: 'Draft', is_final: false
+    } })
+    expect(multiplayer.draft).toBe('Draft')
+    expect(multiplayer.history).toHaveLength(1)
+    expect(solo.narrativeHistory).toHaveLength(0)
+  })
+
+  it('replaces a socket when navigating to another room and ignores the old close', () => {
+    const socketStore = useWebSocketStore()
+    socketStore.connect(41)
+    const first = MockWebSocket.instances[0]
+    first.open()
+    socketStore.connect(42)
+    const second = MockWebSocket.instances[1]
+    second.open()
+    first.serverClose(1000, 'old room')
+    expect(socketStore.roomId).toBe(42)
+    expect(socketStore.isConnected).toBe(true)
+    expect(MockWebSocket.instances).toHaveLength(2)
   })
 })

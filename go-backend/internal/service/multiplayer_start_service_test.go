@@ -195,6 +195,14 @@ func TestRoomServiceCoordinatesMultiplayerStartAndStateRead(t *testing.T) {
 	if err != nil || state.Seq != 9 || state.Generation != generation {
 		t.Fatalf("GetMultiplayerState() = %#v, %v", state, err)
 	}
+	rooms.candidate = &repo.RoomRecord{Room: playing.Room, Members: playing.Members, Characters: playing.Characters}
+	rooms.candidate.Room.Status = model.RoomStatusEnded
+	runtime.snapshot.Status = model.RoomStatusEnded
+	runtime.snapshot.DeadlineAt = nil
+	endedState, err := svc.GetMultiplayerState(context.Background(), 8, 41)
+	if err != nil || endedState.Status != model.RoomStatusEnded || endedState.Seq != 9 {
+		t.Fatalf("GetMultiplayerState(ended) = %#v, %v", endedState, err)
+	}
 }
 
 func TestRoomServiceDeletesProvisionalRuntimeWhenMySQLStartFails(t *testing.T) {

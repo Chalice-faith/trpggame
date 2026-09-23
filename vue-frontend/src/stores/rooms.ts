@@ -139,6 +139,10 @@ export const useRoomsStore = defineStore('rooms', () => {
   }
 
   function applyRealtimeSnapshot(snapshot: RoomSnapshot) {
+    const current = currentRoom.value
+    // A reconnect may replay an older membership snapshot after the REST response
+    // has already confirmed that this user joined. Never revoke from that replay.
+    if (current?.id === snapshot?.id && snapshot.version <= current.version) return
     const userId = useAuthStore().user?.id
     if (
       currentRoom.value?.id === snapshot?.id &&

@@ -125,11 +125,12 @@ async function leaveLobby() {
 
 async function startGame() {
   try {
-    await ElMessageBox.confirm('开局后将冻结成员与角色，本阶段暂不进入多人行动界面。', '确认开局', {
+    await ElMessageBox.confirm('开局后将冻结成员与角色，并进入多人行动界面。', '确认开局', {
       type: 'warning', confirmButtonText: '确认开局', cancelButtonText: '取消'
     })
     await roomsStore.start()
-    ElMessage.success('房间已开局，多人回合将在 M2.5 开放')
+    ElMessage.success('房间已开局')
+    await router.push(`/game/multiplayer/${roomId.value}`)
   } catch (error: any) {
     if (error === 'cancel' || error === 'close') return
     showError(error, '开局失败')
@@ -193,7 +194,7 @@ onBeforeUnmount(() => {
     <section v-if="room" class="lobby-shell">
       <header class="lobby-heading">
         <div>
-          <p class="eyebrow">WAITING ROOM · #{{ room.id }}</p>
+          <p class="eyebrow">{{ room.status === 'waiting' ? 'WAITING ROOM' : room.status === 'ended' ? 'ENDED ROOM' : 'GAME ROOM' }} · #{{ room.id }}</p>
           <h1>{{ room.name }}</h1>
           <p>剧本 #{{ room.script_id }} · {{ room.members.length }} / {{ room.max_players }} 人 · 版本 {{ room.version }}</p>
         </div>
@@ -204,8 +205,8 @@ onBeforeUnmount(() => {
         </div>
       </header>
 
-      <el-alert v-if="room.status === 'playing'" class="phase-alert" type="success" :closable="false" show-icon title="房间已开局，成员与角色已经冻结。多人回合将在 M2.5 开放。" />
-      <el-alert v-else-if="room.status !== 'waiting'" class="phase-alert" type="info" :closable="false" :title="`房间当前状态：${room.status}`" />
+      <el-alert v-if="room.status === 'playing' || room.status === 'paused'" class="phase-alert" type="success" :closable="false" show-icon title="房间已开局，成员与角色已经冻结。" />
+      <el-alert v-else-if="room.status === 'ended'" class="phase-alert" type="info" :closable="false" title="游戏已结束，可查看最近记录和存档。" />
       <el-alert v-if="websocketStore.lastError" class="phase-alert" type="warning" :closable="false" :title="websocketStore.lastError" />
 
       <div class="lobby-columns">
@@ -253,12 +254,14 @@ onBeforeUnmount(() => {
 
       <footer class="action-bar">
         <div>
-          <strong>{{ roomsStore.currentMember?.is_ready ? '你已准备就绪' : selectedCharacterId ? '确认角色后即可准备' : '请先选择角色' }}</strong>
+          <strong>{{ room.status === 'ended' ? '这场冒险已结束' : roomsStore.currentMember?.is_ready ? '你已准备就绪' : selectedCharacterId ? '确认角色后即可准备' : '请先选择角色' }}</strong>
           <small>大厅状态以服务器版本为准，冲突时会自动刷新。</small>
         </div>
         <el-button v-if="!roomsStore.isOwner && isWaiting" type="danger" plain :disabled="roomsStore.mutating" @click="leaveLobby">退出房间</el-button>
         <el-button v-if="isWaiting" :type="roomsStore.currentMember?.is_ready ? 'warning' : 'success'" :loading="roomsStore.mutating" :disabled="!selectedCharacterId" data-testid="ready-button" @click="toggleReady">{{ roomsStore.currentMember?.is_ready ? '取消准备' : '准备就绪' }}</el-button>
         <el-button v-if="roomsStore.isOwner && isWaiting" type="primary" :loading="roomsStore.mutating" :disabled="!roomsStore.canStart" data-testid="start-room-button" @click="startGame">开始游戏</el-button>
+        <el-button v-if="room.status === 'playing' || room.status === 'paused'" type="primary" data-testid="enter-game-button" @click="router.push(`/game/multiplayer/${roomId}`)">进入游戏</el-button>
+        <el-button v-if="room.status === 'ended'" type="primary" data-testid="enter-game-button" @click="router.push(`/game/multiplayer/${roomId}`)">查看最近记录</el-button>
       </footer>
     </section>
 

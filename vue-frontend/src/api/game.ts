@@ -21,6 +21,53 @@ export interface GameSavesResult {
   total: number
 }
 
+export interface MultiplayerPlayer {
+  user_id: number
+  character_id: number
+  player_state: Record<string, string>
+  items: Array<{ name: string; quantity: number; description: string }>
+  buffs: Array<{ name: string; duration: number }>
+}
+
+export interface MultiplayerGameState {
+  seq: number
+  version: 2
+  room_id: number
+  status: 'playing' | 'paused' | 'ended'
+  generation: string
+  current_turn: number
+  round_number: number
+  turn_order: number[]
+  current_actor_id: number
+  deadline_at: string | null
+  players: MultiplayerPlayer[]
+  summary_memory: string
+  recent_messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
+}
+
+export interface SkipTurnResult {
+  generation: string
+  skipped_user_id: number
+  current_turn: number
+  round_number: number
+  current_actor_id: number
+  deadline_at: string
+  reason: 'manual' | 'timeout'
+}
+
+export async function getMultiplayerGameState(roomId: number): Promise<MultiplayerGameState> {
+  const response = await api.get<ApiResponse<MultiplayerGameState>>(`/api/v1/games/${roomId}/state`)
+  return response.data.data
+}
+
+export async function skipMultiplayerTurn(roomId: number, expectedTurn: number, requestId: string): Promise<SkipTurnResult> {
+  const response = await api.post<ApiResponse<SkipTurnResult>>(`/api/v1/games/${roomId}/skip`, {
+    request_id: requestId,
+    expected_turn: expectedTurn
+  })
+  return response.data.data
+}
+
 export interface GameStatusResult {
   room_id: number
   status: GameRoomStatus

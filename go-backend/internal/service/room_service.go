@@ -374,7 +374,7 @@ func (s *RoomService) GetMultiplayerState(ctx context.Context, userID, roomID ui
 	if err != nil {
 		return nil, mapRoomError(err)
 	}
-	if record.Room.IsSolo || (record.Room.Status != model.RoomStatusPlaying && record.Room.Status != model.RoomStatusPaused) {
+	if record.Room.IsSolo || (record.Room.Status != model.RoomStatusPlaying && record.Room.Status != model.RoomStatusPaused && record.Room.Status != model.RoomStatusEnded) {
 		return nil, ErrRoomNotFound
 	}
 	snapshot, err := s.runtime.GetMultiplayerRoom(ctx, roomID)

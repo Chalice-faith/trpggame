@@ -464,6 +464,16 @@ func TestRedisMultiplayerLifecycleRotatesGenerationAndRestoresV2(t *testing.T) {
 	if members, _ := server.ZMembers(multiplayerDeadlineQueueKey()); len(members) != 0 {
 		t.Fatalf("restore unexpectedly activated a deadline: %#v", members)
 	}
+	endedGeneration := uuid.NewString()
+	if _, err := repository.TransitionMultiplayerRoom(ctx, state.RoomID, newGeneration, endedGeneration,
+		model.RoomStatusPaused, model.RoomStatusEnded, time.Time{}); err != nil {
+		t.Fatalf("end transition: %v", err)
+	}
+	ended, err := repository.GetMultiplayerRoom(ctx, state.RoomID)
+	if err != nil || ended.Status != model.RoomStatusEnded || ended.Generation != endedGeneration ||
+		ended.DeadlineAt != nil || ended.ActionLease != nil || ended.CurrentTurn != 3 || len(ended.RecentMessages) != 3 {
+		t.Fatalf("ended read-only runtime=%#v error=%v", ended, err)
+	}
 }
 
 func TestRedisMultiplayerRoundBoundaryCreatesAndAcknowledgesAtomicAutoSave(t *testing.T) {

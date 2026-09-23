@@ -147,6 +147,22 @@ describe('rooms store', () => {
     expect(store.revokedRoomId).toBe(41)
   })
 
+  it('does not revoke access from a replayed snapshot older than the joined room', async () => {
+    const store = useRoomsStore()
+    await store.loadRooms()
+    await store.openRoom(41)
+
+    store.applyRealtimeSnapshot(snapshot({
+      version: 2,
+      members: snapshot().members.filter(({ user }) => user.id !== 7)
+    }))
+
+    expect(store.currentRoom?.version).toBe(3)
+    expect(store.currentMember?.user.id).toBe(7)
+    expect(store.revokedRoomId).toBeNull()
+    expect(store.rooms).toHaveLength(1)
+  })
+
   it('reports start readiness only when at least two members selected roles and are ready', async () => {
     const store = useRoomsStore()
     apiMocks.getRoom.mockResolvedValue(snapshot({

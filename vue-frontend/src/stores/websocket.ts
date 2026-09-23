@@ -1,8 +1,9 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { ref, shallowRef } from 'vue'
 import { useAuthStore } from './auth'
 import { useGameStore, type GameDiceRoll } from './game'
 import { useRoomsStore } from './rooms'
+import { useMultiplayerStore } from './multiplayer'
 import type { RoomSnapshot } from '@/api/rooms'
 
 interface ServerMessage {
@@ -15,7 +16,7 @@ interface ServerMessage {
 
 export const useWebSocketStore = defineStore('websocket', () => {
   // ---- state ----
-  const socket = ref<WebSocket | null>(null)
+  const socket = shallowRef<WebSocket | null>(null)
   const isConnected = ref(false)
   const reconnectAttempts = ref(0)
   const lastSeq = ref(0)
@@ -29,9 +30,10 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
   // ---- actions ----
   function connect(roomOrLegacyUserId: number, legacyRoomId?: number) {
-    if (socket.value?.readyState === WebSocket.OPEN) return
-
     const targetRoomId = legacyRoomId ?? roomOrLegacyUserId
+    if (socket.value && roomId.value === targetRoomId &&
+      (socket.value.readyState === WebSocket.OPEN || socket.value.readyState === WebSocket.CONNECTING)) return
+    if (socket.value && roomId.value !== targetRoomId) disconnect()
     const authStore = useAuthStore()
     if (!authStore.accessToken || !targetRoomId) return
     if (roomId.value !== null && roomId.value !== targetRoomId) lastSeq.value = 0
@@ -43,16 +45,19 @@ export const useWebSocketStore = defineStore('websocket', () => {
       reconnectTimer = undefined
     }
     const wsUrl = `${import.meta.env.VITE_WS_URL}?token=${encodeURIComponent(authStore.accessToken)}&room_id=${targetRoomId}`
-    socket.value = new WebSocket(wsUrl)
+    const connection = new WebSocket(wsUrl)
+    socket.value = connection
 
-    socket.value.onopen = () => {
+    connection.onopen = () => {
+      if (socket.value !== connection) return
       isConnected.value = true
       reconnectAttempts.value = 0
       lastError.value = ''
       console.log('[WS] Connected')
     }
 
-    socket.value.onclose = (event) => {
+    connection.onclose = (event) => {
+      if (socket.value !== connection) return
       isConnected.value = false
       console.log('[WS] Disconnected')
       if (event.code === 4003) {
@@ -76,12 +81,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
       }
     }
 
-    socket.value.onerror = (err) => {
+    connection.onerror = (err) => {
+      if (socket.value !== connection) return
       console.error('[WS] Error:', err)
       lastError.value = '实时连接发生错误'
     }
 
-    socket.value.onmessage = (event) => {
+    connection.onmessage = (event) => {
+      if (socket.value !== connection) return
       try {
         const msg = JSON.parse(event.data)
         handleMessage(msg)
@@ -107,12 +114,23 @@ export const useWebSocketStore = defineStore('websocket', () => {
       if (typeof msg.data?.next_seq === 'number') lastSeq.value = msg.data.next_seq
       return
     }
+    if (msg.type === 'snapshot_required') {
+      const targetRoomId = roomId.value
+      if (targetRoomId && useMultiplayerStore().snapshot?.room_id === targetRoomId) {
+        void useMultiplayerStore().refresh(targetRoomId).catch(() => {})
+      } else if (targetRoomId && useRoomsStore().currentRoom?.id === targetRoomId) {
+        void useRoomsStore().openRoom(targetRoomId).catch(() => {})
+      }
+      if (typeof msg.data?.next_seq === 'number') lastSeq.value = msg.data.next_seq
+      return
+    }
     dispatchSequenced(msg)
   }
 
   function dispatchSequenced(msg: ServerMessage) {
     const gameStore = useGameStore()
     const roomsStore = useRoomsStore()
+    const multiplayerStore = useMultiplayerStore()
     if (typeof msg.seq === 'number') {
       if (msg.seq <= lastSeq.value) {
         if (msg.type === 'room_snapshot') {
@@ -124,16 +142,16 @@ export const useWebSocketStore = defineStore('websocket', () => {
     }
     switch (msg.type) {
       case 'narrative_chunk':
-        gameStore.appendNarrativeChunk(msg.data?.content ?? '')
+        if (!msg.data?.generation) gameStore.appendNarrativeChunk(msg.data?.content ?? '')
         break
       case 'narrative_complete':
-        gameStore.completeNarrative(msg.data?.narrative ?? '', msg.data?.current_turn)
+        if (!msg.data?.generation) gameStore.completeNarrative(msg.data?.narrative ?? '', msg.data?.current_turn)
         break
       case 'dice_roll':
-        gameStore.setDiceRoll(msg.data as GameDiceRoll)
+        if (!msg.data?.generation) gameStore.setDiceRoll(msg.data as GameDiceRoll)
         break
       case 'status_update':
-        gameStore.applyStatusUpdate(msg.data ?? {})
+        if (!msg.data?.generation) gameStore.applyStatusUpdate(msg.data ?? {})
         break
       case 'room_snapshot':
       case 'room_member_joined':
@@ -143,14 +161,38 @@ export const useWebSocketStore = defineStore('websocket', () => {
       case 'game_started':
         roomsStore.applyRealtimeSnapshot(msg.data as RoomSnapshot)
         break
+      case 'game_runtime_snapshot':
+        multiplayerStore.applySnapshot({ ...msg.data, seq: msg.seq ?? multiplayerStore.lastSeq }, msg.seq ?? multiplayerStore.lastSeq)
+        break
+      case 'action_started':
+      case 'action_cancelled':
+      case 'turn_start':
+      case 'turn_skip':
+      case 'game_status_changed':
+      case 'game_ended':
+        multiplayerStore.handleEvent(msg.type, msg.data, msg.request_id, msg.seq)
+        break
       case 'error':
         gameStore.failNarrative()
+        if (msg.room_id && multiplayerStore.snapshot?.room_id === msg.room_id) {
+          multiplayerStore.clearDraft()
+          void multiplayerStore.refresh(msg.room_id).catch(() => {})
+        }
         lastError.value = msg.data?.message ?? '行动处理失败'
         console.error('[WS] Server error:', lastError.value)
         break
       default:
         break
     }
+    if (multiplayerStore.snapshot && ['narrative_chunk', 'narrative_complete', 'dice_roll', 'status_update'].includes(msg.type)) {
+      multiplayerStore.handleEvent(msg.type, msg.data, msg.request_id, msg.seq)
+    }
+  }
+
+  function setSequenceBaseline(targetRoomId: number, seq: number) {
+    if (roomId.value !== null && roomId.value !== targetRoomId) return
+    roomId.value = targetRoomId
+    lastSeq.value = Math.max(lastSeq.value, seq)
   }
 
   function send(type: string, data?: any) {
@@ -200,6 +242,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
     lastError,
     connect,
     send,
+    setSequenceBaseline,
     sendGameAction,
     disconnect
   }
