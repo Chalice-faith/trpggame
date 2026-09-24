@@ -221,20 +221,31 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 ### Phase 3 — 体验增强
 
-**目标**：记忆增强 + 社交增强 + 体验优化。
+**目标**：长局记忆 + 自定义角色 + 剧情投票 + Web 体验与验收收口。
+
+**状态**：已整理 [Phase 3 规划设计](./Phase3规划设计.md)，尚未实现；新增执行规则待确认。开发者当前继续完成 M2.5 目标环境验收与合并后冒烟，不因本规划关闭旧验收事项。
+
+#### M3.0 准备
+
+- [ ] 归档真实验收反馈、核对需求差异、确认 P3-D01—P3-D10 和建立基线
 
 #### M3.1 记忆增强
 
-- [ ] MySQL 迁移：`key_events` 表
-- [ ] Python: 关键事件自动标记（角色死亡、重大抉择、剧情分支点）
-- [ ] Python: 语义记忆检索（基于语义相似度检索更早期的历史记忆）
+- [ ] M3.1-A：时间线、已提交行动档案、幂等持久化与旧存档兼容
+- [ ] M3.1-B：关键事件持久化、摘要触发/回写、上下文注入与只读事件列表
+- [ ] M3.1-C：历史向量索引、房间/分支隔离、重建与降级
+- [ ] M3.1-D：长局、读档分叉、故障与真实 AI/Milvus 验收
 
 #### M3.2 体验优化
 
-- [ ] Vue: 回合计时器 UI + 倒计时动画
-- [ ] Vue: 自定义角色功能（C-05）
-- [ ] Vue: 投票决策功能（MP-03）
-- [ ] 移动端适配（响应式布局 / 触摸优化）
+- [ ] M3.2-A：自定义角色规则、版本、审批、不可变快照与 Vue 界面（C-05）
+- [ ] M3.2-B：剧情投票权限、持久化、并发结算、控制协调与 Vue 界面（MP-03）
+- [ ] M3.2-C：响应式 Web、状态反馈与可访问性；计时器复用 M2.5，不重新开发
+- [ ] M3.2-D：按实测处理依赖、构建、资源警告、格式和 race 覆盖
+
+#### M3.3 阶段验收
+
+- [ ] 真实端到端、性能、存量升级、故障恢复与发布验收
 
 ---
 
@@ -256,10 +267,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 011_create_conversations.sql       # M2.2，已实现
 012_create_conversation_members.sql # M2.2，已实现
 013_create_messages.sql            # M2.2，已实现
-014_create_groups.sql              # M2.3
-015_create_group_members.sql       # M2.3
-016_create_key_events.sql          # Phase 3，暂定
+014_create_groups.sql              # M2.3，已实现
+015_create_group_members.sql       # M2.3，已实现
+016_extend_game_rooms.sql          # M2.4，已实现
+017_extend_room_players.sql        # M2.4，已实现
 ```
+
+Phase 3 迁移从实施时 manifest 的下一编号追加（当前为 018），字段与文件名在实施方案冻结；不得占用旧编号或修改已执行迁移。
 
 ---
 
