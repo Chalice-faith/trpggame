@@ -1,10 +1,10 @@
 # TRPG Game API 接口测试文档（Swagger 风格）
 
-> 版本：Phase 1 / M1.5 + Phase 2 / M2.4-D（房间 REST `6a2ed79`、实时大厅 `bfa6efe` 与 Vue 大厅 `8cb1ded` 已提交并通过 CI；M2.0/M2.1 已补充本地真实浏览器验收）
+> 版本：Phase 1 / M1.5 + Phase 2 / M2.5-F（多人房间、跨实例实时、V2 运行态、行动/计时器、生命周期与 Vue 多人游戏均已落地）
 >
-> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-21 核对）。
+> 契约来源：当前 Go、Python 和 Vue 代码（2026-09-24 核对）。
 >
-> 状态：接口字段和错误码已按源码整理至 M2.2-D；聊天前端、自动化回归、CI 与真实双账号浏览器联调均已通过，结果见 [M2.2 验收记录](./M2.2验收记录.md)。
+> 状态：接口字段、错误码和手工验收项已整理至 M2.5-F；提交 `500b8ab` 的 CI #54 与确定性 AI fixture 边界内的三账号浏览器验收通过，目标环境验收见 [M2.5 主分支合并与真实验收清单](./M2.5主分支合并与真实验收清单.md)。
 
 这份文档用于在 Swagger UI、Postman 或 `curl` 中手工验收。所有示例均使用 JSON 字段名，不使用 Go/Python 内部字段名。
 
@@ -226,7 +226,7 @@ curl.exe -sS -X DELETE "$GO_BASE_URL/api/v1/scripts/$SCRIPT_ID" `
 
 成功：`200`，`{"code":0,"message":"ok"}`。主要失败：`400/1205`；`404/1206`；`409/1211`；`500/1203`。
 
-### 3.3 单人游戏
+### 3.3 游戏（单人和多人公共端点）
 
 游戏状态枚举：`waiting`、`playing`、`paused`、`ended`。
 
@@ -283,9 +283,32 @@ curl.exe -sS -X POST "$GO_BASE_URL/api/v1/games/$ROOM_ID/action" `
 }
 ```
 
-`dice_roll` 可以为 `null`；各效果数组可能为空。主要失败：`400/1310`；`404/1311` 房间不存在、`1312` 玩家不存在；`409/1313` 房间非 playing、`1314` 回合冲突、`1315` request_id 冲突、`1316` 道具不足；`503/1317` AI 不可用、`1318` 运行态不可用；`502/1319` AI 效果非法；`500/1320` 内部错误。
+`dice_roll` 可以为 `null`；各效果数组可能为空。单人模式主要失败：`400/1310`；`404/1311` 房间不存在、`1312` 玩家不存在；`409/1313` 房间非 playing、`1314` 回合冲突、`1315` request_id 冲突、`1316` 道具不足；`503/1317` AI 不可用、`1318` 运行态不可用；`502/1319` AI 效果非法；`500/1320` 内部错误。多人模式还可能返回 `403/1922` 非当前行动者、`409/1921` generation/回合冲突、`1923` 已有行动、`1924` request ID 冲突，以及 `503/1920` 运行态不可用、`1927` 多人 AI 不可用。
 
 > 前端当前优先使用 WebSocket 获取流式叙事；这个 REST 接口保留为同步调用和故障排查入口。
+
+#### GET `/api/v1/games/{roomId}/state` — 获取多人 V2 权威状态
+
+仅冻结成员可读；`playing`、`paused` 和运行态保留期内的 `ended` 房间均可读取。
+
+```powershell
+curl.exe -sS "$GO_BASE_URL/api/v1/games/$ROOM_ID/state" `
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+成功：`200`，`data` 包含 `{seq, version:2, room_id, status, generation, current_turn, round_number, turn_order, current_actor_id, deadline_at, players, summary_memory, recent_messages}`。`paused`、`ended` 或行动正在生成时 `deadline_at` 可以为 `null`。主要失败：`400/1900`；`404/1901` 房间不存在或不是冻结成员；`503/1920` 运行态不可用或与 MySQL 冻结阵容不一致。
+
+#### POST `/api/v1/games/{roomId}/skip` — 当前行动者主动跳过
+
+```powershell
+$REQUEST_ID = [guid]::NewGuid().ToString()
+curl.exe -sS -X POST "$GO_BASE_URL/api/v1/games/$ROOM_ID/skip" `
+  -H "Authorization: Bearer $ACCESS_TOKEN" `
+  -H "Content-Type: application/json" `
+  --data-raw "{\"request_id\":\"$REQUEST_ID\",\"expected_turn\":0}"
+```
+
+成功：`200`，`data` 包含 `{generation, skipped_user_id, current_turn, round_number, current_actor_id, deadline_at, reason:"manual"}`；相同请求幂等重放不会再次推进。主要失败：`400/1310`；`403/1922` 不是当前行动者；`404/1311`；`409/1921`、`1923`、`1924`；`503/1920`。服务端超时使用同一权威推进逻辑，广播结果的 `reason` 为 `timeout`。
 
 #### POST `/api/v1/games/{roomId}/save` — 手动存档
 
@@ -874,9 +897,24 @@ curl.exe -N -sS -X POST "$AI_BASE_URL/api/v1/ai/inference/action/stream" `
 - [ ] 连续突发发送与高成本同步触发 1717；确认限流请求未写库且同连接恢复后可继续使用。
 - [x] 自动化已覆盖三连接真实 WebSocket 群生命周期、批量会话视角、移除失权通知和加权令牌桶边界。
 
+### 6.7 多人房间与等待大厅
+
+- [x] 本地三账号已完成建房、房间码加入、不同角色选择、准备与房主开局。
+- [x] 自动化和浏览器验收已覆盖重复加入、重复选角、非房主开局、踢人、房主转让和开局后阵容冻结。
+- [x] 三端实时大厅按更高 `version` 合并权威快照，旧快照不会误撤销仍有效的房间访问权。
+
+### 6.8 多人回合与生命周期
+
+- [x] 确定性 AI fixture 边界内三端看到相同开场、行动队列、当前行动者、deadline、叙事和 seq。
+- [x] 当前行动者的流式 chunk 只进入临时态，完成后才写入正式叙事；非当前玩家伪造提交返回 `403/1922`。
+- [x] 主动跳过、30 秒服务端超时、暂停/恢复、手动存档/读档、五轮自动存档、断线恢复和结束态只读回看通过。
+- [x] 提交 `500b8ab` 的 CI #54 七个作业与 Linux targeted race 通过。
+- [ ] 使用真实 DeepSeek、Milvus/RAG、Redis 双实例和目标域名/Nginx/TLS 按 [M2.5 主分支合并与真实验收清单](./M2.5主分支合并与真实验收清单.md) 复验。
+
 ## 7. 当前已知边界
 
 - 本文是基于当前源码的接口契约，不等同于已经部署的 Swagger UI；真实地址、密钥和依赖可用性以部署环境为准。
-- `load` 接口当前返回房间/存档 ID、状态和回合，不返回完整 Redis 快照；直接刷新浏览器后的完整状态恢复仍需后续状态同步契约或客户端重新拉取能力。
-- 游戏通道 `/ws` 不承载 IM 聊天；独立 `/ws/im` 已提供连接接管、好友关系与在线状态事件、私聊/群聊可靠投递、群变化事件和基于 MySQL seq 的断线补推。Vue 群界面和跨实例广播仍未实现。
+- `load` 接口只返回房间/存档 ID、状态和回合；客户端随后通过 `GET /games/{roomId}/state` 拉取完整 V2 权威快照。结束态运行记录仅在 Redis 运行态保留期内可读取，长期历史以存档为准。
+- 游戏通道 `/ws` 不承载 IM 聊天；`/ws` 与 `/ws/im` 均已接入 Redis 跨实例总线和连接所有权。IM 离线恢复仍以 MySQL seq 为权威，游戏事件缺口由 Redis 有界日志补推，超出窗口时回退到 REST 快照。
+- 本地 M2.5 浏览器验收使用确定性 AI fixture；真实 DeepSeek、Milvus、Nginx/TLS 和生产依赖可用性尚不能由该结果推断。
 - Python 的 422 校验响应遵循 FastAPI 默认格式；Go 错误响应遵循 `{code,message}` 格式，两者不要混用。

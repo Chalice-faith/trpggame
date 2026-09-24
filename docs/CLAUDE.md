@@ -196,18 +196,26 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.4 多人游戏房间
 
-- [ ] Go: `room_service.go` — 多人房间核心逻辑
-  - [ ] 创建房间 + 加入/离开
-  - [ ] 角色选择 + 准备状态
-  - [ ] 回合队列（按 `turn_order` 轮转）
-  - [ ] 回合计时器（可配置，默认 120s，超时 skip）
-  - [ ] AI 叙事广播给全房间
-- [ ] Go: `room_handler.go` — `/api/v1/rooms/*` REST 端点
-- [ ] Redis Pub/Sub 跨实例广播（多机部署场景）
-- [ ] WebSocket 新增消息类型：`turn_start`、`turn_skip`
-- [ ] Vue: `RoomLobbyView.vue` — 等待大厅（角色选择 + 准备）
-- [ ] Vue: `TurnQueueIndicator.vue` — 回合顺序指示器
-- [ ] Vue: 多人游戏界面（复用 `GamePlayView.vue` 并扩展）
+- [x] Go: `room_service.go` — 多人房间核心逻辑
+  - [x] 创建房间 + 加入/离开
+  - [x] 角色选择 + 准备状态
+  - [x] 回合队列（按 `turn_order` 轮转）
+  - [x] 回合计时器（可配置，默认 120s，超时 skip）
+  - [x] AI 叙事广播给全房间
+- [x] Go: `room_handler.go` — `/api/v1/rooms/*` REST 端点
+- [x] Redis Pub/Sub 跨实例广播（多机部署场景）
+- [x] WebSocket 新增消息类型：`turn_start`、`turn_skip`
+- [x] Vue: `RoomLobbyView.vue` — 等待大厅（角色选择 + 准备）
+- [x] Vue: `GameMultiplayerView.vue` — 回合队列、倒计时、流式叙事、房主控制和结束态回看
+- [x] M2.4 提交 `8cb1ded` 的 CI #48 与三账号大厅验收通过
+
+#### M2.5 多人回合与验收
+
+- [x] Redis RealtimeBus、房间全局 seq/有界回放、跨实例广播与 4001 接管
+- [x] 多人 V2 运行态、流式行动、主动/超时跳过与跨实例 deadline worker
+- [x] 暂停/恢复/结束、V2 存读档、每 5 个完整轮次自动存档和 `gaming` presence
+- [x] 提交 `500b8ab` 的 CI #54 七个作业、Linux targeted race 与本地三账号浏览器验收通过
+- [ ] 真实 DeepSeek、Milvus、域名/Nginx/TLS 和目标部署环境验收
 
 ---
 
@@ -328,7 +336,10 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | 1300-1399 | 游戏模块 |
 | 1400-1499 | AI 服务 |
 | 1500-1599 | WebSocket（1500 缺失 token、1501 token 校验失败、1502 非法 room_id、1503 无房间访问权、1504 非法 sync 请求、1505 不支持的消息类型） |
-| 1600-1699 | 好友/IM（Phase 2） |
+| 1600-1699 | 好友与 presence（Phase 2） |
+| 1700-1799 | 私聊与 IM 可靠投递（Phase 2） |
+| 1800-1899 | 群组与群聊（Phase 2） |
+| 1900-1999 | 多人房间与回合（Phase 2） |
 
 统一响应格式：`{"code": 0, "message": "ok", "data": {...}}`
 
@@ -384,9 +395,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成本地浏览器功能验收并等待真实部署验收；M2.2—M2.4 已完整验收；M2.5-B 本地实现完成并等待 CI
+- **当前阶段**：Phase 1 真实部署验收暂缓；Phase 2 的 M2.0、M2.1 已完成本地浏览器功能验收并等待真实部署验收；M2.2—M2.4 已完整验收；M2.5-A—F 代码、本地验收和 CI 已完成，等待目标环境真实验收与主分支合并
 - **文档状态**：Phase 2 规划、M2.0—M2.5 实施方案、未完成事项和交接记录已同步
-- **代码状态**：M2.4-B 为 `6a2ed79`；M2.4-C 为 `bfa6efe`；M2.5-B Redis RealtimeBus、游戏全局 seq/回放、IM topic 与跨实例 4001 接管已完成本地实现
-- **验证状态**：M2.4-D 提交 `8cb1ded` 的 CI #48 与三账号浏览器验收通过；M2.5-B Go 全量测试和 vet 本地通过，Linux targeted race 等待提交后由 CI 验证
-- **提交状态**：M2.3-D 界面 `e1ec8fc`；验收修复 `5b3f130`；M2.4-B `6a2ed79`；M2.4-C `bfa6efe`
-- **下一步**：提交 M2.5-B 并通过 Linux CI targeted race；通过后再进入 M2.5-C 多人运行态与开局
+- **代码状态**：M2.5-B—F 已分别提交为 `63e9c51`、`f86105f`、`0bacfe6`、`9dfeedf`、`500b8ab`，多人实时、运行态、行动、生命周期和 Vue 闭环均已落地
+- **验证状态**：M2.5 三账号本地真实浏览器验收通过；提交 `500b8ab` 的 CI #54 七个作业全部成功，Go job 的 Linux targeted race 通过
+- **提交状态**：当前远程分支 `dev/phase2-planning` 位于 `500b8ab`
+- **下一步**：开发者按 `M2.5主分支合并与真实验收清单.md` 完成真实 DeepSeek/Milvus/目标部署验收；通过后合并主分支并冒烟
