@@ -31,7 +31,7 @@ var releaseMultiplayerStartLeaseScript = redis.NewScript(`
 if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
 return 0`)
 
-var initializeMultiplayerRuntimeScript = redis.NewScript(`
+var initializeMultiplayerRuntimeScript = redis.NewScript(legacyArchiveGuardLua + `
 redis.call('DEL', unpack(KEYS))
 redis.call('SET', KEYS[1], '2')
 redis.call('SET', KEYS[2], 'provisional')
@@ -61,7 +61,7 @@ for _, key in ipairs(KEYS) do
 end
 return 1`)
 
-var activateMultiplayerRuntimeScript = redis.NewScript(`
+var activateMultiplayerRuntimeScript = redis.NewScript(legacyArchiveGuardLua + `
 if redis.call('GET', KEYS[1]) ~= '2' or redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
 local status = redis.call('GET', KEYS[2])
 if status == 'playing' then
@@ -85,11 +85,15 @@ redis.call('ZREM', KEYS[5], ARGV[2])
 for index = 1, 4 do redis.call('EXPIRE', KEYS[index], ARGV[3]) end
 return 1`)
 
-var deleteProvisionalMultiplayerRuntimeScript = redis.NewScript(`
+var deleteProvisionalMultiplayerRuntimeScript = redis.NewScript(legacyArchiveGuardLua + `
 if redis.call('GET', KEYS[2]) ~= 'provisional' or redis.call('GET', KEYS[3]) ~= ARGV[1] then return 0 end
 return redis.call('DEL', unpack(KEYS))`)
 
-var readMultiplayerRuntimeScript = redis.NewScript(`
+var readMultiplayerRuntimeScript = redis.NewScript(gameArchiveLua + `
+local meta, code = archive_meta(KEYS[11], KEYS[12])
+if code ~= 0 then return {code} end
+if meta and ((meta.state == 'ready' and (meta.head ~= meta.durable or redis.call('EXISTS', KEYS[12]) ~= 0)) or
+  (meta.state == 'pending' and (meta.head ~= meta.durable + 1 or redis.call('EXISTS', KEYS[12]) == 0))) then return {92} end
 if redis.call('TYPE', KEYS[1]).ok ~= 'string' or redis.call('TYPE', KEYS[2]).ok ~= 'string' or
    redis.call('TYPE', KEYS[3]).ok ~= 'string' or redis.call('TYPE', KEYS[4]).ok ~= 'string' or
    redis.call('TYPE', KEYS[5]).ok ~= 'list' or redis.call('TYPE', KEYS[6]).ok ~= 'string' or
@@ -107,12 +111,12 @@ for _, user_id in ipairs(players) do
   if redis.call('EXISTS', items_key) == 1 then redis.call('EXPIRE', items_key, ARGV[1]) end
   if redis.call('EXISTS', buffs_key) == 1 then redis.call('EXPIRE', buffs_key, ARGV[1]) end
 end
-for _, key in ipairs(KEYS) do redis.call('EXPIRE', key, ARGV[1]) end
+for index = 1, 10 do redis.call('EXPIRE', KEYS[index], ARGV[1]) end
 return {
   1, redis.call('GET', KEYS[1]), redis.call('GET', KEYS[2]), redis.call('GET', KEYS[3]),
   redis.call('GET', KEYS[4]), redis.call('LRANGE', KEYS[5], 0, -1), redis.call('GET', KEYS[6]),
   redis.call('GET', KEYS[7]), redis.call('LRANGE', KEYS[8], 0, -1), player_data,
-  redis.call('HGETALL', KEYS[10])
+  redis.call('HGETALL', KEYS[10]), meta and redis.call('HGETALL', KEYS[11]) or {}
 }`)
 
 func (r *RedisGameStateRepo) AcquireMultiplayerStartLease(
@@ -156,8 +160,8 @@ func (r *RedisGameStateRepo) InitializeMultiplayerRoom(
 	if err != nil {
 		return err
 	}
-	if err := initializeMultiplayerRuntimeScript.Run(ctx, r.client, keys, arguments...).Err(); err != nil {
-		return fmt.Errorf("%w: initialize multiplayer room: %v", ErrGameRuntimeUnavailable, err)
+	if err := initializeMultiplayerRuntimeScript.Run(ctx, r.client, append(keys, gameArchiveKeys(state.RoomID)[0]), arguments...).Err(); err != nil {
+		return fmt.Errorf("%w: initialize multiplayer room: %v", archiveWrappedError(err), err)
 	}
 	return nil
 }
@@ -179,11 +183,12 @@ func (r *RedisGameStateRepo) ActivateMultiplayerRoom(
 		[]string{
 			multiplayerRuntimeVersionKey(roomID), runtimeStatusKey(roomID), runtimeGenerationKey(roomID),
 			multiplayerDeadlineKey(roomID), multiplayerDeadlineQueueKey(),
+			gameArchiveKeys(roomID)[0],
 		},
 		generation, deadline.UnixMilli(), deadline.UnixMilli(), member, int64(r.ttl/time.Second),
 	).Int64()
 	if err != nil {
-		return nil, fmt.Errorf("%w: activate multiplayer room: %v", ErrGameRuntimeUnavailable, err)
+		return nil, fmt.Errorf("%w: activate multiplayer room: %v", archiveWrappedError(err), err)
 	}
 	if code != 1 && code != 2 {
 		return nil, ErrMultiplayerRuntimeConflict
@@ -226,9 +231,9 @@ func (r *RedisGameStateRepo) DeleteProvisionalMultiplayerRoom(
 	}
 	keys := multiplayerRuntimeKeys(state.RoomID, state.Players)
 	if err := deleteProvisionalMultiplayerRuntimeScript.Run(
-		ctx, r.client, keys, state.Generation,
+		ctx, r.client, append(keys, gameArchiveKeys(state.RoomID)[0]), state.Generation,
 	).Err(); err != nil {
-		return fmt.Errorf("%w: delete provisional multiplayer room: %v", ErrGameRuntimeUnavailable, err)
+		return fmt.Errorf("%w: delete provisional multiplayer room: %v", archiveWrappedError(err), err)
 	}
 	return nil
 }
@@ -243,7 +248,7 @@ func (r *RedisGameStateRepo) GetMultiplayerRoom(
 	values, err := readMultiplayerRuntimeScript.Run(
 		ctx,
 		r.client,
-		append(multiplayerCommonRuntimeKeys(roomID), multiplayerActionLeaseKey(roomID)),
+		append(append(multiplayerCommonRuntimeKeys(roomID), multiplayerActionLeaseKey(roomID)), gameArchiveKeys(roomID)[:2]...),
 		int64(r.ttl/time.Second), fmt.Sprintf("room:%d:player:", roomID),
 	).Slice()
 	if err != nil {
@@ -317,7 +322,13 @@ func validateMultiplayerRuntimeState(state *model.MultiplayerRuntimeState) error
 }
 
 func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.MultiplayerRuntimeSnapshot, error) {
-	if len(values) != 11 {
+	if len(values) == 1 {
+		code, _ := redisInt64(values[0])
+		if issue := archiveError(code); issue != nil {
+			return nil, issue
+		}
+	}
+	if len(values) != 11 && len(values) != 12 {
 		return nil, fmt.Errorf("%w: invalid multiplayer runtime result", ErrGameRuntimeUnavailable)
 	}
 	code, ok := redisInt64(values[0])
@@ -374,7 +385,24 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 	if err != nil {
 		return nil, err
 	}
-	if statusText == string(model.RoomStatusPlaying) && deadline == nil && lease == nil {
+	var memory *model.GameArchiveRuntime
+	if len(values) == 12 {
+		fields, ok := redisStringSlice(values[11])
+		if !ok {
+			return nil, ErrGameArchiveCorrupt
+		}
+		if len(fields) > 0 {
+			memory, err = decodeArchiveMetadata(values[11])
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	closed := memory != nil && (memory.ArchiveState != "ready" || memory.ControlOperationID != "")
+	if closed && (deadline != nil || lease != nil) {
+		return nil, ErrGameArchiveCorrupt
+	}
+	if statusText == string(model.RoomStatusPlaying) && deadline == nil && lease == nil && !closed {
 		return nil, ErrGameRuntimeUnavailable
 	}
 	if deadline != nil && lease != nil {
@@ -414,7 +442,7 @@ func decodeMultiplayerRuntimeSnapshot(roomID uint, values []any) (*model.Multipl
 		Status: model.RoomStatus(statusText), Generation: generation,
 		CurrentTurn: currentTurn, RoundNumber: currentTurn / len(order), TurnOrder: order,
 		CurrentActorID: order[currentTurn%len(order)], DeadlineAt: deadline,
-		Players: players, SummaryMemory: summary, RecentMessages: messages, ActionLease: lease,
+		Players: players, SummaryMemory: summary, RecentMessages: messages, ActionLease: lease, Memory: memory,
 	}, nil
 }
 

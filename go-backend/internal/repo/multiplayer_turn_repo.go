@@ -27,12 +27,24 @@ var (
 // process that acquired it never gets to run its failure cleanup.
 const MultiplayerActionRecoveryTimeout = 5 * time.Minute
 
-var acquireMultiplayerActionScript = redis.NewScript(`
+var acquireMultiplayerActionScript = redis.NewScript(gameArchiveLua + `
+local meta, gate_code = archive_gate(KEYS[10], KEYS[11], ARGV[10], 'multiplayer', true)
+if gate_code ~= 0 then return {gate_code, '', ''} end
+if not archive_type(KEYS[8], 'hash') then return {92, '', ''} end
 local cached = redis.call('HGET', KEYS[8], ARGV[3])
 if cached then
+  if meta then
+    local ok, value = pcall(cjson.decode, cached)
+    if not ok or value.archive_timeline_id ~= meta.timeline then return {91, '', ''} end
+  end
   local current_generation = redis.call('GET', KEYS[3]) or ''
   if current_generation ~= ARGV[6] then return {4, current_generation, ''} end
   return {2, current_generation, cached}
+end
+local _, code = archive_gate(KEYS[10], KEYS[11], ARGV[10], 'multiplayer', false)
+if code ~= 0 then return {code, '', ''} end
+for index, kind in ipairs({'string','string','string','string','list','string','hash','hash','zset'}) do
+  if not archive_type(KEYS[index], kind) then return {92, '', ''} end
 end
 if redis.call('GET', KEYS[1]) ~= '2' then return {8, '', ''} end
 if redis.call('GET', KEYS[2]) ~= 'playing' then return {3, '', ''} end
@@ -63,7 +75,10 @@ end
 return {1, generation, ''}
 `)
 
-var releaseMultiplayerActionScript = redis.NewScript(`
+var releaseMultiplayerActionScript = redis.NewScript(gameArchiveLua + `
+local meta, code = archive_meta(KEYS[8], KEYS[9])
+if code ~= 0 then return code end
+if meta and (meta.state ~= 'ready' or meta.head ~= meta.durable or meta.control ~= '' or redis.call('EXISTS', KEYS[9]) ~= 0) then return 90 end
 if redis.call('GET', KEYS[1]) ~= '2' or redis.call('GET', KEYS[2]) ~= 'playing' or
    redis.call('GET', KEYS[3]) ~= ARGV[1] or redis.call('GET', KEYS[4]) ~= ARGV[2] then return 0 end
 if redis.call('HGET', KEYS[5], 'generation') ~= ARGV[1] or
@@ -142,9 +157,13 @@ local function saveMultiplayerRoundSnapshot(room_id, generation, response, order
 end
 `
 
-var commitMultiplayerActionScript = redis.NewScript(multiplayerAutoSaveSnapshotLua + `
+var commitMultiplayerActionScript = redis.NewScript(gameArchiveLua + multiplayerAutoSaveSnapshotLua + `
+local archive_keys = {unpack(KEYS, #KEYS - 5, #KEYS)}
+if not archive_type(KEYS[9], 'hash') then return {7, -1, ''} end
 local cached = redis.call('HGET', KEYS[9], ARGV[4])
 if cached then
+  local code = archive_replay(archive_keys, ARGV[#ARGV], 'multiplayer', cached)
+  if code ~= 0 then return {code, -1, ''} end
   if redis.call('GET', KEYS[3]) ~= ARGV[1] then return {4, -1, ''} end
   return {2, tonumber(redis.call('GET', KEYS[4])) or -1, cached}
 end
@@ -163,7 +182,14 @@ if redis.call('HGET', KEYS[8], 'generation') ~= ARGV[1] or
    redis.call('HGET', KEYS[8], 'fingerprint') ~= ARGV[5] then return {6, current, ''} end
 
 local mutation_count = tonumber(ARGV[13])
-if not mutation_count or mutation_count < 0 or #KEYS ~= 14 + mutation_count * 3 then return {7, current, ''} end
+if not mutation_count or mutation_count < 0 or #KEYS ~= 20 + mutation_count * 3 then return {7, current, ''} end
+local archive_plan, archive_code = archive_prepare(archive_keys, ARGV[#ARGV], 'multiplayer', ARGV[1],
+  ARGV[14 + mutation_count], ARGV[3], current, math.floor(current/order_count), math.floor((current+1)/order_count), ARGV[4], ARGV[5], 'action')
+if archive_code ~= 0 then return {archive_code, current, ''} end
+for index, kind in ipairs({'string','string','string','string','list','string','list','hash','hash','zset','list','string','hash','zset'}) do
+  if not archive_type(KEYS[index], kind) then return {7, current, ''} end
+end
+local decoded_cache = cjson.decode(ARGV[6])
 local plans = {}
 for index = 1, mutation_count do
   local ok, mutation = pcall(cjson.decode, ARGV[13 + index])
@@ -213,6 +239,12 @@ for index = 1, mutation_count do
   plans[index] = {mutation = mutation, player = player_key, items = items_key, buffs = buffs_key, inventory = inventory}
 end
 
+local boundary = ''
+if archive_plan then
+  local code
+  boundary, code = archive_multiplayer_boundary(ARGV[14 + mutation_count], ARGV[1], current+1, KEYS[5], KEYS[11], KEYS[7], KEYS[12], plans, ARGV[7], ARGV[8], archive_plan)
+  if code ~= 0 then return {code, current, ''} end
+end
 for _, plan in ipairs(plans) do
   for field, value in pairs(plan.mutation.player_state_changes or {}) do
     redis.call('HSET', plan.player, field, value)
@@ -233,11 +265,11 @@ local next_turn = current + 1
 redis.call('SET', KEYS[4], tostring(next_turn))
 redis.call('HSET', KEYS[9], ARGV[4], ARGV[6])
 redis.call('DEL', KEYS[8])
-redis.call('SET', KEYS[6], ARGV[9])
+redis.call('SET', KEYS[6], archive_plan and '' or ARGV[9])
 redis.call('ZREM', KEYS[10], ARGV[10])
-redis.call('ZADD', KEYS[10], ARGV[9], ARGV[11])
-local response = cjson.decode(ARGV[6]).response
-if response and tonumber(response.current_turn) and tonumber(response.round_number) and
+if not archive_plan then redis.call('ZADD', KEYS[10], ARGV[9], ARGV[11]) end
+local response = decoded_cache.response
+if not archive_plan and response and tonumber(response.current_turn) and tonumber(response.round_number) and
    tonumber(response.round_number) % 5 == 0 and tonumber(response.current_turn) % order_count == 0 then
   saveMultiplayerRoundSnapshot(ARGV[14 + mutation_count], ARGV[1], response, KEYS[5], KEYS[11], KEYS[7], KEYS[12], KEYS[13], KEYS[14])
 end
@@ -247,18 +279,31 @@ end
 for index = 11, 12 do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
-for index = 15, #KEYS do
+archive_commit(archive_plan, ARGV[6], boundary)
+for index = 15, #KEYS - 6 do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
 return {1, next_turn, ''}
 `)
 
-var skipMultiplayerTurnScript = redis.NewScript(multiplayerAutoSaveSnapshotLua + `
+var skipMultiplayerTurnScript = redis.NewScript(gameArchiveLua + multiplayerAutoSaveSnapshotLua + `
+local archive_keys = {unpack(KEYS, 15, 20)}
+if not archive_type(KEYS[8], 'hash') then return {92, ''} end
 local cached = redis.call('HGET', KEYS[8], ARGV[4])
 if cached then
+  local code = archive_replay(archive_keys, ARGV[14], 'multiplayer', cached)
+  if code ~= 0 then return {code, ''} end
   if redis.call('GET', KEYS[3]) ~= ARGV[1] then return {4, ''} end
   return {2, cached}
 end
+local timeline = ''
+if ARGV[14] ~= '' then
+  local ok, envelope = pcall(cjson.decode, ARGV[14]); if not ok then return {92, ''} end
+  local valid, record = pcall(cjson.decode, envelope.record_json); if not valid then return {92, ''} end
+  timeline = record.TimelineID
+end
+local _, gate_code = archive_gate(archive_keys[1], archive_keys[2], timeline, 'multiplayer', false)
+if gate_code ~= 0 then return {gate_code, ''} end
 if redis.call('GET', KEYS[1]) ~= '2' or redis.call('GET', KEYS[2]) ~= 'playing' then
   redis.call('ZREM', KEYS[9], ARGV[9])
   return {3, ''}
@@ -282,13 +327,26 @@ elseif actor ~= ARGV[3] then
   return {6, ''}
 end
 local next_turn = current + 1
+local decoded_cache = cjson.decode(ARGV[6])
+local archive_plan, archive_code = archive_prepare(archive_keys, ARGV[14], 'multiplayer', ARGV[1], ARGV[13], actor,
+  current, math.floor(current/count), math.floor(next_turn/count), ARGV[4], decoded_cache.fingerprint, 'skip_' .. ARGV[8])
+if archive_code ~= 0 then return {archive_code, ''} end
+for index, kind in ipairs({'string','string','string','string','list','string','hash','hash','zset','list','string','hash','zset','list'}) do
+  if not archive_type(KEYS[index], kind) then return {92, ''} end
+end
+local response = cjson.decode(ARGV[5])
+local boundary = ''
+if archive_plan then
+  local code
+  boundary, code = archive_multiplayer_boundary(ARGV[13], ARGV[1], next_turn, KEYS[5], KEYS[10], KEYS[14], KEYS[11], {}, nil, nil, archive_plan)
+  if code ~= 0 then return {code, ''} end
+end
 redis.call('SET', KEYS[4], tostring(next_turn))
-redis.call('SET', KEYS[6], ARGV[10])
+redis.call('SET', KEYS[6], archive_plan and '' or ARGV[10])
 redis.call('HSET', KEYS[8], ARGV[4], ARGV[6])
 redis.call('ZREM', KEYS[9], ARGV[9])
-redis.call('ZADD', KEYS[9], ARGV[10], ARGV[11])
-local response = cjson.decode(ARGV[5])
-if tonumber(response.current_turn) and tonumber(response.round_number) and
+if not archive_plan then redis.call('ZADD', KEYS[9], ARGV[10], ARGV[11]) end
+if not archive_plan and tonumber(response.current_turn) and tonumber(response.round_number) and
    tonumber(response.round_number) % 5 == 0 and tonumber(response.current_turn) % count == 0 then
   saveMultiplayerRoundSnapshot(ARGV[13], ARGV[1], response, KEYS[5], KEYS[10], KEYS[14], KEYS[11], KEYS[12], KEYS[13])
 end
@@ -298,6 +356,7 @@ end
 for index = 10, 11 do
   if redis.call('EXISTS', KEYS[index]) == 1 then redis.call('EXPIRE', KEYS[index], ARGV[12]) end
 end
+archive_commit(archive_plan, ARGV[6], boundary)
 if redis.call('EXISTS', KEYS[14]) == 1 then redis.call('EXPIRE', KEYS[14], ARGV[12]) end
 return {1, ARGV[5]}
 `)
@@ -319,6 +378,17 @@ type encodedMultiplayerMutation struct {
 }
 
 func (r *RedisGameStateRepo) AcquireMultiplayerAction(ctx context.Context, roomID, userID uint, generation string, expectedTurn int, requestID, fingerprint string, now time.Time) (*model.MultiplayerActionAcquireResult, error) {
+	return r.acquireMultiplayerAction(ctx, roomID, userID, generation, expectedTurn, requestID, fingerprint, now, "")
+}
+
+func (r *RedisGameStateRepo) AcquireMemoryMultiplayerAction(ctx context.Context, roomID, userID uint, expectedTurn int, requestID, fingerprint string, now time.Time, expected model.GameArchiveExpectation) (*model.MultiplayerActionAcquireResult, error) {
+	if !model.ValidMemoryUUID(expected.TimelineID) || !model.ValidMemoryUUID(expected.Generation) {
+		return nil, model.ErrInvalidMemoryData
+	}
+	return r.acquireMultiplayerAction(ctx, roomID, userID, expected.Generation, expectedTurn, requestID, fingerprint, now, expected.TimelineID)
+}
+
+func (r *RedisGameStateRepo) acquireMultiplayerAction(ctx context.Context, roomID, userID uint, generation string, expectedTurn int, requestID, fingerprint string, now time.Time, timeline string) (*model.MultiplayerActionAcquireResult, error) {
 	requestID, fingerprint, err := validateMultiplayerActionIdentity(roomID, userID, expectedTurn, requestID, fingerprint)
 	if err != nil || uuid.Validate(generation) != nil || now.IsZero() {
 		return nil, ErrInvalidGameRuntimeState
@@ -326,8 +396,9 @@ func (r *RedisGameStateRepo) AcquireMultiplayerAction(ctx context.Context, roomI
 	values, err := acquireMultiplayerActionScript.Run(ctx, r.client, []string{
 		multiplayerRuntimeVersionKey(roomID), runtimeStatusKey(roomID), runtimeGenerationKey(roomID), runtimeTurnKey(roomID),
 		multiplayerTurnOrderKey(roomID), multiplayerDeadlineKey(roomID), multiplayerActionLeaseKey(roomID), actionResultsKey(roomID), multiplayerDeadlineQueueKey(),
+		gameArchiveKeys(roomID)[0], gameArchiveKeys(roomID)[1],
 	}, expectedTurn, userID, requestID, fingerprint, now.UTC().UnixMilli(), generation,
-		multiplayerDeadlineMember(roomID, generation, expectedTurn), int64(r.ttl/time.Second), MultiplayerActionRecoveryTimeout.Milliseconds()).Slice()
+		multiplayerDeadlineMember(roomID, generation, expectedTurn), int64(r.ttl/time.Second), MultiplayerActionRecoveryTimeout.Milliseconds(), timeline).Slice()
 	if err != nil {
 		return nil, fmt.Errorf("%w: acquire multiplayer action: %v", ErrGameRuntimeUnavailable, err)
 	}
@@ -335,6 +406,9 @@ func (r *RedisGameStateRepo) AcquireMultiplayerAction(ctx context.Context, roomI
 		return nil, ErrGameRuntimeUnavailable
 	}
 	code, ok := redisInt64(values[0])
+	if issue := archiveError(code); issue != nil {
+		return nil, issue
+	}
 	if !ok {
 		return nil, ErrGameRuntimeUnavailable
 	}
@@ -350,7 +424,12 @@ func (r *RedisGameStateRepo) AcquireMultiplayerAction(ctx context.Context, roomI
 		if cached.Fingerprint != fingerprint {
 			return nil, ErrActionIdempotencyConflict
 		}
-		return &model.MultiplayerActionAcquireResult{Generation: actualGeneration, Duplicate: true, ResponseJSON: append(json.RawMessage(nil), cached.Response...)}, nil
+		response := append(json.RawMessage(nil), cached.Response...)
+		if timeline != "" {
+			memory, _ := r.archiveDelivery(ctx, roomID, timeline)
+			response = archiveResponse(response, memory, nil)
+		}
+		return &model.MultiplayerActionAcquireResult{Generation: actualGeneration, Duplicate: true, ResponseJSON: response}, nil
 	case 3:
 		return nil, ErrGameRuntimeNotPlaying
 	case 4, 7:
@@ -376,12 +455,16 @@ func (r *RedisGameStateRepo) ReleaseMultiplayerAction(ctx context.Context, mutat
 	code, err := releaseMultiplayerActionScript.Run(ctx, r.client, []string{
 		multiplayerRuntimeVersionKey(mutation.RoomID), runtimeStatusKey(mutation.RoomID), runtimeGenerationKey(mutation.RoomID), runtimeTurnKey(mutation.RoomID),
 		multiplayerActionLeaseKey(mutation.RoomID), multiplayerDeadlineKey(mutation.RoomID), multiplayerDeadlineQueueKey(),
+		gameArchiveKeys(mutation.RoomID)[0], gameArchiveKeys(mutation.RoomID)[1],
 	}, mutation.Generation, mutation.ExpectedTurn, mutation.UserID, requestID, fingerprint, deadline.UnixMilli(),
 		multiplayerDeadlineMember(mutation.RoomID, mutation.Generation, mutation.ExpectedTurn), int64(r.ttl/time.Second)).Int64()
 	if err != nil {
 		return fmt.Errorf("%w: release multiplayer action: %v", ErrGameRuntimeUnavailable, err)
 	}
 	if code != 1 {
+		if issue := archiveError(code); issue != nil {
+			return issue
+		}
 		return ErrGameRuntimeGenerationConflict
 	}
 	return nil
@@ -394,12 +477,22 @@ func (r *RedisGameStateRepo) CommitMultiplayerAction(ctx context.Context, mutati
 	}
 	values, err := commitMultiplayerActionScript.Run(ctx, r.client, keys, arguments...).Slice()
 	if err != nil {
-		return nil, fmt.Errorf("%w: commit multiplayer action: %v", ErrGameRuntimeUnavailable, err)
+		if mutation.Archive != nil {
+			if _, probeErr := r.reconcileArchiveCommit(ctx, archiveRecordEnvelope(arguments[len(arguments)-1])); probeErr != nil {
+				return nil, fmt.Errorf("%w: commit multiplayer action: %v", probeErr, err)
+			}
+			values = []any{int64(1), int64(mutation.ExpectedTurn + 1), ""}
+		} else {
+			return nil, fmt.Errorf("%w: commit multiplayer action: %v", ErrGameRuntimeUnavailable, err)
+		}
 	}
 	if len(values) != 3 {
 		return nil, ErrGameRuntimeUnavailable
 	}
 	code, ok := redisInt64(values[0])
+	if issue := archiveError(code); issue != nil {
+		return nil, issue
+	}
 	turn, turnOK := redisInt64(values[1])
 	if !ok || !turnOK {
 		return nil, ErrGameRuntimeUnavailable
@@ -412,14 +505,24 @@ func (r *RedisGameStateRepo) CommitMultiplayerAction(ctx context.Context, mutati
 		if cached.Fingerprint != fingerprint {
 			return nil, ErrActionIdempotencyConflict
 		}
-		return &model.MultiplayerActionCommitResult{Duplicate: true, CurrentTurn: int(turn), ResponseJSON: append(json.RawMessage(nil), cached.Response...)}, nil
+		result := &model.MultiplayerActionCommitResult{Duplicate: true, CurrentTurn: int(turn), ResponseJSON: append(json.RawMessage(nil), cached.Response...)}
+		if mutation.Archive != nil {
+			result.Memory, _ = r.archiveDelivery(ctx, mutation.RoomID, mutation.Archive.TimelineID)
+			result.ResponseJSON = archiveResponse(result.ResponseJSON, result.Memory, nil)
+		}
+		return result, nil
 	}
 	switch code {
 	case 1:
 		// The write is already committed. A failed follow-up read must not turn a
 		// successful CAS into a reported failure that triggers lease cleanup.
 		snapshot, _ := r.GetMultiplayerRoom(ctx, mutation.RoomID)
-		return &model.MultiplayerActionCommitResult{CurrentTurn: int(turn), ResponseJSON: append(json.RawMessage(nil), mutation.ResponseJSON...), Snapshot: snapshot}, nil
+		result := &model.MultiplayerActionCommitResult{CurrentTurn: int(turn), ResponseJSON: append(json.RawMessage(nil), mutation.ResponseJSON...), Snapshot: snapshot}
+		if mutation.Archive != nil {
+			result.Memory, _ = r.archiveDelivery(ctx, mutation.RoomID, mutation.Archive.TimelineID)
+			result.ResponseJSON = archiveResponse(result.ResponseJSON, result.Memory, nil)
+		}
+		return result, nil
 	case 3:
 		return nil, ErrGameRuntimeNotPlaying
 	case 4:
@@ -455,22 +558,39 @@ func (r *RedisGameStateRepo) SkipMultiplayerTurn(ctx context.Context, request *m
 	if request.Timeout {
 		mode = "timeout"
 	}
+	envelope, record, err := encodeArchiveRecord(request.Archive, request.RoomID, request.UserID, request.Generation, requestID, fingerprint, "skip_"+mode, request.ExpectedTurn,
+		map[string]any{"mode": "multiplayer", "reason": mode, "response": archiveFactResponse(request.ResponseJSON)})
+	if err != nil {
+		return nil, err
+	}
+	cacheText := withArchiveCache(string(cached), record)
 	currentMember := multiplayerDeadlineMember(request.RoomID, request.Generation, request.ExpectedTurn)
 	nextMember := multiplayerDeadlineMember(request.RoomID, request.Generation, request.ExpectedTurn+1)
-	values, err := skipMultiplayerTurnScript.Run(ctx, r.client, []string{
+	keys := append([]string{
 		multiplayerRuntimeVersionKey(request.RoomID), runtimeStatusKey(request.RoomID), runtimeGenerationKey(request.RoomID), runtimeTurnKey(request.RoomID),
 		multiplayerTurnOrderKey(request.RoomID), multiplayerDeadlineKey(request.RoomID), multiplayerActionLeaseKey(request.RoomID), actionResultsKey(request.RoomID), multiplayerDeadlineQueueKey(),
 		multiplayerRuntimePlayersKey(request.RoomID), multiplayerSummaryKey(request.RoomID), pendingMultiplayerAutoSavesKey(request.RoomID),
 		pendingMultiplayerAutoSaveRoomsKey(), multiplayerRoundsKey(request.RoomID),
-	}, request.Generation, request.ExpectedTurn, request.UserID, requestID, string(request.ResponseJSON), string(cached), request.Now.UTC().UnixMilli(), mode,
-		currentMember, request.NextDeadline.UTC().UnixMilli(), nextMember, int64(r.ttl/time.Second), request.RoomID).Slice()
+	}, gameArchiveKeys(request.RoomID)...)
+	values, err := skipMultiplayerTurnScript.Run(ctx, r.client, keys, request.Generation, request.ExpectedTurn, request.UserID, requestID, string(request.ResponseJSON), cacheText, request.Now.UTC().UnixMilli(), mode,
+		currentMember, request.NextDeadline.UTC().UnixMilli(), nextMember, int64(r.ttl/time.Second), request.RoomID, envelope).Slice()
 	if err != nil {
-		return nil, fmt.Errorf("%w: skip multiplayer turn: %v", ErrGameRuntimeUnavailable, err)
+		if record != nil {
+			if _, probeErr := r.reconcileArchiveCommit(ctx, record); probeErr != nil {
+				return nil, probeErr
+			}
+			values = []any{int64(1), string(request.ResponseJSON)}
+		} else {
+			return nil, fmt.Errorf("%w: skip multiplayer turn: %v", ErrGameRuntimeUnavailable, err)
+		}
 	}
 	if len(values) != 2 {
 		return nil, ErrGameRuntimeUnavailable
 	}
 	code, ok := redisInt64(values[0])
+	if issue := archiveError(code); issue != nil {
+		return nil, issue
+	}
 	if !ok {
 		return nil, ErrGameRuntimeUnavailable
 	}
@@ -493,6 +613,14 @@ func (r *RedisGameStateRepo) SkipMultiplayerTurn(ctx context.Context, request *m
 		}
 		if json.Unmarshal([]byte(encoded), &result) != nil || result.Generation != request.Generation || result.CurrentTurn != request.ExpectedTurn+1 {
 			return nil, ErrGameRuntimeUnavailable
+		}
+		if record != nil {
+			memory, deadline := r.archiveDelivery(ctx, request.RoomID, record.TimelineID)
+			result.Memory = memory
+			result.DeadlineAt = time.Time{}
+			if deadline != nil {
+				result.DeadlineAt = *deadline
+			}
 		}
 		return &result, nil
 	}
@@ -614,7 +742,11 @@ func (r *RedisGameStateRepo) multiplayerCommitArguments(mutation *model.Multipla
 				return nil, nil, "", ErrInvalidGameRuntimeState
 			}
 		}
-		encoded, marshalErr := json.Marshal(encodedMultiplayerMutation{UserID: player.UserID, PlayerStateChanges: normalized, Items: player.ItemMutations, Buffs: player.BuffMutations})
+		if normalized == nil {
+			normalized = map[string]string{}
+		}
+		encoded, marshalErr := json.Marshal(encodedMultiplayerMutation{UserID: player.UserID, PlayerStateChanges: normalized,
+			Items: append([]model.RuntimeItemMutation{}, player.ItemMutations...), Buffs: append([]model.RuntimeBuffMutation{}, player.BuffMutations...)})
 		if marshalErr != nil {
 			return nil, nil, "", ErrInvalidGameRuntimeState
 		}
@@ -622,6 +754,18 @@ func (r *RedisGameStateRepo) multiplayerCommitArguments(mutation *model.Multipla
 		keys = append(keys, runtimePlayerKey(mutation.RoomID, player.UserID), itemStateKey(mutation.RoomID, player.UserID), buffStateKey(mutation.RoomID, player.UserID))
 	}
 	arguments = append(arguments, mutation.RoomID)
+	players := make([]json.RawMessage, 0, len(mutation.PlayerMutations))
+	for i := range mutation.PlayerMutations {
+		players = append(players, json.RawMessage(arguments[13+i].(string)))
+	}
+	envelope, record, err := encodeArchiveRecord(mutation.Archive, mutation.RoomID, mutation.UserID, mutation.Generation, requestID, fingerprint, "action", mutation.ExpectedTurn,
+		map[string]any{"mode": "multiplayer", "messages": []json.RawMessage{json.RawMessage(encodedMessages[0]), json.RawMessage(encodedMessages[1])}, "players": players, "response": archiveFactResponse(mutation.ResponseJSON)})
+	if err != nil {
+		return nil, nil, "", err
+	}
+	arguments[5] = withArchiveCache(arguments[5].(string), record)
+	arguments = append(arguments, envelope)
+	keys = append(keys, gameArchiveKeys(mutation.RoomID)...)
 	return keys, arguments, fingerprint, nil
 }
 

@@ -14,7 +14,14 @@ import (
 	"trpggame/internal/model"
 )
 
-var transitionMultiplayerRuntimeScript = redis.NewScript(`
+var transitionMultiplayerRuntimeScript = redis.NewScript(gameArchiveLua + `
+local meta, code = archive_meta(KEYS[9], KEYS[10])
+if code ~= 0 then return -code end
+if meta and ARGV[3] ~= 'paused' then
+  local _, gate_code = archive_gate(KEYS[9], KEYS[10], ARGV[8], 'multiplayer', false)
+  if gate_code ~= 0 then return -gate_code end
+  if ARGV[3] == 'ended' or redis.call('HLEN', KEYS[11]) > 0 then return -90 end
+end
 if redis.call('GET', KEYS[1]) ~= '2' then return 0 end
 if redis.call('GET', KEYS[2]) ~= ARGV[1] or redis.call('GET', KEYS[3]) ~= ARGV[2] then return 0 end
 local turn = tonumber(redis.call('GET', KEYS[4]))
@@ -25,9 +32,14 @@ if lease_type ~= 'none' and lease_type ~= 'hash' then return -1 end
 local old_member = ARGV[6] .. ':' .. ARGV[2] .. ':' .. tostring(turn)
 if ARGV[3] == 'playing' then
   if not tonumber(ARGV[4]) or tonumber(ARGV[4]) <= 0 or redis.call('HLEN', KEYS[7]) > 0 then return -1 end
-  redis.call('SET', KEYS[5], ARGV[4])
+  local deadline = ARGV[4]
+  if meta then
+    local clock = redis.call('TIME')
+    deadline = archive_number(tonumber(clock[1])*1000 + math.floor(tonumber(clock[2])/1000) + meta.timeout)
+  end
+  redis.call('SET', KEYS[5], deadline)
   redis.call('ZREM', KEYS[8], old_member)
-  redis.call('ZADD', KEYS[8], ARGV[4], ARGV[6] .. ':' .. ARGV[5] .. ':' .. tostring(turn))
+  redis.call('ZADD', KEYS[8], deadline, ARGV[6] .. ':' .. ARGV[5] .. ':' .. tostring(turn))
 else
   redis.call('SET', KEYS[5], '')
   redis.call('ZREM', KEYS[8], old_member)
@@ -41,7 +53,7 @@ end
 return turn + 1
 `)
 
-var restoreMultiplayerRuntimeScript = redis.NewScript(`
+var restoreMultiplayerRuntimeScript = redis.NewScript(legacyArchiveGuardLua + `
 if redis.call('GET', KEYS[1]) ~= '2' or redis.call('GET', KEYS[2]) ~= 'paused' or
    redis.call('GET', KEYS[3]) ~= ARGV[2] then return 0 end
 local current = tonumber(redis.call('GET', KEYS[4]))
@@ -116,6 +128,17 @@ func (r *RedisGameStateRepo) TransitionMultiplayerRoom(
 	from, to model.RoomStatus,
 	deadline time.Time,
 ) (int, error) {
+	return r.transitionMultiplayerRoom(ctx, roomID, expectedGeneration, nextGeneration, from, to, deadline, "")
+}
+
+func (r *RedisGameStateRepo) TransitionMemoryMultiplayerRoom(ctx context.Context, roomID uint, expected model.GameArchiveExpectation, nextGeneration string, from, to model.RoomStatus, deadline time.Time) (int, error) {
+	if !model.ValidMemoryUUID(expected.TimelineID) {
+		return 0, model.ErrInvalidMemoryData
+	}
+	return r.transitionMultiplayerRoom(ctx, roomID, expected.Generation, nextGeneration, from, to, deadline, expected.TimelineID)
+}
+
+func (r *RedisGameStateRepo) transitionMultiplayerRoom(ctx context.Context, roomID uint, expectedGeneration, nextGeneration string, from, to model.RoomStatus, deadline time.Time, timeline string) (int, error) {
 	if roomID == 0 || uuid.Validate(expectedGeneration) != nil || uuid.Validate(nextGeneration) != nil ||
 		(from != model.RoomStatusPlaying && from != model.RoomStatusPaused) ||
 		(to != model.RoomStatusPlaying && to != model.RoomStatusPaused && to != model.RoomStatusEnded) {
@@ -131,12 +154,16 @@ func (r *RedisGameStateRepo) TransitionMultiplayerRoom(
 	code, err := transitionMultiplayerRuntimeScript.Run(ctx, r.client, []string{
 		multiplayerRuntimeVersionKey(roomID), runtimeStatusKey(roomID), runtimeGenerationKey(roomID), runtimeTurnKey(roomID),
 		multiplayerDeadlineKey(roomID), multiplayerTurnOrderKey(roomID), multiplayerActionLeaseKey(roomID), multiplayerDeadlineQueueKey(),
+		gameArchiveKeys(roomID)[0], gameArchiveKeys(roomID)[1], gameArchiveKeys(roomID)[4],
 	}, string(from), expectedGeneration, string(to), deadlineMillis, nextGeneration, roomID,
-		int64(r.ttl/time.Second)).Int64()
+		int64(r.ttl/time.Second), timeline).Int64()
 	if err != nil {
 		return 0, fmt.Errorf("%w: transition multiplayer runtime: %v", ErrGameRuntimeUnavailable, err)
 	}
 	if code < 0 {
+		if issue := archiveError(-code); issue != nil {
+			return 0, issue
+		}
 		return 0, ErrGameRuntimeUnavailable
 	}
 	if code == 0 {
@@ -199,9 +226,9 @@ func (r *RedisGameStateRepo) RestoreMultiplayerRoom(
 		}
 	}
 	arguments = append(arguments, snapshot.RoomID)
-	code, err := restoreMultiplayerRuntimeScript.Run(ctx, r.client, keys, arguments...).Int64()
+	code, err := restoreMultiplayerRuntimeScript.Run(ctx, r.client, append(keys, gameArchiveKeys(snapshot.RoomID)[0]), arguments...).Int64()
 	if err != nil {
-		return fmt.Errorf("%w: restore multiplayer runtime: %v", ErrGameRuntimeUnavailable, err)
+		return fmt.Errorf("%w: restore multiplayer runtime: %v", archiveWrappedError(err), err)
 	}
 	if code < 0 {
 		return ErrInvalidGameRuntimeState
@@ -221,7 +248,7 @@ func validateMultiplayerSnapshot(snapshot *model.MultiplayerRuntimeSnapshot, exp
 		(expectedStatus == model.RoomStatusPlaying && snapshot.DeadlineAt != nil && !snapshot.DeadlineAt.IsZero()))
 	if snapshot == nil || snapshot.Version != model.MultiplayerRuntimeSnapshotVersion || snapshot.RoomID == 0 ||
 		uuid.Validate(snapshot.Generation) != nil || snapshot.Status != expectedStatus || !deadlineValid ||
-		snapshot.ActionLease != nil || snapshot.CurrentTurn < 0 || len(snapshot.TurnOrder) < 2 ||
+		snapshot.ActionLease != nil || snapshot.Memory != nil || snapshot.CurrentTurn < 0 || len(snapshot.TurnOrder) < 2 ||
 		snapshot.RoundNumber != snapshot.CurrentTurn/len(snapshot.TurnOrder) || len(snapshot.Players) != len(snapshot.TurnOrder) ||
 		len(snapshot.RecentMessages) == 0 || len(snapshot.RecentMessages) > 10 || len(snapshot.SummaryMemory) > 65535 {
 		return ErrInvalidGameRuntimeState

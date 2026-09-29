@@ -91,6 +91,7 @@ type SoloRuntimeState struct {
 
 // ActionRuntimeMutation 是一次玩家行动在 Redis 中原子提交的内容。
 type ActionRuntimeMutation struct {
+	Archive            *GameActionRecord
 	RoomID             uint
 	UserID             uint
 	Generation         string
@@ -136,17 +137,18 @@ const SoloRuntimeSnapshotVersion = 1
 // SoloRuntimeSnapshot 是单人房间可持久化并原子恢复的 Redis 快照。
 // Summary 和 RecentMessages 分别写入 game_saves 的独立字段，不重复编码进 redis_snapshot。
 type SoloRuntimeSnapshot struct {
-	Version        int               `json:"version"`
-	RoomID         uint              `json:"-"`
-	UserID         uint              `json:"-"`
-	Status         RoomStatus        `json:"status"`
-	Turn           int               `json:"turn"`
-	TurnOrder      []uint            `json:"turn_order"`
-	PlayerState    map[string]string `json:"player_state"`
-	Items          []RuntimeItem     `json:"items"`
-	Buffs          []RuntimeBuff     `json:"buffs"`
-	Summary        string            `json:"-"`
-	RecentMessages []RuntimeMessage  `json:"-"`
+	Memory         *GameArchiveRuntime `json:"memory,omitempty"`
+	Version        int                 `json:"version"`
+	RoomID         uint                `json:"-"`
+	UserID         uint                `json:"-"`
+	Status         RoomStatus          `json:"status"`
+	Turn           int                 `json:"turn"`
+	TurnOrder      []uint              `json:"turn_order"`
+	PlayerState    map[string]string   `json:"player_state"`
+	Items          []RuntimeItem       `json:"items"`
+	Buffs          []RuntimeBuff       `json:"buffs"`
+	Summary        string              `json:"-"`
+	RecentMessages []RuntimeMessage    `json:"-"`
 }
 
 // MultiplayerRuntimeSnapshotVersion distinguishes the frozen-roster runtime from V1 solo saves.
@@ -174,6 +176,7 @@ type MultiplayerRuntimeState struct {
 
 // MultiplayerRuntimeSnapshot is the validated, client-safe V2 state.
 type MultiplayerRuntimeSnapshot struct {
+	Memory         *GameArchiveRuntime        `json:"memory,omitempty"`
 	Version        int                        `json:"version"`
 	RoomID         uint                       `json:"room_id"`
 	Status         RoomStatus                 `json:"status"`
@@ -209,6 +212,7 @@ type MultiplayerPlayerMutation struct {
 
 // MultiplayerActionMutation is committed only while the matching action lease is current.
 type MultiplayerActionMutation struct {
+	Archive            *GameActionRecord
 	RoomID             uint
 	UserID             uint
 	Generation         string
@@ -228,6 +232,7 @@ type MultiplayerActionAcquireResult struct {
 }
 
 type MultiplayerActionCommitResult struct {
+	Memory       *GameArchiveRuntime
 	Duplicate    bool
 	CurrentTurn  int
 	ResponseJSON json.RawMessage
@@ -235,6 +240,7 @@ type MultiplayerActionCommitResult struct {
 }
 
 type MultiplayerSkipRequest struct {
+	Archive            *GameActionRecord
 	RoomID             uint
 	UserID             uint
 	Generation         string
@@ -249,14 +255,27 @@ type MultiplayerSkipRequest struct {
 }
 
 type MultiplayerSkipResult struct {
-	Duplicate      bool      `json:"-"`
-	Generation     string    `json:"generation"`
-	SkippedUserID  uint      `json:"skipped_user_id"`
-	CurrentTurn    int       `json:"current_turn"`
-	RoundNumber    int       `json:"round_number"`
-	CurrentActorID uint      `json:"current_actor_id"`
-	DeadlineAt     time.Time `json:"deadline_at"`
-	Reason         string    `json:"reason"`
+	Memory         *GameArchiveRuntime `json:"memory,omitempty"`
+	Duplicate      bool                `json:"-"`
+	Generation     string              `json:"generation"`
+	SkippedUserID  uint                `json:"skipped_user_id"`
+	CurrentTurn    int                 `json:"current_turn"`
+	RoundNumber    int                 `json:"round_number"`
+	CurrentActorID uint                `json:"current_actor_id"`
+	DeadlineAt     time.Time           `json:"deadline_at"`
+	Reason         string              `json:"reason"`
+}
+
+// Memory-enabled pending turns have no executable deadline.
+func (result MultiplayerSkipResult) MarshalJSON() ([]byte, error) {
+	type plain MultiplayerSkipResult
+	if result.Memory != nil && result.DeadlineAt.IsZero() {
+		return json.Marshal(struct {
+			plain
+			DeadlineAt *time.Time `json:"deadline_at"`
+		}{plain: plain(result)})
+	}
+	return json.Marshal(plain(result))
 }
 
 type MultiplayerDeadlineTask struct {
@@ -273,6 +292,7 @@ type PendingMultiplayerAutoSave struct {
 
 // ActionCommitResult 是 Redis 行动提交或幂等重放的结果。
 type ActionCommitResult struct {
+	Memory           *GameArchiveRuntime
 	Duplicate        bool
 	CurrentTurn      int
 	ResponseJSON     json.RawMessage
