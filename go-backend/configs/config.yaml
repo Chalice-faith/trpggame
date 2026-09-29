@@ -41,3 +41,13 @@ websocket:
 
 internal:
   shared_secret: "dev-internal-secret-change-in-production"
+
+# Recovery remains active for already enabled rooms; this does not enable new rooms.
+game_archive:
+  poll_interval_ms: 1000
+  batch_size: 32
+  operation_timeout_ms: 5000
+  lease_ms: 30000
+  retry_base_ms: 1000
+  retry_max_ms: 30000
+  shutdown_timeout_ms: 7000

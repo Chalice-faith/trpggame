@@ -51,6 +51,7 @@ type SubmitGameActionResult struct {
 	CurrentActorID     uint                      `json:"current_actor_id,omitempty"`
 	DeadlineAt         *time.Time                `json:"deadline_at,omitempty"`
 	Duplicate          bool                      `json:"-"`
+	Memory             *model.GameArchiveRuntime `json:"memory,omitempty"`
 }
 
 // GameActionStreamEvent 是游戏层向 WebSocket 层暴露的稳定事件。
@@ -154,9 +155,10 @@ func (s *GameService) submitAction(
 		if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
 			return nil, err
 		}
-		if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, result.CurrentTurn); err != nil {
+		if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, result.CurrentTurn, result.Memory); err != nil {
 			return nil, err
 		}
+		s.refreshArchiveResult(ctx, room.ID, result)
 		emitCommittedActionEvents(observer, result)
 		return result, nil
 	}
@@ -260,12 +262,13 @@ func (s *GameService) submitAction(
 	if err != nil {
 		return nil, err
 	}
-	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, committedResult.CurrentTurn); err != nil {
+	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, committedResult.CurrentTurn, committedResult.Memory); err != nil {
 		return nil, err
 	}
 	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
 		return nil, err
 	}
+	s.refreshArchiveResult(ctx, room.ID, committedResult)
 	emitCommittedActionEvents(observer, committedResult)
 	return committedResult, nil
 }

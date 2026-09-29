@@ -176,6 +176,13 @@ jobs:
         env:
           TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
 
+      - name: Verify shared archive workers and MySQL Redis fault recovery
+        working-directory: go-backend
+        run: go test -race -tags=integration -count=1 ./internal/service -run '^TestGameArchiveIntegration'
+        env:
+          TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
+          TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
+
   vue:
     name: Vue tests and build
     runs-on: ubuntu-latest

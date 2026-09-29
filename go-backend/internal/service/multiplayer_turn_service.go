@@ -86,10 +86,11 @@ func (s *GameService) submitMultiplayerAction(
 		if result.Generation != current.Generation {
 			return nil, ErrMultiplayerTurnConflict
 		}
-		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
+		if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber, result.Memory); err != nil {
 			return nil, err
 		}
 		s.flushAutoSaveBestEffort(ctx, room.ID)
+		s.refreshArchiveResult(ctx, room.ID, result)
 		return result, nil
 	}
 	if room.Status != model.RoomStatusPlaying {
@@ -117,10 +118,11 @@ func (s *GameService) submitMultiplayerAction(
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
-		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
+		if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber, result.Memory); err != nil {
 			return nil, err
 		}
 		s.flushAutoSaveBestEffort(ctx, room.ID)
+		s.refreshArchiveResult(ctx, room.ID, result)
 		return result, nil
 	}
 	generation := acquired.Generation
@@ -225,10 +227,11 @@ func (s *GameService) submitMultiplayerAction(
 				if decodeErr != nil {
 					return nil, decodeErr
 				}
-				if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
+				if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber, committed.Memory); err != nil {
 					return nil, err
 				}
 				s.flushAutoSaveBestEffort(ctx, room.ID)
+				s.refreshArchiveResult(ctx, room.ID, committed)
 				s.publishCommittedMultiplayerAction(room.ID, requestID, committed)
 				return committed, nil
 			}
@@ -240,10 +243,11 @@ func (s *GameService) submitMultiplayerAction(
 	if err != nil {
 		return nil, err
 	}
-	if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
+	if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber, committed.Memory); err != nil {
 		return nil, err
 	}
 	s.flushAutoSaveBestEffort(ctx, room.ID)
+	s.refreshArchiveResult(ctx, room.ID, committed)
 	if !commit.Duplicate {
 		s.publishCommittedMultiplayerAction(room.ID, requestID, committed)
 	}
@@ -292,10 +296,11 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 			return nil, ErrMultiplayerRuntimeUnavailable
 		}
 		result.Duplicate = true
-		if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber); err != nil {
+		if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, result.CurrentTurn, result.RoundNumber, result.Memory); err != nil {
 			return nil, err
 		}
 		s.flushAutoSaveBestEffort(ctx, room.ID)
+		s.refreshArchiveSkip(ctx, room.ID, &result)
 		return &result, nil
 	}
 	if snapshot.CurrentTurn != req.ExpectedTurn {
@@ -379,21 +384,24 @@ func (s *GameService) skipMultiplayer(ctx context.Context, gameRepo MultiplayerG
 	if err != nil {
 		return nil, mapMultiplayerRuntimeError(err)
 	}
-	if err := advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber); err != nil {
+	if err := s.advanceMultiplayerProgress(ctx, gameRepo, room.ID, committed.CurrentTurn, committed.RoundNumber, committed.Memory); err != nil {
 		return nil, err
 	}
 	s.flushAutoSaveBestEffort(ctx, room.ID)
+	s.refreshArchiveSkip(ctx, room.ID, committed)
 	if !committed.Duplicate {
 		s.publishMultiplayer(room.ID, requestID, GameActionStreamEvent{
 			Type: "turn_skip", Multiplayer: true, Generation: committed.Generation,
 			CurrentTurn: committed.CurrentTurn, PlayerID: committed.SkippedUserID, Reason: committed.Reason,
 			Result: skipAsActionResult(committed),
 		})
-		s.publishMultiplayer(room.ID, requestID, GameActionStreamEvent{
-			Type: "turn_start", Multiplayer: true, Generation: committed.Generation,
-			CurrentTurn: committed.CurrentTurn, PlayerID: committed.CurrentActorID,
-			Result: skipAsActionResult(committed),
-		})
+		if committed.Memory == nil || (committed.Memory.ArchiveState == "ready" && !committed.DeadlineAt.IsZero()) {
+			s.publishMultiplayer(room.ID, requestID, GameActionStreamEvent{
+				Type: "turn_start", Multiplayer: true, Generation: committed.Generation,
+				CurrentTurn: committed.CurrentTurn, PlayerID: committed.CurrentActorID,
+				Result: skipAsActionResult(committed),
+			})
+		}
 	}
 	return committed, nil
 }
@@ -483,7 +491,9 @@ func (s *GameService) publishCommittedMultiplayerAction(roomID uint, requestID s
 		s.publishMultiplayer(roomID, requestID, GameActionStreamEvent{Type: "status_update", Multiplayer: true, Generation: result.Generation, CurrentTurn: result.CurrentTurn, PlayerID: player.UserID, Result: result})
 	}
 	s.publishMultiplayer(roomID, requestID, GameActionStreamEvent{Type: "narrative_complete", Content: result.Narrative, Multiplayer: true, Generation: result.Generation, CurrentTurn: result.CurrentTurn, Result: result})
-	s.publishMultiplayer(roomID, requestID, GameActionStreamEvent{Type: "turn_start", Multiplayer: true, Generation: result.Generation, CurrentTurn: result.CurrentTurn, PlayerID: result.CurrentActorID, Result: result})
+	if result.Memory == nil || (result.Memory.ArchiveState == "ready" && result.DeadlineAt != nil) {
+		s.publishMultiplayer(roomID, requestID, GameActionStreamEvent{Type: "turn_start", Multiplayer: true, Generation: result.Generation, CurrentTurn: result.CurrentTurn, PlayerID: result.CurrentActorID, Result: result})
+	}
 }
 
 func (s *GameService) publishMultiplayer(roomID uint, requestID string, event GameActionStreamEvent) {
@@ -496,7 +506,9 @@ func decodeMultiplayerActionResult(encoded json.RawMessage, duplicate bool) (*Su
 	var result SubmitGameActionResult
 	if len(encoded) == 0 || decodeStrictJSON(encoded, &result) != nil || strings.TrimSpace(result.Narrative) == "" ||
 		result.MultiplayerEffects == nil || result.MultiplayerEffects.Players == nil || result.MultiplayerEffects.Events == nil ||
-		uuid.Validate(result.Generation) != nil || result.CurrentTurn <= 0 || result.CurrentActorID == 0 || result.DeadlineAt == nil || result.DeadlineAt.IsZero() {
+		uuid.Validate(result.Generation) != nil || result.CurrentTurn <= 0 || result.CurrentActorID == 0 ||
+		(result.Memory == nil && (result.DeadlineAt == nil || result.DeadlineAt.IsZero())) ||
+		(result.Memory != nil && !validArchiveResultMemory(result.Memory)) {
 		return nil, fmt.Errorf("%w: malformed cached multiplayer action", ErrInternal)
 	}
 	if result.DiceRoll != nil {
@@ -533,10 +545,15 @@ func multiplayerSkipFingerprint(roomID, userID uint, generation string, turn int
 }
 
 func skipAsActionResult(result *model.MultiplayerSkipResult) *SubmitGameActionResult {
-	deadline := result.DeadlineAt
+	var deadline *time.Time
+	if result.Memory == nil || !result.DeadlineAt.IsZero() {
+		value := result.DeadlineAt
+		deadline = &value
+	}
 	return &SubmitGameActionResult{
 		Generation: result.Generation, CurrentTurn: result.CurrentTurn, RoundNumber: result.RoundNumber,
-		CurrentActorID: result.CurrentActorID, DeadlineAt: &deadline,
+		CurrentActorID: result.CurrentActorID, DeadlineAt: deadline,
+		Memory: result.Memory,
 	}
 }
 

@@ -12,7 +12,14 @@ func (s *GameService) advancePersistentGameProgress(
 	roomID uint,
 	userID uint,
 	turn int,
+	known ...*model.GameArchiveRuntime,
 ) error {
+	if s.confirmKnownArchive(ctx, roomID, known) {
+		return nil
+	}
+	if handled, err := s.confirmArchiveProgress(ctx, roomID); handled {
+		return err
+	}
 	syncContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), pauseReconcileTimeout)
 	defer cancel()
 	updated, updateErr := s.gameRepo.AdvanceRoomProgress(syncContext, roomID, userID, turn)

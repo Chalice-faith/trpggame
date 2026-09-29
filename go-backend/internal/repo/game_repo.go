@@ -128,6 +128,7 @@ func (r *GameRepo) AdvanceRoomProgress(
 		Where("id = ? AND owner_id = ? AND status IN ?", roomID, ownerID, []model.RoomStatus{
 			model.RoomStatusPlaying, model.RoomStatusPaused,
 		}).
+		Where("NOT EXISTS (SELECT 1 FROM game_memory_states WHERE room_id = game_rooms.id)").
 		Updates(map[string]any{
 			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
 			"round_number": gorm.Expr("GREATEST(round_number, ?)", turn),
@@ -145,6 +146,7 @@ func (r *GameRepo) AdvanceMultiplayerRoomProgress(ctx context.Context, roomID ui
 		Where("id = ? AND is_solo = ? AND status IN ?", roomID, false, []model.RoomStatus{
 			model.RoomStatusPlaying, model.RoomStatusPaused,
 		}).
+		Where("NOT EXISTS (SELECT 1 FROM game_memory_states WHERE room_id = game_rooms.id)").
 		Updates(map[string]any{
 			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
 			"round_number": gorm.Expr("GREATEST(round_number, ?)", round),

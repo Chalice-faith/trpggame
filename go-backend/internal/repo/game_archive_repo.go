@@ -262,24 +262,43 @@ func (r *RedisGameStateRepo) ListPendingArchiveRooms(ctx context.Context, now ti
 }
 
 var claimArchiveScript = redis.NewScript(gameArchiveLua + `
+local function damaged()
+  if redis.call('TYPE', KEYS[1]).ok == 'hash' then redis.call('HSET', KEYS[1], 'archive_state', 'blocked') end
+  if redis.call('TYPE', KEYS[4]).ok == 'zset' then redis.call('ZREM', KEYS[4], ARGV[3]) end
+  return {92}
+end
 local meta, code = archive_meta(KEYS[1], KEYS[2])
+if code == 92 then return damaged() end
 if code ~= 0 then return {code} end
-if not meta then return {0} end
-if meta.state == 'blocked' then return {90} end
-if redis.call('EXISTS', KEYS[2]) == 0 then return {0} end
-if meta.state ~= 'pending' and meta.state ~= 'recovering' then return {92} end
-if not archive_type(KEYS[3], 'hash') then return {92} end
+if not meta then
+  if archive_type(KEYS[4], 'zset') then redis.call('ZREM', KEYS[4], ARGV[3]) end
+  return {0}
+end
+if meta.state == 'blocked' then
+  if archive_type(KEYS[4], 'zset') then redis.call('ZREM', KEYS[4], ARGV[3]) end
+  return {90}
+end
+if redis.call('EXISTS', KEYS[2]) == 0 then
+  if meta.head ~= meta.durable then return damaged() end
+  if archive_type(KEYS[4], 'zset') then redis.call('ZREM', KEYS[4], ARGV[3]) end
+  return {0}
+end
+if meta.state ~= 'pending' and meta.state ~= 'recovering' then return damaged() end
+if not archive_type(KEYS[3], 'hash') then return damaged() end
+if not archive_type(KEYS[4], 'zset') then return damaged() end
 local commit = redis.call('HGET', KEYS[2], 'commit_id')
 local hash = redis.call('HGET', KEYS[2], 'payload_hash')
 if not commit or not hash or redis.call('HGET', KEYS[2], 'timeline_id') ~= meta.timeline or
-   tonumber(redis.call('HGET', KEYS[2], 'position')) ~= meta.head or meta.head ~= meta.durable + 1 then return {92} end
+   tonumber(redis.call('HGET', KEYS[2], 'position')) ~= meta.head or meta.head ~= meta.durable + 1 then return damaged() end
 local valid, record = pcall(cjson.decode, redis.call('HGET', KEYS[2], 'record_json') or '')
 if not valid or type(record) ~= 'table' or record.CommitID ~= commit or record.PayloadHash ~= hash or
-   record.TimelineID ~= meta.timeline or record.Position ~= meta.head or record.SourceRevision ~= meta.revision then return {92} end
+   record.TimelineID ~= meta.timeline or record.Position ~= meta.head or record.SourceRevision ~= meta.revision then return damaged() end
 if redis.call('EXISTS', KEYS[3]) ~= 0 and (redis.call('HGET', KEYS[3], 'owner_token') ~= ARGV[1] or
    redis.call('HGET', KEYS[3], 'commit_id') ~= commit or redis.call('HGET', KEYS[3], 'payload_hash') ~= hash) then return {3} end
 redis.call('HSET', KEYS[3], 'owner_token', ARGV[1], 'commit_id', commit, 'payload_hash', hash)
 redis.call('PEXPIRE', KEYS[3], ARGV[2])
+local clock = redis.call('TIME')
+redis.call('ZADD', KEYS[4], tonumber(clock[1]) * 1000 + math.floor(tonumber(clock[2]) / 1000) + tonumber(ARGV[2]), ARGV[3])
 return {1, redis.call('HGETALL', KEYS[2])}
 `)
 
@@ -302,7 +321,14 @@ func decodePendingArchive(raw any) (*model.PendingGameArchive, error) {
 	if err != nil || cached.Fingerprint != record.Fingerprint {
 		return nil, ErrGameArchiveCorrupt
 	}
-	return &model.PendingGameArchive{Record: &record, ResponseJSON: cached.Response, BoundarySnapshot: []byte(fields["boundary_snapshot"])}, nil
+	var attempts uint64
+	if fields["attempts"] != "" {
+		attempts, err = strconv.ParseUint(fields["attempts"], 10, 32)
+		if err != nil || attempts > 30 {
+			return nil, ErrGameArchiveCorrupt
+		}
+	}
+	return &model.PendingGameArchive{Record: &record, ResponseJSON: cached.Response, BoundarySnapshot: []byte(fields["boundary_snapshot"]), Attempts: uint(attempts)}, nil
 }
 
 // Reusing the same owner token renews its lease; expiry never deletes the outbox.
@@ -310,7 +336,7 @@ func (r *RedisGameStateRepo) ClaimGameArchive(ctx context.Context, roomID uint, 
 	if roomID == 0 || !model.ValidMemoryUUID(ownerToken) || ttl < time.Second || ttl > 5*time.Minute {
 		return nil, model.ErrInvalidMemoryData
 	}
-	values, err := claimArchiveScript.Run(ctx, r.client, gameArchiveKeys(roomID)[:3], ownerToken, ttl.Milliseconds()).Slice()
+	values, err := claimArchiveScript.Run(ctx, r.client, gameArchiveKeys(roomID)[:4], ownerToken, ttl.Milliseconds(), roomID).Slice()
 	if err != nil {
 		return nil, fmt.Errorf("%w: claim archive", ErrGameRuntimeUnavailable)
 	}
@@ -331,13 +357,30 @@ func (r *RedisGameStateRepo) ClaimGameArchive(ctx context.Context, roomID uint, 
 	}
 	pending, err := decodePendingArchive(values[1])
 	if err != nil {
+		r.quarantineArchiveClaim(ctx, roomID, ownerToken)
 		return nil, err
 	}
 	if pending.Record.RoomID != roomID {
+		r.quarantineArchiveClaim(ctx, roomID, ownerToken)
 		return nil, ErrGameArchiveCorrupt
 	}
 	pending.OwnerToken = ownerToken
 	return pending, nil
+}
+
+var quarantineArchiveClaimScript = redis.NewScript(`
+if redis.call('TYPE', KEYS[1]).ok ~= 'hash' or redis.call('TYPE', KEYS[3]).ok ~= 'hash' or
+   redis.call('HGET', KEYS[3], 'owner_token') ~= ARGV[1] or not (redis.call('TYPE', KEYS[4]).ok == 'zset') then return 0 end
+redis.call('HSET', KEYS[1], 'archive_state', 'blocked')
+redis.call('ZREM', KEYS[4], ARGV[2])
+redis.call('DEL', KEYS[3])
+return 1
+`)
+
+func (r *RedisGameStateRepo) quarantineArchiveClaim(ctx context.Context, roomID uint, owner string) {
+	probe, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Second)
+	defer cancel()
+	_ = quarantineArchiveClaimScript.Run(probe, r.client, gameArchiveKeys(roomID)[:4], owner, roomID).Err()
 }
 
 var releaseArchiveScript = redis.NewScript(gameArchiveLua + `
@@ -612,7 +655,10 @@ if redis.call('HGET', KEYS[3], 'owner_token') ~= ARGV[4] or redis.call('HGET', K
    redis.call('HGET', KEYS[3], 'payload_hash') ~= ARGV[3] then return 3 end
 if redis.call('HGET', KEYS[2], 'commit_id') ~= ARGV[2] or redis.call('HGET', KEYS[2], 'payload_hash') ~= ARGV[3] or
    redis.call('HGET', KEYS[2], 'position') ~= ARGV[5] then return 92 end
+local attempts = tonumber(redis.call('HGET', KEYS[2], 'attempts') or '0')
+if not attempts or attempts < 0 or attempts > 30 then return 92 end
 redis.call('ZADD', KEYS[4], ARGV[7], ARGV[6])
+redis.call('HSET', KEYS[2], 'attempts', math.min(attempts + 1, 30))
 redis.call('DEL', KEYS[3])
 return 1
 `)
@@ -629,6 +675,40 @@ func (r *RedisGameStateRepo) RetryGameArchive(ctx context.Context, ack model.Gam
 		ack.OwnerToken, ack.Position, ack.RoomID, nextRetry.UTC().UnixMilli()).Int64()
 	if err != nil {
 		return fmt.Errorf("%w: schedule archive retry", ErrGameRuntimeUnavailable)
+	}
+	if issue := archiveError(code); issue != nil {
+		return issue
+	}
+	if code != 1 {
+		return ErrGameArchiveLeaseConflict
+	}
+	return nil
+}
+
+var blockArchiveScript = redis.NewScript(gameArchiveLua + `
+local meta, code = archive_meta(KEYS[1], KEYS[2]); if code ~= 0 then return code end
+if not meta or meta.timeline ~= ARGV[1] then return 91 end
+if not archive_type(KEYS[4], 'zset') then return 92 end
+if redis.call('HGET', KEYS[3], 'owner_token') ~= ARGV[4] or redis.call('HGET', KEYS[3], 'commit_id') ~= ARGV[2] or
+   redis.call('HGET', KEYS[3], 'payload_hash') ~= ARGV[3] then return 3 end
+if redis.call('HGET', KEYS[2], 'commit_id') ~= ARGV[2] or redis.call('HGET', KEYS[2], 'payload_hash') ~= ARGV[3] or
+   redis.call('HGET', KEYS[2], 'position') ~= ARGV[5] then return 92 end
+redis.call('HSET', KEYS[1], 'archive_state', 'blocked')
+redis.call('ZREM', KEYS[4], ARGV[6])
+redis.call('DEL', KEYS[3])
+return 1
+`)
+
+// BlockGameArchive retains the exact pending body for investigation. A stale
+// owner cannot quarantine a newer record, and blocked rooms do not starve polls.
+func (r *RedisGameStateRepo) BlockGameArchive(ctx context.Context, ack model.GameArchiveACK) error {
+	if err := validateArchiveACK(ack); err != nil {
+		return err
+	}
+	code, err := blockArchiveScript.Run(ctx, r.client, gameArchiveKeys(ack.RoomID)[:4], ack.TimelineID, ack.CommitID, ack.PayloadHash,
+		ack.OwnerToken, ack.Position, ack.RoomID).Int64()
+	if err != nil {
+		return ErrGameRuntimeUnavailable
 	}
 	if issue := archiveError(code); issue != nil {
 		return issue
