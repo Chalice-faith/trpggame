@@ -8,14 +8,15 @@ import (
 
 // Config 应用配置根结构
 type Config struct {
-	Server    ServerConfig
-	Database  DatabaseConfig
-	Redis     RedisConfig
-	JWT       JWTConfig
-	AI        AIConfig
-	MinIO     MinIOConfig
-	WebSocket WebSocketConfig
-	Internal  InternalConfig `mapstructure:"internal"`
+	Server      ServerConfig
+	Database    DatabaseConfig
+	Redis       RedisConfig
+	JWT         JWTConfig
+	AI          AIConfig
+	MinIO       MinIOConfig
+	WebSocket   WebSocketConfig
+	Internal    InternalConfig    `mapstructure:"internal"`
+	GameArchive GameArchiveConfig `mapstructure:"game_archive"`
 }
 
 // DefaultWebSocketAllowedOrigins 是本地 Vue 与 Nginx 开发入口的默认 Origin 白名单。
@@ -105,10 +106,21 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	if err := cfg.GameArchive.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
 func setDefaults(v *viper.Viper) {
+	d := DefaultGameArchiveConfig()
+	v.SetDefault("game_archive.poll_interval_ms", d.PollIntervalMS)
+	v.SetDefault("game_archive.batch_size", d.BatchSize)
+	v.SetDefault("game_archive.operation_timeout_ms", d.OperationTimeoutMS)
+	v.SetDefault("game_archive.lease_ms", d.LeaseMS)
+	v.SetDefault("game_archive.retry_base_ms", d.RetryBaseMS)
+	v.SetDefault("game_archive.retry_max_ms", d.RetryMaxMS)
+	v.SetDefault("game_archive.shutdown_timeout_ms", d.ShutdownTimeoutMS)
 	// Server
 	v.SetDefault("server.port", "8080")
 	v.SetDefault("server.mode", "debug")

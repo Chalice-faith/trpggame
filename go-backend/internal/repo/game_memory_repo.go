@@ -266,6 +266,17 @@ func (r *GameMemoryRepo) ScheduleOperationRetry(ctx context.Context, roomID uint
 // Archive advances only the next continuous watermark, with exact content replay checks.
 // A committed record from a superseded generation still belongs to its original timeline.
 func (r *GameMemoryRepo) Archive(ctx context.Context, input *model.GameActionRecord) (bool, error) {
+	return r.archive(ctx, input, false)
+}
+
+// ArchiveAndAdvance stores the immutable fact and repairs progress in one transaction.
+// A control-fenced record may drain without progress repair. A mismatched active
+// timeline/revision is rejected so its Redis ACK cannot reopen an obsolete branch.
+func (r *GameMemoryRepo) ArchiveAndAdvance(ctx context.Context, input *model.GameActionRecord) (bool, error) {
+	return r.archive(ctx, input, true)
+}
+
+func (r *GameMemoryRepo) archive(ctx context.Context, input *model.GameActionRecord, advance bool) (bool, error) {
 	if input == nil {
 		return false, model.ErrInvalidMemoryData
 	}
@@ -275,6 +286,44 @@ func (r *GameMemoryRepo) Archive(ctx context.Context, input *model.GameActionRec
 	}
 	inserted := false
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if advance {
+			// Match lifecycle lock order: room -> capability -> timeline.
+			var room model.GameRoom
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&room, record.RoomID).Error; err != nil {
+				return err
+			}
+			var state model.GameMemoryState
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Where("room_id = ?", record.RoomID).First(&state).Error; err != nil {
+				return err
+			}
+			if state.ActiveTimelineID == nil || *state.ActiveTimelineID != record.TimelineID {
+				return ErrMemoryBranch
+			}
+			if state.Status != "ready" || state.Revision != record.SourceRevision || state.ActiveOperationID != nil {
+				// A prepared load/end may fence a previously committed outbox.
+				// Drain it without repairing progress; never reopen a mismatched branch.
+				if state.Status != "recovering" || state.ActiveOperationID == nil || record.SourceRevision == math.MaxUint64 || state.Revision != record.SourceRevision+1 {
+					return ErrMemoryBranch
+				}
+				var operation model.GameMemoryOperation
+				if err := tx.Where("room_id = ? AND operation_id = ?", record.RoomID, *state.ActiveOperationID).First(&operation).Error; err != nil {
+					return err
+				}
+				if operation.SourceTimelineID == nil || *operation.SourceTimelineID != record.TimelineID ||
+					(operation.Kind != "load" && operation.Kind != "end") || (operation.Phase != "prepared" && operation.Phase != "redis_applied") {
+					return ErrMemoryBranch
+				}
+			}
+			if state.Revision == record.SourceRevision &&
+				state.Status == "ready" && state.ActiveOperationID == nil && (room.Status == model.RoomStatusPlaying || room.Status == model.RoomStatusPaused) {
+				if err := tx.Model(&room).Updates(map[string]any{
+					"current_turn": gorm.Expr("GREATEST(current_turn, ?)", record.TurnAfter),
+					"round_number": gorm.Expr("GREATEST(round_number, ?)", record.RoundAfter),
+				}).Error; err != nil {
+					return err
+				}
+			}
+		}
 		timeline, err := findTimeline(tx, record.RoomID, record.TimelineID, true)
 		if err != nil {
 			return err

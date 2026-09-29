@@ -105,6 +105,7 @@ type GameService struct {
 	multiplayerPublisher MultiplayerActionPublisher
 	presenceNotifier     GamePresenceNotifier
 	now                  func() time.Time
+	archiveService       *GameArchiveService
 }
 
 // StartSoloGameRequest 是单人快速开始的服务层请求。
@@ -147,6 +148,10 @@ func (s *GameService) ConfigurePresence(notifier GamePresenceNotifier) {
 	if s != nil {
 		s.presenceNotifier = notifier
 	}
+}
+
+func (s *GameService) ConfigureArchive(archive *GameArchiveService) {
+	s.archiveService = archive
 }
 
 // StartSoloGame 校验剧本与角色，创建房间，并在开场生成成功后启动游戏。

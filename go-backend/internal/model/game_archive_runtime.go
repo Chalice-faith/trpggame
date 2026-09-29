@@ -27,6 +27,7 @@ type GameArchiveBinding struct {
 }
 
 type PendingGameArchive struct {
+	Attempts         uint
 	Record           *GameActionRecord
 	ResponseJSON     json.RawMessage
 	BoundarySnapshot json.RawMessage

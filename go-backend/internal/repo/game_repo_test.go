@@ -106,7 +106,7 @@ func TestGameRepoAdvanceRoomProgressUsesMonotonicMySQLExpressions(t *testing.T) 
 	repository, mock := newMockGameRepo(t)
 	mock.ExpectBegin()
 	mock.ExpectExec(
-		regexp.QuoteMeta("UPDATE `game_rooms` SET `current_turn`=GREATEST(current_turn, ?),`round_number`=GREATEST(round_number, ?) WHERE id = ? AND owner_id = ? AND status IN (?,?)"),
+		regexp.QuoteMeta("UPDATE `game_rooms` SET `current_turn`=GREATEST(current_turn, ?),`round_number`=GREATEST(round_number, ?) WHERE (id = ? AND owner_id = ? AND status IN (?,?)) AND NOT EXISTS (SELECT 1 FROM game_memory_states WHERE room_id = game_rooms.id)"),
 	).WithArgs(12, 12, 41, 7, model.RoomStatusPlaying, model.RoomStatusPaused).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

@@ -134,6 +134,13 @@ func main() {
 		log.Fatalf("Failed to initialize game runtime repository: %v", err)
 	}
 	gameService := service.NewGameService(gameRepo, scriptRepo, aiClient, gameStateRepo)
+	archiveService, err := service.NewGameArchiveService(gameStateRepo, repo.NewGameMemoryRepo(db), cfg.GameArchive)
+	if err != nil {
+		log.Fatalf("Game archive configuration: %v", err)
+	}
+	gameService.ConfigureArchive(archiveService)
+	archiveWorker := service.NewGameArchiveWorker(archiveService)
+	go archiveWorker.Run()
 	gameHandler := handler.NewGameHandler(gameService)
 	userRepo := repo.NewUserRepo(db)
 	friendRepo := repo.NewFriendRepo(db)
@@ -310,6 +317,7 @@ func main() {
 
 	// 关闭 WebSocket Hub
 	deadlineWorker.Stop()
+	archiveWorker.Stop()
 	realtimeBus.Stop()
 	imHub.Stop()
 	presenceCoordinator.Stop()
