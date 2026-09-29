@@ -685,6 +685,9 @@ func (s *GameMemoryLifecycleService) Pause(ctx context.Context, room *model.Game
 		}
 		return err
 	}
+	if source.Memory.ControlOperationID != "" || source.Memory.ArchiveState == "blocked" {
+		return repo.ErrMemoryBusy
+	}
 	if source.Status == model.RoomStatusPlaying {
 		expected := model.GameArchiveExpectation{TimelineID: source.Memory.TimelineID, Generation: source.Generation}
 		if room.IsSolo {

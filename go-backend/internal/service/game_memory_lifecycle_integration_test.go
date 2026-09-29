@@ -634,3 +634,55 @@ func TestGameMemoryLifecycleIntegrationLateSaveAndProgressFence(t *testing.T) {
 		t.Fatal("load progress replaced", room.CurrentTurn)
 	}
 }
+
+type memoryExpiryOnFinish struct {
+	MemoryLifecycleRuntime
+	fixture *archiveIntegrationFixture
+	fired   atomic.Bool
+}
+
+func (r *memoryExpiryOnFinish) FinishMemoryOperation(ctx context.Context, p model.MemoryRuntimeReplacement) error {
+	if r.fired.CompareAndSwap(false, true) {
+		keys, err := r.fixture.client.Keys(ctx, fmt.Sprintf("room:%d:*", p.RoomID)).Result()
+		if err != nil {
+			return err
+		}
+		if len(keys) > 0 {
+			if err = r.fixture.client.Del(ctx, keys...).Err(); err != nil {
+				return err
+			}
+		}
+	}
+	return r.MemoryLifecycleRuntime.FinishMemoryOperation(ctx, p)
+}
+
+func TestGameMemoryLifecycleIntegrationExpiryAtFinalization(t *testing.T) {
+	for _, mode := range []string{"solo", "multiplayer"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			f, s, g := memoryLifecycleFixture(t, mode)
+			manual, err := g.CreateManualSave(ctx, &CreateManualSaveRequest{UserID: 7, RoomID: f.room.ID, SaveName: "expiry"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s.runtime = &memoryExpiryOnFinish{MemoryLifecycleRuntime: f.runtime, fixture: f}
+			req := &LoadGameRequest{UserID: 7, RoomID: f.room.ID, SaveID: manual.Save.ID, RequestID: uuid.NewString()}
+			if _, err = g.LoadGame(ctx, req); !errors.Is(err, repo.ErrGameArchiveNotReady) {
+				t.Fatal("missing runtime finalized", err)
+			}
+			op, _ := f.store.FindOperation(ctx, f.room.ID, req.RequestID)
+			meta, _ := f.runtime.GetGameArchive(ctx, f.room.ID)
+			if op.Phase != "completed" || op.NextRetryAt.Year() == 9999 || meta.ControlOperationID != op.OperationID {
+				t.Fatalf("lost recovery gate %#v %#v", op, meta)
+			}
+			s.runtime = f.runtime
+			if err = s.ProcessOperation(ctx, op, true); err != nil {
+				t.Fatal("restore target", err)
+			}
+			source, err := f.runtime.GetMemoryControlSource(ctx, f.room.ID, 7, mode)
+			if err != nil || source.Status != model.RoomStatusPaused || source.Memory.ControlOperationID != "" || source.Turn != 1 {
+				t.Fatalf("restored %#v %v", source, err)
+			}
+		})
+	}
+}

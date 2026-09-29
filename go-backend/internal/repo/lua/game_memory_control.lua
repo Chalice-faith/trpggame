@@ -156,6 +156,16 @@ if action=='apply' then
 end
 if action=='finish' then
   if redis.call('HGET',KEYS[7],'phase')~='applied' then return reply(91) end
+  if p.kind~='end' then
+    local status=redis.call('GET',key(p.status_key))
+    if redis.call('GET',key(p.generation_key))~=p.generation or (status~='playing' and status~='paused') then return reply(90) end
+    -- A TTL gap cannot publish a usable capability with a missing target image.
+    for _,w in ipairs(p.writes) do
+      if w.kind=='string' then
+        if redis.call('GET',key(w.index))~=w.values[1] then return reply(90) end
+      elseif #w.values>0 and redis.call('EXISTS',key(w.index))~=1 then return reply(90) end
+    end
+  end
   if p.kind=='start' then
     local record_ok,record=pcall(cjson.decode,ARGV[3] or '')
     if not record_ok or type(record)~='table' or record.Kind~='opening' or record.Position~=1 or record.TimelineID~=meta.timeline or
