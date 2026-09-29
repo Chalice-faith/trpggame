@@ -17,6 +17,11 @@ type Config struct {
 	WebSocket   WebSocketConfig
 	Internal    InternalConfig    `mapstructure:"internal"`
 	GameArchive GameArchiveConfig `mapstructure:"game_archive"`
+	GameMemory  GameMemoryConfig  `mapstructure:"game_memory"`
+}
+
+type GameMemoryConfig struct {
+	NewRoomsEnabled bool `mapstructure:"new_rooms_enabled"`
 }
 
 // DefaultWebSocketAllowedOrigins 是本地 Vue 与 Nginx 开发入口的默认 Origin 白名单。
@@ -113,6 +118,7 @@ func Load() (*Config, error) {
 }
 
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("game_memory.new_rooms_enabled", false)
 	d := DefaultGameArchiveConfig()
 	v.SetDefault("game_archive.poll_interval_ms", d.PollIntervalMS)
 	v.SetDefault("game_archive.batch_size", d.BatchSize)

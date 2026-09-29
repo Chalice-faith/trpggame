@@ -34,8 +34,20 @@ func (r *GameMemoryRepo) FindState(ctx context.Context, roomID uint) (*model.Gam
 }
 
 // PrepareOperation persists a control intent and its branch together. It does not enable Redis.
-// The caller must fence runtime writes before preparing load/end (A2/A4).
+// Redis fencing follows the persistent intent; already committed outboxes drain
+// under the occupied control slot without publishing ordinary progress.
 func (r *GameMemoryRepo) PrepareOperation(ctx context.Context, input *model.GameMemoryOperation, target *model.GameTimeline) (*model.GameMemoryOperation, error) {
+	return r.prepareOperation(ctx, input, target, 0)
+}
+
+func (r *GameMemoryRepo) PrepareOperationAtRevision(ctx context.Context, input *model.GameMemoryOperation, target *model.GameTimeline, revision uint64) (*model.GameMemoryOperation, error) {
+	if revision == 0 || revision > 9007199254740987 {
+		return nil, model.ErrInvalidMemoryData
+	}
+	return r.prepareOperation(ctx, input, target, revision)
+}
+
+func (r *GameMemoryRepo) prepareOperation(ctx context.Context, input *model.GameMemoryOperation, target *model.GameTimeline, revision uint64) (*model.GameMemoryOperation, error) {
 	if input == nil {
 		return nil, model.ErrInvalidMemoryData
 	}
@@ -100,6 +112,9 @@ func (r *GameMemoryRepo) PrepareOperation(ctx context.Context, input *model.Game
 			}
 			if state.Status != "ready" || state.ActiveOperationID != nil || !reflect.DeepEqual(state.ActiveTimelineID, op.SourceTimelineID) {
 				return ErrMemoryBusy
+			}
+			if revision != 0 && state.Revision != revision {
+				return ErrMemoryConflict
 			}
 			if err := tx.Model(&state).Updates(map[string]any{"status": "recovering", "active_operation_id": op.OperationID,
 				"revision": gorm.Expr("revision + 1"), "updated_at": time.Now().UTC()}).Error; err != nil {
@@ -173,6 +188,24 @@ func sameTimeline(a, b *model.GameTimeline) bool {
 // AdvanceOperation is a phase CAS; completion atomically publishes the durable branch.
 // redis_applied must only be reported after verifying the corresponding Redis token.
 func (r *GameMemoryRepo) AdvanceOperation(ctx context.Context, roomID uint, operationID, from, to string) error {
+	return r.advanceOperation(ctx, roomID, operationID, from, to, nil)
+}
+
+type MemoryOperationProgress struct {
+	OwnerID      uint
+	Solo         bool
+	Turn, Round  int
+	SnapshotHash string
+}
+
+func (r *GameMemoryRepo) CompleteOperationAndProgress(ctx context.Context, roomID uint, operationID string, progress MemoryOperationProgress) error {
+	if progress.OwnerID == 0 || progress.Turn < 0 || progress.Round < 0 || !model.ValidMemoryHash(progress.SnapshotHash) {
+		return model.ErrInvalidMemoryData
+	}
+	return r.advanceOperation(ctx, roomID, operationID, "redis_applied", "completed", &progress)
+}
+
+func (r *GameMemoryRepo) advanceOperation(ctx context.Context, roomID uint, operationID, from, to string, progress *MemoryOperationProgress) error {
 	allowed := (from == "prepared" && (to == "redis_applied" || to == "aborted" || to == "blocked")) ||
 		(from == "redis_applied" && (to == "completed" || to == "blocked"))
 	if roomID == 0 || !model.ValidMemoryUUID(operationID) || !allowed {
@@ -180,7 +213,7 @@ func (r *GameMemoryRepo) AdvanceOperation(ctx context.Context, roomID uint, oper
 	}
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var room model.GameRoom
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).Select("id").First(&room, roomID).Error; err != nil {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&room, roomID).Error; err != nil {
 			return err
 		}
 		var op model.GameMemoryOperation
@@ -188,10 +221,30 @@ func (r *GameMemoryRepo) AdvanceOperation(ctx context.Context, roomID uint, oper
 			return err
 		}
 		if op.Phase == to {
+			if progress != nil && op.SnapshotHash != progress.SnapshotHash {
+				return ErrMemoryConflict
+			}
 			return nil
 		}
 		if op.Phase != from {
 			return ErrMemoryBusy
+		}
+		if progress != nil {
+			if op.SnapshotHash != progress.SnapshotHash || room.OwnerID != progress.OwnerID || room.IsSolo != progress.Solo ||
+				(room.Status != model.RoomStatusPlaying && room.Status != model.RoomStatusPaused) {
+				return ErrMemoryConflict
+			}
+			updates := map[string]any{"current_turn": progress.Turn, "round_number": progress.Round}
+			if op.Kind == "load" {
+				updates["status"] = model.RoomStatusPaused
+			}
+			if op.Kind == "end" {
+				updates["status"] = model.RoomStatusEnded
+				updates["ended_at"] = time.Now().UTC()
+			}
+			if err := tx.Model(&room).Updates(updates).Error; err != nil {
+				return err
+			}
 		}
 		var state model.GameMemoryState
 		if err := tx.Where("room_id = ?", roomID).First(&state).Error; err != nil {
@@ -242,14 +295,14 @@ func (r *GameMemoryRepo) ListRecoverableOperations(ctx context.Context, now time
 		return nil, model.ErrInvalidMemoryData
 	}
 	var operations []model.GameMemoryOperation
-	err := r.db.WithContext(ctx).Where("phase IN ? AND next_retry_at <= ?", []string{"prepared", "redis_applied"}, now.UTC()).
+	err := r.db.WithContext(ctx).Where("phase IN ? AND next_retry_at <= ?", []string{"prepared", "redis_applied", "completed"}, now.UTC()).
 		Order("next_retry_at ASC, operation_id ASC").Limit(limit).Find(&operations).Error
 	return operations, err
 }
 
 // ScheduleOperationRetry prevents a stale worker from replacing a newer retry schedule.
 func (r *GameMemoryRepo) ScheduleOperationRetry(ctx context.Context, roomID uint, operationID, phase string, expectedAttempts uint, next time.Time, errorClass string) (bool, error) {
-	if roomID == 0 || !model.ValidMemoryUUID(operationID) || (phase != "prepared" && phase != "redis_applied") || next.IsZero() {
+	if roomID == 0 || !model.ValidMemoryUUID(operationID) || (phase != "prepared" && phase != "redis_applied" && phase != "completed") || next.IsZero() {
 		return false, model.ErrInvalidMemoryData
 	}
 	switch errorClass {
@@ -258,7 +311,7 @@ func (r *GameMemoryRepo) ScheduleOperationRetry(ctx context.Context, roomID uint
 		return false, model.ErrInvalidMemoryData
 	}
 	result := r.db.WithContext(ctx).Model(&model.GameMemoryOperation{}).
-		Where("room_id = ? AND operation_id = ? AND phase = ? AND attempts = ?", roomID, operationID, phase, expectedAttempts).
+		Where("room_id = ? AND operation_id = ? AND phase = ? AND attempts = ? AND next_retry_at < ?", roomID, operationID, phase, expectedAttempts, time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)).
 		Updates(map[string]any{"attempts": gorm.Expr("attempts + 1"), "next_retry_at": next.UTC(), "error_class": errorClass, "updated_at": time.Now().UTC()})
 	return result.RowsAffected == 1, result.Error
 }

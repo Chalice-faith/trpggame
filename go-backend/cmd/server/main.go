@@ -139,6 +139,11 @@ func main() {
 		log.Fatalf("Game archive configuration: %v", err)
 	}
 	gameService.ConfigureArchive(archiveService)
+	memoryLifecycle, err := service.NewGameMemoryLifecycleService(repo.NewGameMemoryRepo(db), gameStateRepo, gameRepo, archiveService, cfg.GameArchive)
+	if err != nil {
+		log.Fatalf("Game memory lifecycle configuration: %v", err)
+	}
+	gameService.ConfigureMemoryLifecycle(memoryLifecycle, cfg.GameMemory.NewRoomsEnabled)
 	archiveWorker := service.NewGameArchiveWorker(archiveService)
 	go archiveWorker.Run()
 	gameHandler := handler.NewGameHandler(gameService)
@@ -278,6 +283,10 @@ func main() {
 	roomRepo := repo.NewRoomRepo(db)
 	roomService := service.NewRoomService(roomRepo)
 	roomService.ConfigureMultiplayer(gameStateRepo, aiClient, realtimeBus)
+	memoryLifecycle.ConfigureRoomStarter(roomRepo)
+	roomService.ConfigureMemoryLifecycle(memoryLifecycle, cfg.GameMemory.NewRoomsEnabled)
+	memoryWorker := service.NewGameMemoryLifecycleWorker(memoryLifecycle)
+	go memoryWorker.Run()
 	roomService.SetMutationPublisher(roomRealtime)
 	roomService.SetPresenceNotifier(presenceCoordinator)
 	roomHandler := handler.NewRoomHandler(roomService)
@@ -317,6 +326,7 @@ func main() {
 
 	// 关闭 WebSocket Hub
 	deadlineWorker.Stop()
+	memoryWorker.Stop()
 	archiveWorker.Stop()
 	realtimeBus.Stop()
 	imHub.Stop()

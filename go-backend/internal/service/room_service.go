@@ -124,13 +124,19 @@ type MultiplayerGameState struct {
 }
 
 type RoomService struct {
-	rooms     RoomRepository
-	publisher RoomMutationPublisher
-	runtime   MultiplayerRuntimeRepository
-	ai        MultiplayerOpeningClient
-	sequences RoomSequenceProvider
-	presence  GamePresenceNotifier
-	now       func() time.Time
+	rooms           RoomRepository
+	publisher       RoomMutationPublisher
+	runtime         MultiplayerRuntimeRepository
+	ai              MultiplayerOpeningClient
+	sequences       RoomSequenceProvider
+	presence        GamePresenceNotifier
+	now             func() time.Time
+	memoryLifecycle *GameMemoryLifecycleService
+	memoryNewRooms  bool
+}
+
+func (s *RoomService) ConfigureMemoryLifecycle(lifecycle *GameMemoryLifecycleService, newRooms bool) {
+	s.memoryLifecycle, s.memoryNewRooms = lifecycle, newRooms
 }
 
 func (s *RoomService) SetMutationPublisher(publisher RoomMutationPublisher) {
@@ -329,6 +335,19 @@ func (s *RoomService) startMultiplayer(ctx context.Context, actorID, roomID uint
 		return nil, fmt.Errorf("%w: generate opening narrative", ErrMultiplayerAIUnavailable)
 	}
 	state.Opening = model.RuntimeMessage{Role: "assistant", Content: strings.TrimSpace(opening.Narrative)}
+	if s.memoryNewRooms && s.memoryLifecycle != nil {
+		snapshot := &model.MultiplayerRuntimeSnapshot{Version: model.MultiplayerRuntimeSnapshotVersion, RoomID: roomID,
+			Generation: state.Generation, Status: model.RoomStatusPaused, TurnOrder: state.TurnOrder, Players: state.Players,
+			CurrentActorID: state.TurnOrder[0], RecentMessages: []model.RuntimeMessage{state.Opening}}
+		if _, err := s.memoryLifecycle.Start(ctx, &candidate.Room, nil, snapshot); err != nil {
+			return nil, err
+		}
+		record, err := s.rooms.Get(ctx, actorID, roomID)
+		if err != nil {
+			return nil, mapRoomError(err)
+		}
+		return s.roomMutationResult(record), nil
+	}
 	if err := s.runtime.InitializeMultiplayerRoom(ctx, state); err != nil {
 		cleanupErr := s.deleteProvisional(state)
 		if cleanupErr != nil {

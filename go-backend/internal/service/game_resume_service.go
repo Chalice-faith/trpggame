@@ -41,6 +41,14 @@ func (s *GameService) ResumeGame(
 	if room == nil || room.ID != req.RoomID || room.OwnerID != req.UserID {
 		return nil, fmt.Errorf("%w: invalid room repository result", ErrInternal)
 	}
+	if state, err := s.memoryState(ctx, room.ID); err != nil {
+		return nil, err
+	} else if state != nil {
+		if err := s.memoryLifecycle.Resume(ctx, room, state); err != nil {
+			return nil, err
+		}
+		return resumedGameResult(room.ID), nil
+	}
 	if !room.IsSolo {
 		return s.resumeMultiplayerGame(ctx, req, room)
 	}

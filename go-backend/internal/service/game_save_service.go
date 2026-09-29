@@ -49,6 +49,11 @@ func (s *GameService) CreateManualSave(
 	if room == nil || room.ID != req.RoomID || room.OwnerID != req.UserID {
 		return nil, fmt.Errorf("%w: invalid room repository result", ErrInternal)
 	}
+	if state, err := s.memoryState(ctx, room.ID); err != nil {
+		return nil, err
+	} else if state != nil {
+		return s.memoryLifecycle.ManualSave(ctx, room, saveName)
+	}
 	if !room.IsSolo {
 		return s.createMultiplayerManualSave(ctx, req, saveName, room)
 	}

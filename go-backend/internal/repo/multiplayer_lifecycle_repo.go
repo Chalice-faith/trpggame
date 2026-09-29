@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -241,6 +242,41 @@ func (r *RedisGameStateRepo) RestoreMultiplayerRoom(
 
 func validatePausedMultiplayerSnapshot(snapshot *model.MultiplayerRuntimeSnapshot) error {
 	return validateMultiplayerSnapshot(snapshot, model.RoomStatusPaused)
+}
+
+// ValidateMemoryMultiplayerSnapshot validates a timer-free paused V2 body used
+// inside V3. Inventory/state semantics match the existing atomic commit path.
+func ValidateMemoryMultiplayerSnapshot(snapshot *model.MultiplayerRuntimeSnapshot) error {
+	if err := validatePausedMultiplayerSnapshot(snapshot); err != nil {
+		return err
+	}
+	for _, player := range snapshot.Players {
+		if _, _, err := normalizePlayerState(player.PlayerState, true); err != nil {
+			return err
+		}
+		seenItems, seenBuffs := map[string]bool{}, map[string]bool{}
+		if len(player.Items) > maxRuntimeCollectionSize || len(player.Buffs) > maxRuntimeCollectionSize || len(player.PlayerState) > maxRuntimeCollectionSize {
+			return ErrInvalidGameRuntimeState
+		}
+		for _, item := range player.Items {
+			if seenItems[item.Name] || strings.TrimSpace(item.Name) != item.Name || utf8.RuneCountInString(item.Name) > 200 || utf8.RuneCountInString(item.Description) > 1000 {
+				return ErrInvalidGameRuntimeState
+			}
+			seenItems[item.Name] = true
+		}
+		for _, buff := range player.Buffs {
+			if seenBuffs[buff.Name] || strings.TrimSpace(buff.Name) != buff.Name || utf8.RuneCountInString(buff.Name) > 200 {
+				return ErrInvalidGameRuntimeState
+			}
+			seenBuffs[buff.Name] = true
+		}
+	}
+	for _, message := range snapshot.RecentMessages {
+		if len(message.Content) > 64<<10 {
+			return ErrInvalidGameRuntimeState
+		}
+	}
+	return nil
 }
 
 func validateMultiplayerSnapshot(snapshot *model.MultiplayerRuntimeSnapshot, expectedStatus model.RoomStatus) error {

@@ -349,6 +349,11 @@ func (s *GameService) FlushPendingMultiplayerAutoSaves(ctx context.Context, room
 	if roomID == 0 {
 		return ErrInvalidGameAction
 	}
+	if state, err := s.memoryState(ctx, roomID); err != nil {
+		return err
+	} else if state != nil {
+		return s.memoryLifecycle.FlushAutoSaves(ctx, roomID)
+	}
 	runtime := s.lifecycleRuntime()
 	gameRepo, ok := s.gameRepo.(MultiplayerGameRepository)
 	if runtime == nil || !ok {
@@ -456,7 +461,9 @@ func validateMultiplayerLiveSnapshot(ctx context.Context, gameRepo MultiplayerGa
 	return validateMultiplayerRoomRoster(ctx, gameRepo, room, snapshot)
 }
 
-func validateMultiplayerRoomRoster(ctx context.Context, gameRepo MultiplayerGameRepository, room *model.GameRoom, snapshot *model.MultiplayerRuntimeSnapshot) error {
+func validateMultiplayerRoomRoster(ctx context.Context, gameRepo interface {
+	FindPlayersByRoom(context.Context, uint) ([]model.RoomPlayer, error)
+}, room *model.GameRoom, snapshot *model.MultiplayerRuntimeSnapshot) error {
 	var frozenOrder []uint
 	decoder := json.NewDecoder(bytes.NewReader(room.TurnOrder))
 	decoder.DisallowUnknownFields()

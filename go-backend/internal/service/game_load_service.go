@@ -14,9 +14,10 @@ import (
 
 // LoadGameRequest 是从指定房间存档恢复运行态的服务层请求。
 type LoadGameRequest struct {
-	UserID uint
-	RoomID uint
-	SaveID uint
+	RequestID string
+	UserID    uint
+	RoomID    uint
+	SaveID    uint
 }
 
 // LoadGameResult 返回恢复后的安全运行态摘要。读档完成后房间保持暂停。
@@ -47,16 +48,20 @@ func (s *GameService) LoadGame(
 	if room == nil || room.ID != req.RoomID || room.OwnerID != req.UserID {
 		return nil, fmt.Errorf("%w: invalid room repository result", ErrInternal)
 	}
-	if room.Status != model.RoomStatusPlaying && room.Status != model.RoomStatusPaused {
-		return nil, ErrGameRoomNotLoadable
-	}
-
 	save, err := s.gameRepo.FindSaveByID(ctx, room.ID, req.SaveID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrGameSaveNotFound
 		}
 		return nil, fmt.Errorf("%w: find game save for load: %v", ErrInternal, err)
+	}
+	if state, err := s.memoryState(ctx, room.ID); err != nil {
+		return nil, err
+	} else if state != nil {
+		return s.memoryLifecycle.Load(ctx, req, room, save)
+	}
+	if room.Status != model.RoomStatusPlaying && room.Status != model.RoomStatusPaused {
+		return nil, ErrGameRoomNotLoadable
 	}
 	if !room.IsSolo {
 		return s.loadMultiplayerSave(ctx, req, room, save)
