@@ -326,6 +326,17 @@ func (s *RoomService) startMultiplayer(ctx context.Context, actorID, roomID uint
 	if err != nil {
 		return nil, err
 	}
+	// Persisted start intents remain authoritative after the short Redis lease
+	// expires, and when creation of new memory rooms has been switched off.
+	if s.memoryLifecycle != nil {
+		memory, err := s.memoryLifecycle.State(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		if memory != nil {
+			return nil, ErrMultiplayerStartInProgress
+		}
+	}
 	opening, err := s.ai.StartGame(ctx, &ai_client.StartGameRequest{
 		RoomID: roomID, ScriptID: candidate.Room.ScriptID,
 		UserID: state.TurnOrder[0], CharacterID: state.Players[0].CharacterID,

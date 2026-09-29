@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -149,6 +150,32 @@ func multiplayerStartRecords() (*repo.RoomRecord, *repo.RoomRecord) {
 		Members: members, Characters: characters, Mutation: "game_started", AffectedUserID: 7,
 	}
 	return waiting, playing
+}
+
+type memoryStartIntentJournal struct{ MemoryLifecycleJournal }
+
+func (memoryStartIntentJournal) FindState(context.Context, uint) (*model.GameMemoryState, error) {
+	id := uuid.NewString()
+	return &model.GameMemoryState{RoomID: 41, Status: "initializing", Revision: 1, ActiveOperationID: &id}, nil
+}
+
+func TestRoomServicePendingMemoryStartDoesNotRegenerateOpening(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			waiting, _ := multiplayerStartRecords()
+			runtime := &multiplayerRuntimeStub{}
+			ai := &multiplayerAIStub{response: &ai_client.StartGameResponse{Narrative: "opening"}}
+			svc := NewRoomService(&multiplayerRoomRepoStub{candidate: waiting})
+			svc.ConfigureMultiplayer(runtime, ai, nil)
+			svc.ConfigureMemoryLifecycle(&GameMemoryLifecycleService{journal: memoryStartIntentJournal{}}, enabled)
+			if _, err := svc.Start(context.Background(), 7, 41, 3); !errors.Is(err, ErrMultiplayerStartInProgress) {
+				t.Fatal(err)
+			}
+			if ai.request != nil || runtime.initialized {
+				t.Fatal("pending start called AI or replaced runtime")
+			}
+		})
+	}
 }
 
 func TestRoomServiceCoordinatesMultiplayerStartAndStateRead(t *testing.T) {
