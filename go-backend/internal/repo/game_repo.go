@@ -287,6 +287,14 @@ func (r *GameRepo) CreateSave(
 	ctx context.Context,
 	save *model.GameSave,
 ) error {
+	memory, err := validateMemorySave(save)
+	if err != nil {
+		return err
+	}
+	if memory {
+		_, err := r.createMemorySave(ctx, save)
+		return err
+	}
 	return r.db.WithContext(ctx).Create(save).Error
 }
 
@@ -297,6 +305,13 @@ func (r *GameRepo) CreateAutoSave(
 ) (bool, error) {
 	if save == nil || !save.IsAuto || save.RoomID == 0 || save.RoundNumber <= 0 {
 		return false, errors.New("invalid automatic game save")
+	}
+	memory, err := validateMemorySave(save)
+	if err != nil {
+		return false, err
+	}
+	if memory {
+		return r.createMemorySave(ctx, save)
 	}
 	result := r.db.WithContext(ctx).
 		Clauses(clause.OnConflict{DoNothing: true}).

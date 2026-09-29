@@ -300,6 +300,8 @@ type GameSave struct {
 	RedisSnapshot  json.RawMessage `gorm:"type:json;not null" json:"redis_snapshot"`
 	RecentMessages json.RawMessage `gorm:"type:json;not null" json:"recent_messages"`
 	IsAuto         bool            `gorm:"not null;default:false" json:"is_auto"`
+	TimelineID     *string         `gorm:"size:36" json:"timeline_id,omitempty"`
+	MemoryPosition *uint64         `json:"memory_position,omitempty"`
 	CreatedAt      time.Time       `json:"created_at"`
 }
 

@@ -1,0 +1,18 @@
+{
+  "id": 71,
+  "room_id": 41,
+  "save_name": "Phase 3 legacy solo",
+  "round_number": 10,
+  "summary_memory": "玩家已取得旧钥匙。",
+  "redis_snapshot": {
+    "version": 1,
+    "status": "paused",
+    "turn": 10,
+    "turn_order": [7],
+    "player_state": {"hp": "12", "max_hp": "12"},
+    "items": [{"name": "旧钥匙", "quantity": 1, "description": "旧存档保留的物品"}],
+    "buffs": []
+  },
+  "recent_messages": [{"role": "assistant", "content": "你把旧钥匙收进背包。"}],
+  "is_auto": true
+}

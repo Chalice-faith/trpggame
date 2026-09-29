@@ -223,11 +223,11 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 **目标**：长局记忆 + 自定义角色 + 剧情投票 + Web 体验与验收收口。
 
-**状态**：已整理 [Phase 3 规划设计](./Phase3规划设计.md)，尚未实现；新增执行规则待确认。开发者当前继续完成 M2.5 目标环境验收与合并后冒烟，不因本规划关闭旧验收事项。
+**状态**：2026-09-29 按开发者指令启动，M3.1-A/A1 持久化底座已实现并通过本地验证，A2—A6 待推进；首块采用方案建议，其余规则待确认。当前工作分支 `dev/phase3`、HEAD `622f30f`，代码未提交；见 [分块验证记录](./M3.1-A验收记录.md)。旧阶段真实验收仍暂缓，后续 CI 与发布门禁保留。
 
 #### M3.0 准备
 
-- [ ] 归档真实验收反馈、核对需求差异、确认 P3-D01—P3-D10 和建立基线
+- [ ] 记录真实验收暂缓边界、核对需求差异、确认当前分块决策和建立可执行基线；目标环境反馈后补
 
 #### M3.1 记忆增强
 
@@ -271,9 +271,12 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 015_create_group_members.sql       # M2.3，已实现
 016_extend_game_rooms.sql          # M2.4，已实现
 017_extend_room_players.sql        # M2.4，已实现
+018_create_game_memory_timelines.sql # M3.1-A/A1，已实现
+019_create_game_action_records.sql   # M3.1-A/A1，已实现
+020_extend_game_saves_memory.sql     # M3.1-A/A1，已实现
 ```
 
-Phase 3 迁移从实施时 manifest 的下一编号追加（当前为 018），字段与文件名在实施方案冻结；不得占用旧编号或修改已执行迁移。
+Phase 3 已追加 018—020（时间线/记忆状态、档案/操作、新存档元数据及唯一键）；下一编号为 021。不得占用旧编号或修改已执行迁移。
 
 ---
 

@@ -7,6 +7,8 @@
     "api:lint": "redocly lint go-backend/internal/openapi/openapi.yaml",
     "db:migrate": "node database/scripts/migrate.mjs",
     "db:test": "node --test database/test/*.test.mjs",
+    "db:test:memory-upgrade": "node database/test/memory-upgrade.integration.mjs",
+    "db:test:memory-empty": "node database/test/memory-empty.integration.mjs",
     "db:verify": "npm run db:test"
   },
   "dependencies": {

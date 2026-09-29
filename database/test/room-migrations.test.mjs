@@ -6,7 +6,8 @@ import { orderedMigrationNames } from '../migrations/manifest.mjs';
 const readMigration = (name) => readFile(new URL(`../migrations/${name}`, import.meta.url), 'utf8');
 
 test('registers M2.4 room migrations after group migrations', () => {
-  assert.deepEqual(orderedMigrationNames.slice(-2), [
+  const start = orderedMigrationNames.indexOf('016_extend_game_rooms.sql');
+  assert.deepEqual(orderedMigrationNames.slice(start, start + 2), [
     '016_extend_game_rooms.sql',
     '017_extend_room_players.sql',
   ]);

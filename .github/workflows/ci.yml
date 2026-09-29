@@ -115,6 +115,53 @@ jobs:
         env:
           TRPG_TEST_MYSQL_DSN: "trpg:trpg123@tcp(127.0.0.1:3306)/trpggame?charset=utf8mb4&parseTime=True&loc=UTC"
 
+  memory-mysql:
+    name: Game memory persistence (MySQL 8.4)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: phase3_memory_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      TRPG_MIGRATIONS_HOST: 127.0.0.1
+      TRPG_MIGRATIONS_PORT: "3306"
+      TRPG_MIGRATIONS_USER: root
+      TRPG_MIGRATIONS_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-backend/go.mod
+          cache-dependency-path: go-backend/go.sum
+      - run: npm ci
+      - name: Verify empty memory schema
+        run: npm run db:test:memory-empty
+        env:
+          TRPG_MIGRATIONS_DATABASE: phase3_empty_memory_test
+      - name: Verify 017 upgrade and legacy saves
+        run: npm run db:test:memory-upgrade
+        env:
+          TRPG_MIGRATIONS_DATABASE: phase3_memory_test
+      - name: Verify archive, branch, control and save repositories
+        working-directory: go-backend
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGameMemoryMySQL84'
+        env:
+          TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
+
   vue:
     name: Vue tests and build
     runs-on: ubuntu-latest
