@@ -14,3 +14,15 @@ func TestGameArchiveConfigEnvironmentAndBounds(t *testing.T) {
 		t.Fatal("invalid lease accepted")
 	}
 }
+
+func TestGameMemoryCreationFlagDefaultsAndEnvironment(t *testing.T) {
+	c, err := Load()
+	if err != nil || c.GameMemory.NewRoomsEnabled {
+		t.Fatalf("creation enabled by default: %#v %v", c, err)
+	}
+	t.Setenv("TRPG_GAME_MEMORY_NEW_ROOMS_ENABLED", "true")
+	c, err = Load()
+	if err != nil || !c.GameMemory.NewRoomsEnabled {
+		t.Fatalf("creation flag: %#v %v", c, err)
+	}
+}

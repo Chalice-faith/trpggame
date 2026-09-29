@@ -43,6 +43,9 @@ internal:
   shared_secret: "dev-internal-secret-change-in-production"
 
 # Recovery remains active for already enabled rooms; this does not enable new rooms.
+game_memory:
+  new_rooms_enabled: false
+
 game_archive:
   poll_interval_ms: 1000
   batch_size: 32

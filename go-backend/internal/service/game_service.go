@@ -106,6 +106,8 @@ type GameService struct {
 	presenceNotifier     GamePresenceNotifier
 	now                  func() time.Time
 	archiveService       *GameArchiveService
+	memoryLifecycle      *GameMemoryLifecycleService
+	memoryNewRooms       bool
 }
 
 // StartSoloGameRequest 是单人快速开始的服务层请求。
@@ -152,6 +154,17 @@ func (s *GameService) ConfigurePresence(notifier GamePresenceNotifier) {
 
 func (s *GameService) ConfigureArchive(archive *GameArchiveService) {
 	s.archiveService = archive
+}
+
+func (s *GameService) ConfigureMemoryLifecycle(lifecycle *GameMemoryLifecycleService, newRooms bool) {
+	s.memoryLifecycle, s.memoryNewRooms = lifecycle, newRooms
+}
+
+func (s *GameService) memoryState(ctx context.Context, roomID uint) (*model.GameMemoryState, error) {
+	if s.memoryLifecycle == nil {
+		return nil, nil
+	}
+	return s.memoryLifecycle.State(ctx, roomID)
 }
 
 // StartSoloGame 校验剧本与角色，创建房间，并在开场生成成功后启动游戏。
@@ -239,6 +252,19 @@ func (s *GameService) StartSoloGame(
 	}
 
 	openingNarrative := strings.TrimSpace(opening.Narrative)
+	if s.memoryNewRooms && s.memoryLifecycle != nil {
+		snapshot := &model.SoloRuntimeSnapshot{Version: model.SoloRuntimeSnapshotVersion, RoomID: room.ID, UserID: req.UserID,
+			Status: model.RoomStatusPaused, TurnOrder: []uint{req.UserID}, PlayerState: playerState,
+			Items: []model.RuntimeItem{}, Buffs: []model.RuntimeBuff{}, RecentMessages: []model.RuntimeMessage{{Role: "assistant", Content: openingNarrative}}}
+		if _, err := s.memoryLifecycle.Start(ctx, room, snapshot, nil); err != nil {
+			return nil, err
+		}
+		started, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, room.ID, req.UserID)
+		if err != nil {
+			return nil, err
+		}
+		return &StartSoloGameResult{Room: started, Player: player, OpeningNarrative: openingNarrative}, nil
+	}
 	if err := s.runtimeRepo.InitializeSoloRoom(ctx, &model.SoloRuntimeState{
 		RoomID:      room.ID,
 		UserID:      req.UserID,

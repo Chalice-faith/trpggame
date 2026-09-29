@@ -61,6 +61,11 @@ func (s *GameService) flushPendingAutomaticGameSaves(
 ) error {
 	flushContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), autoSaveTimeout)
 	defer cancel()
+	if state, err := s.memoryState(flushContext, roomID); err != nil {
+		return err
+	} else if state != nil {
+		return s.memoryLifecycle.FlushAutoSaves(flushContext, roomID)
+	}
 	pending, err := s.runtimeRepo.ListPendingAutoSaves(flushContext, roomID, userID)
 	if err != nil {
 		return fmt.Errorf("%w: list pending automatic saves: %v", ErrInternal, err)
