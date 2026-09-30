@@ -425,8 +425,17 @@ func (r *GameMemoryRepo) archive(ctx context.Context, input *model.GameActionRec
 			}
 		}
 		record.CreatedAt = time.Now().UTC()
+		events, err := keyEventsFromRecord(&record)
+		if err != nil {
+			return err
+		}
 		if err := tx.Create(&record).Error; err != nil {
 			return err
+		}
+		if len(events) > 0 {
+			if err := tx.Create(&events).Error; err != nil {
+				return err
+			}
 		}
 		if record.Position > 0 {
 			if err := tx.Model(timeline).Update("durable_position", record.Position).Error; err != nil {

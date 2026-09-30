@@ -49,7 +49,7 @@ func newMemoryFixture(t *testing.T) *memoryFixture {
 	}
 	f := &memoryFixture{db: db, repo: NewGameMemoryRepo(db), roomID: room.ID, rootID: uuid.NewString(), generation: uuid.NewString()}
 	t.Cleanup(func() {
-		for _, table := range []string{"game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
+		for _, table := range []string{"key_events", "game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
 			if err := db.Table(table).Where("room_id = ?", room.ID).Delete(map[string]any{}).Error; err != nil {
 				t.Error(err)
 			}
@@ -187,6 +187,77 @@ func TestGameMemoryMySQL84ConcurrentArchiveAndConflicts(t *testing.T) {
 	}
 	if _, _, err := f.repo.ListVisibleRecords(context.Background(), f.roomID, f.rootID, nil, 100); !errors.Is(err, ErrMemoryConflict) {
 		t.Fatalf("missing hash accepted: %v", err)
+	}
+}
+
+func TestGameMemoryMySQL84KeyEventsFollowCommittedBranch(t *testing.T) {
+	f := newMemoryFixture(t)
+	ctx := context.Background()
+	opening := f.record(f.rootID, 1)
+	if _, err := f.repo.Archive(ctx, opening); err != nil {
+		t.Fatal(err)
+	}
+	eventRecord := func(timeline string, position uint64, name string) *model.GameActionRecord {
+		record := f.record(timeline, position)
+		record.Payload, _ = json.Marshal(map[string]any{"messages": []map[string]string{{"role": "user", "content": "我检查石门"}, {"role": "assistant", "content": "石门开启"}}, "response": map[string]any{
+			"narrative": "石门开启",
+			"effects":   map[string]any{"events": []map[string]string{{"name": name, "description": "已确认"}}},
+		}})
+		return record
+	}
+	shared := eventRecord(f.rootID, 2, "共同历史")
+	if inserted, err := f.repo.Archive(ctx, shared); err != nil || !inserted {
+		t.Fatalf("archive shared: %v %v", inserted, err)
+	}
+	if inserted, err := f.repo.Archive(ctx, shared); err != nil || inserted {
+		t.Fatalf("replay shared: %v %v", inserted, err)
+	}
+	if _, err := f.repo.Archive(ctx, eventRecord(f.rootID, 3, "旧分支未来")); err != nil {
+		t.Fatal(err)
+	}
+	first, more, err := f.repo.ListVisibleKeyEvents(ctx, f.roomID, f.rootID, 0, 0, 1)
+	if err != nil || !more || len(first) != 1 || first[0].Name != "共同历史" || first[0].SourceCommitID != shared.CommitID || first[0].SourceAction != "我检查石门" || first[0].SourceNarrative != "石门开启" {
+		t.Fatalf("first page: %+v %v %v", first, more, err)
+	}
+	next, more, err := f.repo.ListVisibleKeyEvents(ctx, f.roomID, f.rootID, first[0].Position, first[0].EventIndex, 1)
+	if err != nil || more || len(next) != 1 || next[0].Name != "旧分支未来" {
+		t.Fatalf("next page: %+v %v %v", next, more, err)
+	}
+	fork := f.fork(t, f.rootID, f.rootID, 2)
+	if _, err := f.repo.Archive(ctx, eventRecord(fork, 3, "新分支结果")); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := f.repo.ListVisibleKeyEvents(ctx, f.roomID, f.rootID, 0, 0, 50); !errors.Is(err, ErrMemoryCursor) {
+		t.Fatalf("old timeline read: %v", err)
+	}
+	visible, more, err := f.repo.ListVisibleKeyEvents(ctx, f.roomID, fork, 0, 0, 50)
+	if err != nil || more || len(visible) != 2 || visible[0].Name != "共同历史" || visible[1].Name != "新分支结果" {
+		t.Fatalf("fork events: %+v %v %v", visible, more, err)
+	}
+	var count int64
+	if err := f.db.Model(&model.KeyEvent{}).Where("source_commit_id = ?", shared.CommitID).Count(&count).Error; err != nil || count != 1 {
+		t.Fatalf("replayed event count: %d %v", count, err)
+	}
+}
+
+func TestGameMemoryMySQL84InvalidEventRollsBackArchive(t *testing.T) {
+	f := newMemoryFixture(t)
+	ctx := context.Background()
+	if _, err := f.repo.Archive(ctx, f.record(f.rootID, 1)); err != nil {
+		t.Fatal(err)
+	}
+	invalid := f.record(f.rootID, 2)
+	invalid.Payload = []byte(`{"response":{"effects":{"events":[{"name":" ","description":"invalid"}]}}}`)
+	if _, err := f.repo.Archive(ctx, invalid); !errors.Is(err, model.ErrInvalidMemoryData) {
+		t.Fatalf("invalid event accepted: %v", err)
+	}
+	var count int64
+	if err := f.db.Model(&model.GameActionRecord{}).Where("commit_id = ?", invalid.CommitID).Count(&count).Error; err != nil || count != 0 {
+		t.Fatalf("invalid source persisted: %d %v", count, err)
+	}
+	var timeline model.GameTimeline
+	if err := f.db.First(&timeline, "id = ?", f.rootID).Error; err != nil || timeline.DurablePosition != 1 {
+		t.Fatalf("durable watermark changed: %d %v", timeline.DurablePosition, err)
 	}
 }
 

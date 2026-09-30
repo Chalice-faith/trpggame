@@ -11,6 +11,7 @@ import { useMultiplayerStore } from '@/stores/multiplayer'
 import { useMemoryStore } from '@/stores/memory'
 import { useRoomsStore } from '@/stores/rooms'
 import { useWebSocketStore } from '@/stores/websocket'
+import GameKeyEvents from '@/components/GameKeyEvents.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -198,7 +199,7 @@ onBeforeUnmount(() => {
           <article v-for="player in game.snapshot.players" :key="player.user_id" class="player-card"><strong>{{ playerName(player.user_id) }}</strong><small>角色 #{{ player.character_id }}</small><div class="attributes"><span v-for="(value, key) in player.player_state" :key="key">{{ key }} {{ value }}</span></div><small>道具：{{ player.items.map(item => `${item.name} ×${item.quantity}`).join('、') || '无' }}</small><small>效果：{{ player.buffs.map(buff => `${buff.name} (${buff.duration})`).join('、') || '无' }}</small></article>
         </section>
         <section class="panel"><span class="eyebrow">CONTROLS</span><h2>游戏控制</h2><div class="controls">
-          <el-button @click="openSaves">查看存档</el-button>
+          <el-button @click="openSaves">查看存档</el-button><GameKeyEvents v-if="memory.status?.enabled" :room-id="roomId" :timeline-id="memory.status.timeline_id" />
           <template v-if="isOwner && game.status !== 'ended'"><el-button v-if="game.status === 'playing'" :loading="busy === 'pause'" :disabled="!!busy" @click="control('pause')">暂停</el-button><el-button v-else :loading="busy === 'resume'" :disabled="!!busy || !memory.ready" @click="control('resume')">继续</el-button><el-input v-model="saveName" maxlength="256" placeholder="存档名称" /><el-button :loading="busy === 'save'" :disabled="!!busy || !saveName.trim() || !memory.ready" @click="control('save')">手动存档</el-button><el-button type="danger" plain :loading="busy === 'end'" :disabled="!!busy || !memory.ready" @click="control('end')">结束游戏</el-button></template>
         </div></section>
       </aside>

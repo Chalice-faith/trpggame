@@ -19,6 +19,7 @@ export const orderedMigrationNames = [
   '018_create_game_memory_timelines.sql',
   '019_create_game_action_records.sql',
   '020_extend_game_saves_memory.sql',
+  '021_create_key_events.sql',
 ];
 
 export const historicalMigrationChecksums = new Map([

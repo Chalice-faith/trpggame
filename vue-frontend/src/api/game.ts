@@ -71,6 +71,37 @@ export async function getGameMemoryStatus(roomId: number): Promise<GameMemorySta
   return response.data.data
 }
 
+export interface GameKeyEvent {
+  id: number
+  timeline_id: string
+  position: number
+  source_commit_id: string
+  event_index: number
+  event_type: 'trigger_event' | 'character_death'
+  importance: 'major' | 'critical'
+  name: string
+  description: string
+  created_at: string
+  source_action?: string
+  source_narrative?: string
+}
+
+export interface GameKeyEventPage {
+  timeline_id: string
+  items: GameKeyEvent[]
+  has_more: boolean
+  next_position?: number
+  next_index?: number
+}
+
+export async function listGameKeyEvents(roomId: number, timelineId: string, after?: { position: number; index: number }): Promise<GameKeyEventPage> {
+  const response = await api.get<ApiResponse<GameKeyEventPage>>(`/api/v1/games/${roomId}/key-events`, {
+    params: { timeline_id: timelineId, limit: 50,
+      ...(after ? { after_position: after.position, after_index: after.index } : {}) }
+  })
+  return response.data.data
+}
+
 export interface SkipTurnResult {
   generation: string
   skipped_user_id: number

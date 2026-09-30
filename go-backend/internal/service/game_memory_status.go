@@ -25,31 +25,9 @@ type GameMemoryStatus struct {
 }
 
 func (s *GameService) GetGameMemoryStatus(ctx context.Context, userID, roomID uint) (*GameMemoryStatus, error) {
-	if userID == 0 || roomID == 0 {
-		return nil, ErrInvalidGameRequest
-	}
-	// Authorize before looking at the memory journal or Redis. A multiplayer
-	// participant can inspect recovery, but only an active frozen member.
-	room, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, roomID, userID)
-	if errors.Is(err, gorm.ErrRecordNotFound) {
-		rooms, ok := s.gameRepo.(MultiplayerGameRepository)
-		if !ok {
-			return nil, ErrGameRoomNotFound
-		}
-		room, err = rooms.FindRoomByID(ctx, roomID)
-		if err == nil && room != nil && !room.IsSolo {
-			player, lookup := s.gameRepo.FindPlayer(ctx, roomID, userID)
-			if errors.Is(lookup, gorm.ErrRecordNotFound) || (lookup == nil && (player == nil || player.Status != model.RoomPlayerStatusActive)) {
-				return nil, ErrGameRoomNotFound
-			}
-			err = lookup
-		}
-	}
-	if errors.Is(err, gorm.ErrRecordNotFound) || room == nil || room.ID != roomID || (room.IsSolo && room.OwnerID != userID) {
-		return nil, ErrGameRoomNotFound
-	}
+	room, err := s.authorizeMemoryReader(ctx, userID, roomID)
 	if err != nil {
-		return nil, fmt.Errorf("%w: authorize memory status: %v", ErrInternal, err)
+		return nil, err
 	}
 	result := &GameMemoryStatus{RoomID: roomID, Status: "disabled"}
 	if s.memoryLifecycle == nil {
@@ -114,6 +92,36 @@ func (s *GameService) GetGameMemoryStatus(ctx context.Context, userID, roomID ui
 		result.Status = "ready"
 	}
 	return result, nil
+}
+
+func (s *GameService) authorizeMemoryReader(ctx context.Context, userID, roomID uint) (*model.GameRoom, error) {
+	if userID == 0 || roomID == 0 {
+		return nil, ErrInvalidGameRequest
+	}
+	// Authorize before looking at the memory journal or Redis. A multiplayer
+	// participant can inspect recovery, but only an active frozen member.
+	room, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, roomID, userID)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		rooms, ok := s.gameRepo.(MultiplayerGameRepository)
+		if !ok {
+			return nil, ErrGameRoomNotFound
+		}
+		room, err = rooms.FindRoomByID(ctx, roomID)
+		if err == nil && room != nil && !room.IsSolo {
+			player, lookup := s.gameRepo.FindPlayer(ctx, roomID, userID)
+			if errors.Is(lookup, gorm.ErrRecordNotFound) || (lookup == nil && (player == nil || player.Status != model.RoomPlayerStatusActive)) {
+				return nil, ErrGameRoomNotFound
+			}
+			err = lookup
+		}
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || room == nil || room.ID != roomID || (room.IsSolo && room.OwnerID != userID) {
+		return nil, ErrGameRoomNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%w: authorize memory status: %v", ErrInternal, err)
+	}
+	return room, nil
 }
 
 // Check the client branch before any AI call. A duplicate committed request may

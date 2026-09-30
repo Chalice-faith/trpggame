@@ -599,6 +599,66 @@ func (h *GameHandler) MemoryStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": result})
 }
 
+func (h *GameHandler) ListKeyEvents(c *gin.Context) {
+	userID, authorized := gameUserID(c)
+	if !authorized {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1002, "message": "invalid authentication context"})
+		return
+	}
+	roomID, valid := gameRoomID(c)
+	reader, supported := h.svc.(interface {
+		ListGameKeyEvents(context.Context, uint, uint, string, uint64, uint16, int) (*service.GameKeyEventPage, error)
+	})
+	timeline := c.Query("timeline_id")
+	limit := 50
+	if raw := c.Query("limit"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			valid = false
+		} else {
+			limit = parsed
+		}
+	}
+	var position uint64
+	if raw := c.Query("after_position"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			valid = false
+		} else {
+			position = parsed
+		}
+	}
+	var index uint16
+	if raw := c.Query("after_index"); raw != "" {
+		parsed, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || c.Query("after_position") == "" {
+			valid = false
+		} else {
+			index = uint16(parsed)
+		}
+	}
+	if !valid || !supported || !model.ValidMemoryUUID(timeline) || limit < 1 || limit > 100 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1342, "message": "invalid key event request"})
+		return
+	}
+	page, err := reader.ListGameKeyEvents(c.Request.Context(), userID, roomID, timeline, position, index, limit)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameRoomNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"code": 1311, "message": service.ErrGameRoomNotFound.Error()})
+		case errors.Is(err, service.ErrInvalidGameRequest):
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1342, "message": "invalid key event request"})
+		case errors.Is(err, repo.ErrMemoryCursor), errors.Is(err, repo.ErrMemoryBusy):
+			c.JSON(http.StatusConflict, gin.H{"code": 1343, "message": "key event timeline changed"})
+		default:
+			log.Printf("list key events: %v", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1344, "message": "key events unavailable"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": page})
+}
+
 func writeLoadGameError(c *gin.Context, err error) {
 	if writeMemoryBoundaryError(c, err) {
 		return

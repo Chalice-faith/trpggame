@@ -24,6 +24,7 @@ import {
 import { useGameStore } from '@/stores/game'
 import { useMemoryStore } from '@/stores/memory'
 import { useWebSocketStore } from '@/stores/websocket'
+import GameKeyEvents from '@/components/GameKeyEvents.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -313,6 +314,7 @@ onBeforeUnmount(() => {
         <div class="toolbar-grid">
           <el-button :icon="Upload" :disabled="isEnded || !!busyAction || gameStore.isStreaming || !memory.ready" @click="openSaveDialog">保存</el-button>
           <el-button :icon="FolderOpened" :loading="savesLoading" :disabled="!!busyAction" @click="openSaves">存档</el-button>
+          <GameKeyEvents v-if="memory.status?.enabled" :room-id="roomId" :timeline-id="memory.status.timeline_id" />
           <el-button v-if="!isPaused && !isEnded" :icon="VideoPause" :loading="busyAction === 'pause'" :disabled="!!busyAction || gameStore.isStreaming" @click="handlePause">暂停</el-button>
           <el-button v-else-if="isPaused" :icon="VideoPlay" :loading="busyAction === 'resume'" :disabled="!!busyAction || !memory.ready" @click="handleResume">继续</el-button>
           <el-button type="danger" plain :icon="SwitchButton" :loading="busyAction === 'end'" :disabled="isEnded || !!busyAction || !memory.ready" @click="handleEnd">结束</el-button>

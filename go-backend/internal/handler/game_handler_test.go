@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"trpggame/internal/model"
+	"trpggame/internal/repo"
 	"trpggame/internal/service"
 )
 
@@ -48,6 +49,57 @@ type fakeGameStartService struct {
 	memoryErr     error
 	memoryUserID  uint
 	memoryRoomID  uint
+	eventPage     *service.GameKeyEventPage
+	eventErr      error
+	eventUserID   uint
+	eventRoomID   uint
+	eventTimeline string
+	eventAfter    uint64
+	eventLimit    int
+}
+
+func (s *fakeGameStartService) ListGameKeyEvents(_ context.Context, userID, roomID uint, timeline string, after uint64, _ uint16, limit int) (*service.GameKeyEventPage, error) {
+	s.eventUserID, s.eventRoomID, s.eventTimeline, s.eventAfter, s.eventLimit = userID, roomID, timeline, after, limit
+	return s.eventPage, s.eventErr
+}
+
+func TestGameHandlerKeyEventsAuthorizationAndPagination(t *testing.T) {
+	timeline := "550e8400-e29b-41d4-a716-446655440000"
+	fake := &fakeGameStartService{eventPage: &service.GameKeyEventPage{TimelineID: timeline, Items: []model.KeyEvent{}, HasMore: false}}
+	h := NewGameHandler(fake)
+	router := gin.New()
+	router.GET("/games/:roomId/key-events", func(c *gin.Context) {
+		if c.GetHeader("Authorization") == "Bearer valid" {
+			c.Set("user_id", uint(7))
+		}
+		h.ListKeyEvents(c)
+	})
+	url := "/games/41/key-events?timeline_id=" + timeline + "&after_position=12&limit=20"
+	request := httptest.NewRequest(http.MethodGet, url, nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || fake.eventRoomID != 0 {
+		t.Fatalf("unauthorized status=%d", recorder.Code)
+	}
+	request.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || fake.eventUserID != 7 || fake.eventRoomID != 41 || fake.eventTimeline != timeline || fake.eventAfter != 12 || fake.eventLimit != 20 {
+		t.Fatalf("authorized status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	fake.eventErr = service.ErrGameRoomNotFound
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusNotFound, 1311)
+	fake.eventErr = repo.ErrMemoryCursor
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusConflict, 1343)
+	invalid := httptest.NewRequest(http.MethodGet, "/games/41/key-events?timeline_id="+timeline+"&limit=101", nil)
+	invalid.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, invalid)
+	assertJSONError(t, recorder, http.StatusBadRequest, 1342)
 }
 
 func (s *fakeGameStartService) GetGameMemoryStatus(_ context.Context, userID, roomID uint) (*service.GameMemoryStatus, error) {

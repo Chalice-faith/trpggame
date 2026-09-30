@@ -7,12 +7,14 @@ import { applyMigrations, migrationChecksum } from '../lib/runner.mjs';
 const readMigration = (name) => readFile(new URL(`../migrations/${name}`, import.meta.url));
 
 test('memory migrations follow 017 and preserve legacy save scope', async () => {
-  assert.deepEqual(orderedMigrationNames.slice(17), ['018_create_game_memory_timelines.sql', '019_create_game_action_records.sql', '020_extend_game_saves_memory.sql']);
+  assert.deepEqual(orderedMigrationNames.slice(17), ['018_create_game_memory_timelines.sql', '019_create_game_action_records.sql', '020_extend_game_saves_memory.sql', '021_create_key_events.sql']);
   const bodies = await Promise.all(orderedMigrationNames.slice(17).map(async (name) => (await readMigration(name)).toString()));
   assert.match(bodies[1], /UNIQUE KEY uk_game_records_position \(room_id, timeline_id, position\)/);
   assert.match(bodies[1], /UNIQUE KEY uk_game_records_request \(room_id, request_namespace, request_id\)/);
   assert.match(bodies[2], /COALESCE\(timeline_id, 'legacy'\)/);
   assert.match(bodies[2], /DROP INDEX idx_game_saves_auto_round/);
+  assert.match(bodies[3], /UNIQUE KEY uk_key_events_source_index \(source_commit_id, event_index\)/);
+  assert.match(bodies[3], /KEY idx_key_events_branch \(room_id, timeline_id, position, event_index\)/);
   assert.doesNotMatch(bodies.join('\n'), /FOREIGN KEY|DELETE FROM|DROP TABLE/i);
 });
 
@@ -34,6 +36,7 @@ test('017 upgrade executes new CREATE statements separately without replaying ap
   await applyMigrations(connection);
   assert.deepEqual(recorded, orderedMigrationNames.slice(17));
   assert.equal(queries.filter((sql) => /CREATE TABLE IF NOT EXISTS game_/.test(sql)).length, 4);
+  assert.equal(queries.filter((sql) => /CREATE TABLE IF NOT EXISTS key_events/.test(sql)).length, 1);
   assert.equal(queries.filter((sql) => /ALTER TABLE game_saves/.test(sql)).length, 1);
   assert.ok(queries.every((sql) => (sql.match(/CREATE TABLE/g) ?? []).length <= 1));
 });

@@ -1195,6 +1195,56 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ApiError'}
 
+  /api/v1/games/{roomId}/key-events:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 分页读取当前剧情分支的关键事件
+      description: 单人房主或多人有效成员可读。timeline_id 必须是当前时间线；读档切换分支后旧分页请求返回冲突。事件只来自已归档的正式行动。
+      operationId: listGameKeyEvents
+      parameters:
+        - name: timeline_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+        - name: after_position
+          in: query
+          schema: {type: integer, format: int64, minimum: 0}
+        - name: after_index
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 65535}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: 按提交位置和来源内序号升序排列的事件
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GameKeyEventPageResponse'}
+        '400':
+          description: 请求参数无效（1342）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或无权访问（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 时间线已变更或记忆控制中（1343）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 事件暂不可用（1344）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
   /api/v1/games/{roomId}/skip:
     parameters:
       - $ref: '#/components/parameters/RoomId'
@@ -2773,6 +2823,43 @@ components:
         code: {type: integer, enum: [0]}
         message: {type: string, example: ok}
         data: {$ref: '#/components/schemas/GameMemoryStatusData'}
+
+    GameKeyEvent:
+      type: object
+      required: [id, timeline_id, position, source_commit_id, event_index, event_type, importance, name, description, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        timeline_id: {type: string, format: uuid}
+        position: {type: integer, format: int64, minimum: 1}
+        source_commit_id: {type: string, format: uuid}
+        event_index: {type: integer, minimum: 0}
+        event_type: {type: string, enum: [trigger_event, character_death]}
+        importance: {type: string, enum: [major, critical]}
+        name: {type: string, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        created_at: {type: string, format: date-time}
+        source_action: {type: string, description: 已归档的玩家行动}
+        source_narrative: {type: string, description: 已归档的正式叙事}
+
+    GameKeyEventPage:
+      type: object
+      required: [timeline_id, items, has_more]
+      properties:
+        timeline_id: {type: string, format: uuid}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/GameKeyEvent'}
+        has_more: {type: boolean}
+        next_position: {type: integer, format: int64, minimum: 1}
+        next_index: {type: integer, minimum: 0}
+
+    GameKeyEventPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/GameKeyEventPage'}
 
     MultiplayerGameStateResponse:
       type: object
