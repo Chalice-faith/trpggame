@@ -1164,6 +1164,37 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/ApiError'}
 
+  /api/v1/games/{roomId}/memory-status:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 查询游戏归档与恢复状态
+      description: 单人房主或多人有效成员可读。旧房间返回 disabled；断线后可据此确认时间线、世代和待归档水位。此接口不返回历史正文。
+      operationId: getGameMemoryStatus
+      responses:
+        '200':
+          description: 当前权威状态
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GameMemoryStatusResponse'}
+        '400':
+          description: 请求无效（1340）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或无权访问（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 状态暂不可用（1341）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
   /api/v1/games/{roomId}/skip:
     parameters:
       - $ref: '#/components/parameters/RoomId'
@@ -1305,7 +1336,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/LoadGameRequest'
-            example: {save_id: 91}
+            example: {save_id: 91, request_id: 550e8400-e29b-41d4-a716-446655440000}
       responses:
         '200':
           description: 读档成功
@@ -1329,7 +1360,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiError'
         '409':
-          description: 存档损坏（1334）、房间状态不可读档（1335）或 V2 多人存档阵容与冻结成员不兼容（1925）
+          description: 存档损坏（1334）、房间状态不可读档（1335）、分支变化（1342）、恢复中（1343）或 V2 多人存档阵容与冻结成员不兼容（1925）
           content:
             application/json:
               schema:
@@ -2709,6 +2740,39 @@ components:
         recent_messages:
           type: array
           items: {$ref: '#/components/schemas/RuntimeMessage'}
+        memory: {$ref: '#/components/schemas/GameArchiveRuntime'}
+
+    GameArchiveRuntime:
+      type: object
+      required: [timeline_id, head_position, durable_position, archive_state, revision]
+      properties:
+        timeline_id: {type: string, format: uuid}
+        head_position: {type: integer, format: int64, minimum: 0}
+        durable_position: {type: integer, format: int64, minimum: 0}
+        archive_state: {type: string, enum: [ready, pending, recovering, blocked]}
+        control_operation_id: {type: string, format: uuid}
+        revision: {type: integer, format: int64, minimum: 1}
+
+    GameMemoryStatusData:
+      type: object
+      required: [room_id, enabled, status]
+      properties:
+        room_id: {type: integer, format: int64, minimum: 1}
+        enabled: {type: boolean}
+        status: {type: string, enum: [disabled, ready, pending, recovering, blocked, ended]}
+        timeline_id: {type: string, format: uuid}
+        generation: {type: string, format: uuid}
+        head_position: {type: integer, format: int64, minimum: 0}
+        durable_position: {type: integer, format: int64, minimum: 0}
+        revision: {type: integer, format: int64, minimum: 0}
+
+    GameMemoryStatusResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/GameMemoryStatusData'}
 
     MultiplayerGameStateResponse:
       type: object
@@ -2729,6 +2793,8 @@ components:
         expected_turn:
           type: integer
           minimum: 0
+        expected_timeline_id: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+        expected_generation: {type: string, format: uuid, description: 新模式必填；旧房间省略}
         action_text:
           type: string
           minLength: 1
@@ -2873,6 +2939,7 @@ components:
         round_number: {type: integer, minimum: 0}
         current_actor_id: {type: integer, format: int64, minimum: 1}
         deadline_at: {type: string, format: date-time}
+        memory: {$ref: '#/components/schemas/GameArchiveRuntime'}
 
     SubmitActionResponse:
       type: object
@@ -2893,6 +2960,8 @@ components:
       properties:
         request_id: {type: string, format: uuid}
         expected_turn: {type: integer, minimum: 0}
+        expected_timeline_id: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+        expected_generation: {type: string, format: uuid, description: 新模式必填；旧房间省略}
 
     SkipTurnData:
       type: object
@@ -2998,6 +3067,7 @@ components:
           type: integer
           format: int64
           minimum: 1
+        request_id: {type: string, format: uuid, description: 新模式必填；同一次读档重试必须复用}
 
     LoadGameData:
       type: object

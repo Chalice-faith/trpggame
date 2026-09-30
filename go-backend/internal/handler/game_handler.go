@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"trpggame/internal/model"
+	"trpggame/internal/repo"
 	"trpggame/internal/service"
 )
 
@@ -62,9 +63,11 @@ func NewGameHandler(svc GameService) *GameHandler {
 }
 
 type submitActionRequest struct {
-	RequestID    string `json:"request_id" binding:"required"`
-	ExpectedTurn *int   `json:"expected_turn" binding:"required,gte=0"`
-	ActionText   string `json:"action_text" binding:"required"`
+	RequestID          string `json:"request_id" binding:"required"`
+	ExpectedTurn       *int   `json:"expected_turn" binding:"required,gte=0"`
+	ExpectedTimelineID string `json:"expected_timeline_id"`
+	ExpectedGeneration string `json:"expected_generation"`
+	ActionText         string `json:"action_text" binding:"required"`
 }
 
 type submitActionResponse struct {
@@ -77,11 +80,14 @@ type submitActionResponse struct {
 	RoundNumber        int                               `json:"round_number,omitempty"`
 	CurrentActorID     uint                              `json:"current_actor_id,omitempty"`
 	DeadlineAt         *time.Time                        `json:"deadline_at,omitempty"`
+	Memory             *model.GameArchiveRuntime         `json:"memory,omitempty"`
 }
 
 type skipTurnRequest struct {
-	RequestID    string `json:"request_id" binding:"required"`
-	ExpectedTurn *int   `json:"expected_turn" binding:"required,gte=0"`
+	RequestID          string `json:"request_id" binding:"required"`
+	ExpectedTurn       *int   `json:"expected_turn" binding:"required,gte=0"`
+	ExpectedTimelineID string `json:"expected_timeline_id"`
+	ExpectedGeneration string `json:"expected_generation"`
 }
 
 type multiplayerSkipService interface {
@@ -112,7 +118,8 @@ type resumeGameResponse struct {
 }
 
 type loadGameRequest struct {
-	SaveID uint `json:"save_id" binding:"required,gt=0"`
+	SaveID    uint   `json:"save_id" binding:"required,gt=0"`
+	RequestID string `json:"request_id"`
 }
 
 type loadGameResponse struct {
@@ -193,6 +200,9 @@ func (h *GameHandler) StartSoloGame(c *gin.Context) {
 }
 
 func writeStartSoloGameError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGameRequest):
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -266,11 +276,13 @@ func (h *GameHandler) SubmitAction(c *gin.Context) {
 	}
 
 	result, err := h.svc.SubmitAction(c.Request.Context(), &service.SubmitGameActionRequest{
-		UserID:       userID,
-		RoomID:       roomID,
-		RequestID:    request.RequestID,
-		ExpectedTurn: *request.ExpectedTurn,
-		Action:       request.ActionText,
+		UserID:             userID,
+		RoomID:             roomID,
+		RequestID:          request.RequestID,
+		ExpectedTurn:       *request.ExpectedTurn,
+		ExpectedTimelineID: request.ExpectedTimelineID,
+		ExpectedGeneration: request.ExpectedGeneration,
+		Action:             request.ActionText,
 	})
 	if err != nil {
 		writeSubmitActionError(c, err)
@@ -291,6 +303,7 @@ func (h *GameHandler) SubmitAction(c *gin.Context) {
 			Effects: result.Effects, MultiplayerEffects: result.MultiplayerEffects,
 			Generation: result.Generation, CurrentTurn: result.CurrentTurn,
 			RoundNumber: result.RoundNumber, CurrentActorID: result.CurrentActorID, DeadlineAt: result.DeadlineAt,
+			Memory: result.Memory,
 		},
 	})
 }
@@ -310,6 +323,7 @@ func (h *GameHandler) SkipTurn(c *gin.Context) {
 	}
 	result, err := serviceWithSkip.SkipMultiplayerTurn(c.Request.Context(), &service.SkipMultiplayerTurnRequest{
 		UserID: userID, RoomID: roomID, RequestID: request.RequestID, ExpectedTurn: *request.ExpectedTurn,
+		ExpectedTimelineID: request.ExpectedTimelineID, ExpectedGeneration: request.ExpectedGeneration,
 	})
 	if err != nil {
 		writeSubmitActionError(c, err)
@@ -324,6 +338,9 @@ func (h *GameHandler) SkipTurn(c *gin.Context) {
 }
 
 func writeSubmitActionError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
 		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1920, "message": "multiplayer runtime unavailable"})
@@ -410,6 +427,9 @@ func (h *GameHandler) ManualSave(c *gin.Context) {
 }
 
 func writeManualSaveError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGameSave):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1321, "message": service.ErrInvalidGameSave.Error()})
@@ -517,9 +537,10 @@ func (h *GameHandler) LoadGame(c *gin.Context) {
 	}
 
 	result, err := h.svc.LoadGame(c.Request.Context(), &service.LoadGameRequest{
-		UserID: userID,
-		RoomID: roomID,
-		SaveID: request.SaveID,
+		RequestID: request.RequestID,
+		UserID:    userID,
+		RoomID:    roomID,
+		SaveID:    request.SaveID,
 	})
 	if err != nil {
 		writeLoadGameError(c, err)
@@ -544,7 +565,44 @@ func (h *GameHandler) LoadGame(c *gin.Context) {
 	})
 }
 
+type gameMemoryStatusService interface {
+	GetGameMemoryStatus(context.Context, uint, uint) (*service.GameMemoryStatus, error)
+}
+
+// MemoryStatus allows an authorized participant to recover current branch and
+// archive readiness after a lost response or WebSocket reconnect.
+func (h *GameHandler) MemoryStatus(c *gin.Context) {
+	userID, authorized := gameUserID(c)
+	if !authorized {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1002, "message": "invalid authentication context"})
+		return
+	}
+	roomID, valid := gameRoomID(c)
+	statusService, supported := h.svc.(gameMemoryStatusService)
+	if !valid || !supported {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1340, "message": "invalid memory status request"})
+		return
+	}
+	result, err := statusService.GetGameMemoryStatus(c.Request.Context(), userID, roomID)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrGameRoomNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"code": 1311, "message": service.ErrGameRoomNotFound.Error()})
+		case errors.Is(err, service.ErrInvalidGameRequest):
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1340, "message": "invalid memory status request"})
+		default:
+			log.Printf("read memory status: %v", err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1341, "message": "memory status unavailable"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": result})
+}
+
 func writeLoadGameError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGameLoad):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1332, "message": service.ErrInvalidGameLoad.Error()})
@@ -607,6 +665,9 @@ func (h *GameHandler) PauseGame(c *gin.Context) {
 }
 
 func writePauseGameError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGamePause):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1326, "message": service.ErrInvalidGamePause.Error()})
@@ -663,6 +724,9 @@ func (h *GameHandler) ResumeGame(c *gin.Context) {
 }
 
 func writeResumeGameError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGameResume):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1329, "message": service.ErrInvalidGameResume.Error()})
@@ -719,6 +783,9 @@ func (h *GameHandler) EndGame(c *gin.Context) {
 }
 
 func writeEndGameError(c *gin.Context, err error) {
+	if writeMemoryBoundaryError(c, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidGameEnd):
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1337, "message": service.ErrInvalidGameEnd.Error()})
@@ -732,4 +799,18 @@ func writeEndGameError(c *gin.Context, err error) {
 		log.Printf("end game: service error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1339, "message": "internal error"})
 	}
+}
+
+func writeMemoryBoundaryError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, repo.ErrMemoryConflict):
+		c.JSON(http.StatusConflict, gin.H{"code": 1342, "message": "memory branch or request conflict; refresh room state"})
+	case errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveNotReady):
+		c.JSON(http.StatusConflict, gin.H{"code": 1343, "message": "memory archive or recovery is in progress"})
+	case errors.Is(err, repo.ErrGameArchiveCorrupt), errors.Is(err, repo.ErrMemoryGap), errors.Is(err, repo.ErrMemoryBranch):
+		c.JSON(http.StatusServiceUnavailable, gin.H{"code": 1344, "message": "memory state requires recovery"})
+	default:
+		return false
+	}
+	return true
 }

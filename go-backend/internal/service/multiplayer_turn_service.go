@@ -40,10 +40,12 @@ type MultiplayerActionPublisher interface {
 }
 
 type SkipMultiplayerTurnRequest struct {
-	UserID       uint
-	RoomID       uint
-	RequestID    string
-	ExpectedTurn int
+	UserID             uint
+	RoomID             uint
+	RequestID          string
+	ExpectedTurn       int
+	ExpectedTimelineID string
+	ExpectedGeneration string
 }
 
 func (s *GameService) submitMultiplayerAction(
@@ -69,6 +71,13 @@ func (s *GameService) submitMultiplayerAction(
 	}
 	if player == nil || player.Status != model.RoomPlayerStatusActive || player.CharacterID == nil {
 		return nil, ErrGameRoomNotFound
+	}
+	memoryEnabled, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration)
+	if err != nil {
+		return nil, err
+	}
+	if memoryEnabled {
+		fingerprint = memoryRequestFingerprint(fingerprint, req.ExpectedTimelineID, req.ExpectedGeneration)
 	}
 	cached, found, err := runtime.FindActionResult(ctx, room.ID, requestID, fingerprint)
 	if err != nil {
@@ -96,6 +105,9 @@ func (s *GameService) submitMultiplayerAction(
 	if room.Status != model.RoomStatusPlaying {
 		return nil, ErrGameRoomNotPlaying
 	}
+	if err := s.requireMemoryReady(ctx, room); err != nil {
+		return nil, err
+	}
 	snapshot, err := runtime.GetMultiplayerRoom(ctx, room.ID)
 	if err != nil {
 		return nil, mapMultiplayerRuntimeError(err)
@@ -106,6 +118,9 @@ func (s *GameService) submitMultiplayerAction(
 	}
 	if snapshot.CurrentTurn != req.ExpectedTurn {
 		return nil, ErrMultiplayerTurnConflict
+	}
+	if req.ExpectedTimelineID != "" && (snapshot.Memory == nil || snapshot.Memory.TimelineID != req.ExpectedTimelineID || snapshot.Generation != req.ExpectedGeneration) {
+		return nil, repo.ErrMemoryConflict
 	}
 	acquired, err := runtime.AcquireMultiplayerAction(
 		ctx, room.ID, req.UserID, snapshot.Generation, req.ExpectedTurn, requestID, fingerprint, s.now().UTC(),
@@ -282,6 +297,9 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 	if player == nil || player.Status != model.RoomPlayerStatusActive {
 		return nil, ErrGameRoomNotFound
 	}
+	if _, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration); err != nil {
+		return nil, err
+	}
 	snapshot, err := runtime.GetMultiplayerRoom(ctx, room.ID)
 	if err != nil {
 		return nil, mapMultiplayerRuntimeError(err)
@@ -305,6 +323,12 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 	}
 	if snapshot.CurrentTurn != req.ExpectedTurn {
 		return nil, ErrMultiplayerTurnConflict
+	}
+	if err := s.requireMemoryReady(ctx, room); err != nil {
+		return nil, err
+	}
+	if req.ExpectedTimelineID != "" && (snapshot.Memory == nil || snapshot.Memory.TimelineID != req.ExpectedTimelineID || snapshot.Generation != req.ExpectedGeneration) {
+		return nil, repo.ErrMemoryConflict
 	}
 	return s.skipMultiplayer(ctx, gameRepo, runtime, room, snapshot, req.UserID, req.RequestID, "manual", s.now().UTC(), false)
 }

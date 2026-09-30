@@ -29,10 +29,25 @@ type GameArchivePersistence interface {
 // GameArchiveService never generates narrative or reapplies runtime effects.
 // Both synchronous confirmation and recovery use the same outbox/lease protocol.
 type GameArchiveService struct {
-	runtime GameArchiveRuntimeRepository
-	store   GameArchivePersistence
-	options config.GameArchiveConfig
-	now     func() time.Time
+	runtime  GameArchiveRuntimeRepository
+	store    GameArchivePersistence
+	options  config.GameArchiveConfig
+	now      func() time.Time
+	notifier interface {
+		PublishGameArchiveStatus(uint, *model.GameArchiveRuntime)
+	}
+}
+
+func (s *GameArchiveService) ConfigureNotifier(notifier interface {
+	PublishGameArchiveStatus(uint, *model.GameArchiveRuntime)
+}) {
+	s.notifier = notifier
+}
+
+func (s *GameArchiveService) publishStatus(roomID uint, archive *model.GameArchiveRuntime) {
+	if s.notifier != nil && archive != nil {
+		s.notifier.PublishGameArchiveStatus(roomID, archive)
+	}
 }
 
 func NewGameArchiveService(runtime GameArchiveRuntimeRepository, store GameArchivePersistence, options config.GameArchiveConfig) (*GameArchiveService, error) {
@@ -110,12 +125,18 @@ func (s *GameArchiveService) process(parent context.Context, roomID uint) (*mode
 		var result *model.GameArchiveACKResult
 		result, err = s.runtime.AcknowledgeGameArchive(ctx, ack)
 		if err == nil {
+			if result != nil {
+				s.publishStatus(roomID, result.Memory)
+			}
 			return result, nil
 		}
 		// Lost ACK response: retry the identical ACK, never mint a new owner.
 		if errors.Is(err, repo.ErrGameArchiveCommitUnknown) {
 			result, issue := s.runtime.AcknowledgeGameArchive(ctx, ack)
 			if issue == nil {
+				if result != nil {
+					s.publishStatus(roomID, result.Memory)
+				}
 				return result, nil
 			}
 		}
@@ -124,6 +145,9 @@ func (s *GameArchiveService) process(parent context.Context, roomID uint) (*mode
 	defer finish()
 	if permanentArchiveError(err) {
 		_ = s.runtime.BlockGameArchive(cleanup, ack)
+		if current, probe := s.runtime.GetGameArchive(cleanup, roomID); probe == nil {
+			s.publishStatus(roomID, current)
+		}
 	} else {
 		_ = s.runtime.RetryGameArchive(cleanup, ack, s.now().UTC().Add(s.retryDelay(pending.Attempts)))
 	}

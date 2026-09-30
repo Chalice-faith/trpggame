@@ -8,6 +8,7 @@ import { useRoomsStore } from '@/stores/rooms'
 import { useWebSocketStore } from '@/stores/websocket'
 import { useMultiplayerStore } from '@/stores/multiplayer'
 import { useGameStore } from '@/stores/game'
+import { useMemoryStore } from '@/stores/memory'
 
 class MockWebSocket {
   static readonly CONNECTING = 0
@@ -88,6 +89,19 @@ describe('game websocket room events', () => {
       avatar_url: ''
     }
     authStore.accessToken = 'access-token'
+  })
+
+  it('queries authoritative memory state on reconnect and archive notification', () => {
+    const memory = useMemoryStore()
+    const refresh = vi.spyOn(memory, 'refresh').mockResolvedValue(undefined)
+    const socketStore = useWebSocketStore()
+    socketStore.connect(41)
+    const socket = MockWebSocket.instances[0]
+    socket.open()
+    expect(refresh).toHaveBeenCalledWith(41)
+    socket.message({ type: 'memory_status_changed', room_id: 41, seq: 1, data: { archive_state: 'ready' } })
+    expect(refresh).toHaveBeenCalledTimes(2)
+    expect(refresh).toHaveBeenLastCalledWith(41)
   })
 
   it('applies a newer lobby snapshot even when its sequence is the current baseline', () => {

@@ -15,6 +15,18 @@ type RoomRealtime struct{ hub *ws.Hub }
 
 func NewRoomRealtime(hub *ws.Hub) *RoomRealtime { return &RoomRealtime{hub: hub} }
 
+// Archive changes are hints. Clients confirm branch and generation through the
+// authenticated status endpoint before enabling further actions.
+func (r *RoomRealtime) PublishGameArchiveStatus(roomID uint, archive *model.GameArchiveRuntime) {
+	if r == nil || r.hub == nil || roomID == 0 || archive == nil {
+		return
+	}
+	payload, err := json.Marshal(archive)
+	if err == nil {
+		r.hub.BroadcastToRoom(roomID, ws.MsgMemoryStatusChanged, payload)
+	}
+}
+
 func (r *RoomRealtime) PublishRoomMutation(mutation RoomMutation) {
 	if r == nil || r.hub == nil || mutation.Snapshot == nil || mutation.Type == "" {
 		return

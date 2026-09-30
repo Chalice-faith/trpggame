@@ -75,6 +75,43 @@ func memoryLifecycleFixture(t *testing.T, mode string) (*archiveIntegrationFixtu
 	return f, s, g
 }
 
+func TestGameMemoryA5StatusAuthorizationAndBranchExpectation(t *testing.T) {
+	for _, mode := range []string{"solo", "multiplayer"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			f, _, game := memoryLifecycleFixture(t, mode)
+			if _, err := game.GetGameMemoryStatus(ctx, 9, f.room.ID); !errors.Is(err, ErrGameRoomNotFound) {
+				t.Fatalf("unauthorized status: %v", err)
+			}
+			if mode == "multiplayer" {
+				if member, err := game.GetGameMemoryStatus(ctx, 8, f.room.ID); err != nil || !member.Enabled {
+					t.Fatalf("member status=%#v err=%v", member, err)
+				}
+			}
+			pending, err := game.GetGameMemoryStatus(ctx, 7, f.room.ID)
+			if err != nil || pending.Status != "pending" || pending.TimelineID != f.timeline || pending.Generation != f.generation || pending.HeadPosition != 2 || pending.DurablePosition != 1 {
+				t.Fatalf("pending status=%#v err=%v", pending, err)
+			}
+			if err := game.requireMemoryReady(ctx, f.room); !errors.Is(err, repo.ErrGameArchiveNotReady) {
+				t.Fatalf("pending write gate: %v", err)
+			}
+			if _, err := f.service.ArchivePending(ctx, f.room.ID); err != nil {
+				t.Fatal(err)
+			}
+			ready, err := game.GetGameMemoryStatus(ctx, 7, f.room.ID)
+			if err != nil || ready.Status != "ready" || ready.DurablePosition != 2 {
+				t.Fatalf("ready status=%#v err=%v", ready, err)
+			}
+			if _, err := game.verifyMemoryExpectation(ctx, f.room, uuid.NewString(), f.generation); !errors.Is(err, repo.ErrMemoryConflict) {
+				t.Fatalf("stale branch: %v", err)
+			}
+			if _, err := game.verifyMemoryExpectation(ctx, f.room, f.timeline, f.generation); err != nil {
+				t.Fatalf("current branch: %v", err)
+			}
+		})
+	}
+}
+
 func TestGameMemoryLifecycleIntegrationSaveLoadBranchAndEnd(t *testing.T) {
 	for _, mode := range []string{"solo", "multiplayer"} {
 		t.Run(mode, func(t *testing.T) {

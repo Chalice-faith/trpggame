@@ -4,6 +4,7 @@ import { useAuthStore } from './auth'
 import { useGameStore, type GameDiceRoll } from './game'
 import { useRoomsStore } from './rooms'
 import { useMultiplayerStore } from './multiplayer'
+import { useMemoryStore } from './memory'
 import type { RoomSnapshot } from '@/api/rooms'
 
 interface ServerMessage {
@@ -53,6 +54,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
       isConnected.value = true
       reconnectAttempts.value = 0
       lastError.value = ''
+      void useMemoryStore().refresh(targetRoomId).catch(() => {})
       console.log('[WS] Connected')
     }
 
@@ -122,6 +124,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
         void useRoomsStore().openRoom(targetRoomId).catch(() => {})
       }
       if (typeof msg.data?.next_seq === 'number') lastSeq.value = msg.data.next_seq
+      if (targetRoomId) void useMemoryStore().refresh(targetRoomId).catch(() => {})
       return
     }
     dispatchSequenced(msg)
@@ -178,7 +181,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
           multiplayerStore.clearDraft()
           void multiplayerStore.refresh(msg.room_id).catch(() => {})
         }
-        lastError.value = msg.data?.message ?? '行动处理失败'
+        if ([1342, 1343, 1344].includes(msg.data?.code)) {
+          const currentRoomId = msg.room_id || roomId.value
+          if (currentRoomId) void useMemoryStore().refresh(currentRoomId).catch(() => {})
+        }
+        lastError.value = msg.data?.code === 1342 ? '时间线已变化，请刷新房间状态' :
+          msg.data?.code === 1343 ? '行动状态待确认，请等待归档或恢复完成' :
+          msg.data?.code === 1344 ? '游戏状态需要人工恢复' :
+          msg.data?.message ?? '行动处理失败'
         console.error('[WS] Server error:', lastError.value)
         break
       default:
@@ -186,6 +196,9 @@ export const useWebSocketStore = defineStore('websocket', () => {
     }
     if (multiplayerStore.snapshot && ['narrative_chunk', 'narrative_complete', 'dice_roll', 'status_update'].includes(msg.type)) {
       multiplayerStore.handleEvent(msg.type, msg.data, msg.request_id, msg.seq)
+    }
+    if (msg.room_id && ['game_runtime_snapshot', 'game_status_changed', 'game_ended', 'narrative_complete', 'turn_skip', 'turn_start', 'memory_status_changed'].includes(msg.type)) {
+      void useMemoryStore().refresh(msg.room_id).catch(() => {})
     }
   }
 
@@ -204,7 +217,8 @@ export const useWebSocketStore = defineStore('websocket', () => {
   function sendGameAction(actionText: string) {
     const text = actionText.trim()
     const gameStore = useGameStore()
-    if (!text || !roomId.value || !isConnected.value || gameStore.isStreaming ||
+    const memory = useMemoryStore()
+    if (!text || !roomId.value || !isConnected.value || gameStore.isStreaming || !memory.ready ||
       gameStore.currentRoom?.status !== 'playing') return null
     const requestId = crypto.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`
     gameStore.appendNarrative('player', text)
@@ -212,6 +226,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
     send('game_action', {
       request_id: requestId,
       expected_turn: gameStore.currentRoom?.current_turn ?? 0,
+      ...(memory.expected ? { expected_timeline_id: memory.expected.timelineId, expected_generation: memory.expected.generation } : {}),
       action_text: text
     })
     return requestId

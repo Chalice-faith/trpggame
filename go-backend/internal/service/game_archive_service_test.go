@@ -27,6 +27,41 @@ type archiveTestStore struct {
 	wait    bool
 }
 
+type archiveStatusRecorder struct {
+	states []string
+}
+
+func (r *archiveStatusRecorder) PublishGameArchiveStatus(_ uint, archive *model.GameArchiveRuntime) {
+	r.states = append(r.states, archive.ArchiveState)
+}
+
+func TestGameArchiveServiceNotifiesFinalArchiveState(t *testing.T) {
+	for _, blocked := range []bool{false, true} {
+		t.Run(fmt.Sprintf("blocked=%t", blocked), func(t *testing.T) {
+			_, _, svc, store := unitArchiveFixture(t, "solo")
+			if blocked {
+				store.err = repo.ErrMemoryConflict
+			}
+			recorder := &archiveStatusRecorder{}
+			svc.ConfigureNotifier(recorder)
+			_, err := svc.ArchivePending(context.Background(), 41)
+			if blocked && !errors.Is(err, repo.ErrMemoryConflict) {
+				t.Fatalf("blocked err=%v", err)
+			}
+			if !blocked && err != nil {
+				t.Fatal(err)
+			}
+			want := "ready"
+			if blocked {
+				want = "blocked"
+			}
+			if len(recorder.states) != 1 || recorder.states[0] != want {
+				t.Fatalf("archive status notifications=%v, want %s", recorder.states, want)
+			}
+		})
+	}
+}
+
 type archiveBarrierStore struct {
 	GameArchivePersistence
 	committed chan struct{}

@@ -20,11 +20,13 @@ import (
 
 // SubmitGameActionRequest 是玩家行动的服务层请求。
 type SubmitGameActionRequest struct {
-	UserID       uint
-	RoomID       uint
-	RequestID    string
-	ExpectedTurn int
-	Action       string
+	UserID             uint
+	RoomID             uint
+	RequestID          string
+	ExpectedTurn       int
+	ExpectedTimelineID string
+	ExpectedGeneration string
+	Action             string
 }
 
 // ActionDiceRoll 是对客户端稳定的骰子响应契约。
@@ -134,6 +136,13 @@ func (s *GameService) submitAction(
 	if player.CharacterID == nil || *player.CharacterID == 0 {
 		return nil, ErrGamePlayerNotFound
 	}
+	memoryEnabled, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration)
+	if err != nil {
+		return nil, err
+	}
+	if memoryEnabled {
+		fingerprint = memoryRequestFingerprint(fingerprint, req.ExpectedTimelineID, req.ExpectedGeneration)
+	}
 
 	cached, found, err := s.runtimeRepo.FindActionResult(
 		ctx,
@@ -165,6 +174,9 @@ func (s *GameService) submitAction(
 	if room.Status != model.RoomStatusPlaying {
 		return nil, ErrGameRoomNotPlaying
 	}
+	if err := s.requireMemoryReady(ctx, room); err != nil {
+		return nil, err
+	}
 	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
 		return nil, err
 	}
@@ -176,6 +188,9 @@ func (s *GameService) submitAction(
 	)
 	if err != nil {
 		return nil, mapActionRuntimeError(err)
+	}
+	if req.ExpectedGeneration != "" && generation != req.ExpectedGeneration {
+		return nil, repo.ErrMemoryConflict
 	}
 	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, req.ExpectedTurn); err != nil {
 		return nil, err
@@ -321,6 +336,11 @@ func validateGameActionRequest(
 	}
 	fingerprintBytes := sha256.Sum256(payload)
 	return action, requestID, fmt.Sprintf("%x", fingerprintBytes), nil
+}
+
+func memoryRequestFingerprint(base, timelineID, generation string) string {
+	value := sha256.Sum256([]byte(base + "|" + timelineID + "|" + generation))
+	return fmt.Sprintf("%x", value)
 }
 
 func normalizeActionDiceRoll(value *ai_client.DiceRollData) (*ActionDiceRoll, error) {

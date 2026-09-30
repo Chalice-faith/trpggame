@@ -43,6 +43,32 @@ export interface MultiplayerGameState {
   players: MultiplayerPlayer[]
   summary_memory: string
   recent_messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>
+  memory?: GameArchiveRuntime
+}
+
+export interface GameArchiveRuntime {
+  timeline_id: string
+  head_position: number
+  durable_position: number
+  archive_state: 'ready' | 'pending' | 'recovering' | 'blocked'
+  control_operation_id?: string
+  revision: number
+}
+
+export interface GameMemoryStatus {
+  room_id: number
+  enabled: boolean
+  status: 'disabled' | 'ready' | 'pending' | 'recovering' | 'blocked' | 'ended'
+  timeline_id?: string
+  generation?: string
+  head_position?: number
+  durable_position?: number
+  revision?: number
+}
+
+export async function getGameMemoryStatus(roomId: number): Promise<GameMemoryStatus> {
+  const response = await api.get<ApiResponse<GameMemoryStatus>>(`/api/v1/games/${roomId}/memory-status`)
+  return response.data.data
 }
 
 export interface SkipTurnResult {
@@ -60,10 +86,11 @@ export async function getMultiplayerGameState(roomId: number): Promise<Multiplay
   return response.data.data
 }
 
-export async function skipMultiplayerTurn(roomId: number, expectedTurn: number, requestId: string): Promise<SkipTurnResult> {
+export async function skipMultiplayerTurn(roomId: number, expectedTurn: number, requestId: string, expected?: { timelineId: string; generation: string }): Promise<SkipTurnResult> {
   const response = await api.post<ApiResponse<SkipTurnResult>>(`/api/v1/games/${roomId}/skip`, {
     request_id: requestId,
-    expected_turn: expectedTurn
+    expected_turn: expectedTurn,
+    ...(expected ? { expected_timeline_id: expected.timelineId, expected_generation: expected.generation } : {})
   })
   return response.data.data
 }
@@ -115,11 +142,12 @@ export async function listGameSaves(roomId: number): Promise<GameSavesResult> {
 
 export async function loadGame(
   roomId: number,
-  saveId: number
+  saveId: number,
+  requestId: string
 ): Promise<LoadGameResult> {
   const response = await api.post<ApiResponse<LoadGameResult>>(
     `/api/v1/games/${roomId}/load`,
-    { save_id: saveId }
+    { save_id: saveId, request_id: requestId }
   )
   return response.data.data
 }

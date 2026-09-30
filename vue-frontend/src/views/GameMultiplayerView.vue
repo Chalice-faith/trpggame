@@ -8,6 +8,7 @@ import {
 } from '@/api/game'
 import { useAuthStore } from '@/stores/auth'
 import { useMultiplayerStore } from '@/stores/multiplayer'
+import { useMemoryStore } from '@/stores/memory'
 import { useRoomsStore } from '@/stores/rooms'
 import { useWebSocketStore } from '@/stores/websocket'
 
@@ -16,6 +17,7 @@ const router = useRouter()
 const auth = useAuthStore()
 const rooms = useRoomsStore()
 const game = useMultiplayerStore()
+const memory = useMemoryStore()
 const socket = useWebSocketStore()
 const roomId = computed(() => Number(route.params.id))
 const actionText = ref('')
@@ -25,11 +27,14 @@ const savesVisible = ref(false)
 const busy = ref('')
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | undefined
+let memoryTimer: ReturnType<typeof setInterval> | undefined
+let pendingLoad: { saveId: number; requestId: string } | null = null
 
 const room = computed(() => rooms.currentRoom?.id === roomId.value ? rooms.currentRoom : null)
 const isOwner = computed(() => room.value?.owner_id === auth.user?.id)
 const isMyTurn = computed(() => game.currentActorId === auth.user?.id)
-const canAct = computed(() => game.status === 'playing' && isMyTurn.value && !!game.deadlineAt &&
+const canAct = computed(() => game.status === 'playing' && isMyTurn.value && !!game.deadlineAt && memory.ready &&
+  (!memory.status?.enabled || (memory.expected?.generation === game.snapshot?.generation && memory.expected?.timelineId === game.snapshot?.memory?.timeline_id)) &&
   socket.isConnected && !game.actionPending && !busy.value)
 const remaining = computed(() => {
   if (!game.deadlineAt) return null
@@ -66,6 +71,7 @@ async function loadPage() {
       return
     }
     await game.refresh(roomId.value)
+    void memory.refresh(roomId.value).catch(() => {})
     socket.setSequenceBaseline(roomId.value, game.snapshot?.seq ?? 0)
     socket.connect(roomId.value)
   } catch (error) {
@@ -77,6 +83,7 @@ async function refreshPage() {
   try {
     const latestRoom = await rooms.openRoom(roomId.value)
     await game.refresh(latestRoom.id)
+    await memory.refresh(latestRoom.id)
   } catch (error) { failure(error, '快照刷新失败') }
 }
 
@@ -84,7 +91,8 @@ function submitAction() {
   const text = actionText.value.trim()
   if (!canAct.value || !text) return
   const requestId = crypto.randomUUID()
-  socket.send('game_action', { request_id: requestId, expected_turn: game.currentTurn, action_text: text })
+  socket.send('game_action', { request_id: requestId, expected_turn: game.currentTurn, action_text: text,
+    ...(memory.expected ? { expected_timeline_id: memory.expected.timelineId, expected_generation: memory.expected.generation } : {}) })
   game.markSubmitted(requestId)
   actionText.value = ''
 }
@@ -93,7 +101,7 @@ async function skipTurn() {
   if (!canAct.value) return
   busy.value = 'skip'
   try {
-    await skipMultiplayerTurn(roomId.value, game.currentTurn, crypto.randomUUID())
+    await skipMultiplayerTurn(roomId.value, game.currentTurn, crypto.randomUUID(), memory.expected)
     await game.refresh(roomId.value)
   } catch (error) {
     failure(error, '跳过回合失败')
@@ -123,17 +131,22 @@ async function control(operation: 'pause' | 'resume' | 'save' | 'load' | 'end', 
       await refreshSaves()
     }
     if (operation === 'load' && saveId) {
-      await loadGame(roomId.value, saveId)
+      if (!pendingLoad || pendingLoad.saveId !== saveId) pendingLoad = { saveId, requestId: crypto.randomUUID() }
+      await loadGame(roomId.value, saveId, pendingLoad.requestId)
+      pendingLoad = null
       savesVisible.value = false
     }
     if (operation === 'end') {
       await endGame(roomId.value)
-      await rooms.openRoom(roomId.value)
-      await game.refresh(roomId.value)
-    } else await game.refresh(roomId.value)
+      await rooms.openRoom(roomId.value).catch(() => {})
+      await game.refresh(roomId.value).catch(() => {})
+    } else await game.refresh(roomId.value).catch(() => {})
+    await memory.refresh(roomId.value).catch(() => {})
     ElMessage.success({ pause: '已暂停', resume: '已继续', save: '已存档', load: '已读档，请手动继续', end: '游戏已结束' }[operation])
   } catch (error) {
+    if (operation === 'load' && [1332, 1333, 1334, 1335, 1342, 1925].includes((error as any)?.response?.data?.code)) pendingLoad = null
     failure(error, '游戏操作失败')
+    await memory.refresh(roomId.value).catch(() => {})
     if (operation !== 'end') await game.refresh(roomId.value).catch(() => {})
   } finally { busy.value = '' }
 }
@@ -152,10 +165,13 @@ watch(() => socket.lastError, (message) => { if (message) ElMessage.error(messag
 watch(roomId, () => { socket.disconnect(); void loadPage() })
 onMounted(() => {
   clock = setInterval(() => { now.value = Date.now() }, 1000)
+  memoryTimer = setInterval(() => { void memory.refresh(roomId.value).catch(() => {}) }, 3000)
   void loadPage()
 })
 onBeforeUnmount(() => {
   if (clock) clearInterval(clock)
+  if (memoryTimer) clearInterval(memoryTimer)
+  memory.reset()
   socket.disconnect()
   game.reset()
 })
@@ -168,6 +184,7 @@ onBeforeUnmount(() => {
       <div class="top-actions"><el-tag :type="socket.isConnected ? 'success' : 'warning'">{{ socket.isConnected ? '实时连接' : '连接中断' }}</el-tag><el-button @click="refreshPage">刷新快照</el-button></div>
     </header>
     <el-alert v-if="game.error" type="error" :closable="false" :title="game.error" class="notice" />
+    <el-alert v-if="memory.hint" :type="memory.status?.status === 'blocked' ? 'error' : 'warning'" :closable="false" :title="memory.hint" class="notice" />
     <el-alert v-if="game.status === 'paused'" type="warning" :closable="false" title="游戏已暂停，房主继续后会产生新的行动截止时间。" class="notice" />
     <el-alert v-if="game.status === 'ended' || room?.status === 'ended'" type="info" :closable="false" title="游戏已结束；运行态留存期间可查看最近记录，存档仍可查看。" class="notice" />
     <div v-if="game.snapshot" class="columns">
@@ -182,7 +199,7 @@ onBeforeUnmount(() => {
         </section>
         <section class="panel"><span class="eyebrow">CONTROLS</span><h2>游戏控制</h2><div class="controls">
           <el-button @click="openSaves">查看存档</el-button>
-          <template v-if="isOwner && game.status !== 'ended'"><el-button v-if="game.status === 'playing'" :loading="busy === 'pause'" :disabled="!!busy" @click="control('pause')">暂停</el-button><el-button v-else :loading="busy === 'resume'" :disabled="!!busy" @click="control('resume')">继续</el-button><el-input v-model="saveName" maxlength="256" placeholder="存档名称" /><el-button :loading="busy === 'save'" :disabled="!!busy || !saveName.trim()" @click="control('save')">手动存档</el-button><el-button type="danger" plain :loading="busy === 'end'" :disabled="!!busy" @click="control('end')">结束游戏</el-button></template>
+          <template v-if="isOwner && game.status !== 'ended'"><el-button v-if="game.status === 'playing'" :loading="busy === 'pause'" :disabled="!!busy" @click="control('pause')">暂停</el-button><el-button v-else :loading="busy === 'resume'" :disabled="!!busy || !memory.ready" @click="control('resume')">继续</el-button><el-input v-model="saveName" maxlength="256" placeholder="存档名称" /><el-button :loading="busy === 'save'" :disabled="!!busy || !saveName.trim() || !memory.ready" @click="control('save')">手动存档</el-button><el-button type="danger" plain :loading="busy === 'end'" :disabled="!!busy || !memory.ready" @click="control('end')">结束游戏</el-button></template>
         </div></section>
       </aside>
       <section class="story"><div class="story-heading"><span class="eyebrow">ADVENTURE LOG</span><h2>冒险记录</h2></div>
@@ -193,7 +210,7 @@ onBeforeUnmount(() => {
     </div>
     <section v-else-if="room?.status === 'ended'" class="ended-panel"><h2>这场冒险已经结束</h2><p>运行态已关闭，房间成员仍可查看留存的存档。</p><el-button @click="openSaves">查看存档</el-button></section>
     <div v-else-if="game.loading" class="loading">正在读取多人运行态…</div>
-    <el-drawer v-model="savesVisible" title="游戏存档" size="min(420px, 100vw)"><el-button @click="refreshSaves">刷新</el-button><el-empty v-if="!saves.length" description="暂无存档" /><article v-for="save in saves" :key="save.id" class="save-row"><div><strong>{{ save.save_name }}</strong><small>第 {{ save.round_number + (save.is_auto ? 0 : 1) }} 轮 · {{ save.is_auto ? '自动' : '手动' }}</small></div><el-button v-if="isOwner && game.status !== 'ended'" size="small" :disabled="!!busy" @click="control('load', save.id)">读档</el-button></article></el-drawer>
+    <el-drawer v-model="savesVisible" title="游戏存档" size="min(420px, 100vw)"><el-button @click="refreshSaves">刷新</el-button><el-empty v-if="!saves.length" description="暂无存档" /><article v-for="save in saves" :key="save.id" class="save-row"><div><strong>{{ save.save_name }}</strong><small>第 {{ save.round_number + (save.is_auto ? 0 : 1) }} 轮 · {{ save.is_auto ? '自动' : '手动' }}</small></div><el-button v-if="isOwner && game.status !== 'ended'" size="small" :disabled="!!busy || !memory.ready" @click="control('load', save.id)">读档</el-button></article></el-drawer>
   </main>
 </template>
 

@@ -22,11 +22,13 @@ import {
   type GameSaveSummary
 } from '@/api/game'
 import { useGameStore } from '@/stores/game'
+import { useMemoryStore } from '@/stores/memory'
 import { useWebSocketStore } from '@/stores/websocket'
 
 const route = useRoute()
 const router = useRouter()
 const gameStore = useGameStore()
+const memory = useMemoryStore()
 const websocketStore = useWebSocketStore()
 
 const actionText = ref('')
@@ -42,6 +44,8 @@ const busyAction = ref('')
 const diceAnimationKey = ref(0)
 const diceAnimating = ref(false)
 let diceTimer: ReturnType<typeof setTimeout> | undefined
+let memoryTimer: ReturnType<typeof setInterval> | undefined
+let pendingLoad: { saveId: number; requestId: string } | null = null
 
 const roomStatus = computed(() => gameStore.currentRoom?.status || 'playing')
 const isPaused = computed(() => roomStatus.value === 'paused')
@@ -49,6 +53,7 @@ const isEnded = computed(() => roomStatus.value === 'ended')
 const canSend = computed(() =>
   roomStatus.value === 'playing' &&
   websocketStore.isConnected &&
+  memory.ready &&
   !gameStore.isStreaming &&
   actionText.value.trim().length > 0
 )
@@ -158,14 +163,19 @@ async function handleLoad(save: GameSaveSummary) {
 
   busyAction.value = 'load'
   try {
-    const result = await loadGame(roomId.value, save.id)
+    if (!pendingLoad || pendingLoad.saveId !== save.id) pendingLoad = { saveId: save.id, requestId: crypto.randomUUID() }
+    const result = await loadGame(roomId.value, save.id, pendingLoad.requestId)
+    pendingLoad = null
+    await memory.refresh(roomId.value).catch(() => {})
     gameStore.setRoomStatus(result.status)
     gameStore.setCurrentTurn(result.turn)
     gameStore.failNarrative()
     savesDrawerVisible.value = false
     ElMessage.success(`已恢复到第 ${result.turn} 回合，请点击“继续游戏”`)
   } catch (error) {
-    ElMessage.error(apiError(error, '读档失败，请稍后重试'))
+    if ([1332, 1333, 1334, 1335, 1342, 1925].includes((error as any)?.response?.data?.code)) pendingLoad = null
+    await memory.refresh(roomId.value).catch(() => {})
+    ElMessage.error(apiError(error, '读档结果待确认；重试时会复用同一请求 ID'))
   } finally {
     busyAction.value = ''
   }
@@ -254,10 +264,14 @@ onMounted(() => {
     gameStore.setRoom({ id: roomId.value, script_id: 0, title: '单人冒险', status: 'playing', current_turn: 0, round_count: 0 })
   }
   websocketStore.connect(roomId.value)
+  void memory.refresh(roomId.value).catch(() => {})
+  memoryTimer = setInterval(() => { void memory.refresh(roomId.value).catch(() => {}) }, 3000)
   scrollNarrativeToEnd()
 })
 
 onBeforeUnmount(() => {
+  if (memoryTimer) clearInterval(memoryTimer)
+  memory.reset()
   if (diceTimer) clearTimeout(diceTimer)
   websocketStore.disconnect()
 })
@@ -293,13 +307,15 @@ onBeforeUnmount(() => {
       </section>
 
       <section class="game-toolbar" aria-label="游戏控制">
+        <el-alert v-if="memory.hint" :title="memory.hint" :type="memory.status?.status === 'blocked' ? 'error' : 'warning'" :closable="false" />
+        <el-button v-if="memory.hint" text :icon="Refresh" @click="memory.refresh(roomId)">刷新恢复状态</el-button>
         <div class="section-label"><span>游戏工具</span><el-icon><CollectionTag /></el-icon></div>
         <div class="toolbar-grid">
-          <el-button :icon="Upload" :disabled="isEnded || !!busyAction || gameStore.isStreaming" @click="openSaveDialog">保存</el-button>
+          <el-button :icon="Upload" :disabled="isEnded || !!busyAction || gameStore.isStreaming || !memory.ready" @click="openSaveDialog">保存</el-button>
           <el-button :icon="FolderOpened" :loading="savesLoading" :disabled="!!busyAction" @click="openSaves">存档</el-button>
           <el-button v-if="!isPaused && !isEnded" :icon="VideoPause" :loading="busyAction === 'pause'" :disabled="!!busyAction || gameStore.isStreaming" @click="handlePause">暂停</el-button>
-          <el-button v-else-if="isPaused" :icon="VideoPlay" :loading="busyAction === 'resume'" :disabled="!!busyAction" @click="handleResume">继续</el-button>
-          <el-button type="danger" plain :icon="SwitchButton" :loading="busyAction === 'end'" :disabled="isEnded || !!busyAction" @click="handleEnd">结束</el-button>
+          <el-button v-else-if="isPaused" :icon="VideoPlay" :loading="busyAction === 'resume'" :disabled="!!busyAction || !memory.ready" @click="handleResume">继续</el-button>
+          <el-button type="danger" plain :icon="SwitchButton" :loading="busyAction === 'end'" :disabled="isEnded || !!busyAction || !memory.ready" @click="handleEnd">结束</el-button>
         </div>
       </section>
 
@@ -320,7 +336,7 @@ onBeforeUnmount(() => {
       <form class="action-bar" @submit.prevent="submitAction">
         <el-alert v-if="isPaused" title="游戏已暂停，请从左侧工具栏恢复后继续行动。" type="warning" :closable="false" class="paused-alert" />
         <el-alert v-if="isEnded" title="游戏已结束，当前房间不再接受新行动。" type="info" :closable="false" class="paused-alert" />
-        <el-input v-model="actionText" type="textarea" :rows="3" maxlength="2000" show-word-limit resize="none" :disabled="gameStore.isStreaming || !websocketStore.isConnected || isPaused || isEnded" placeholder="例如：我检查书架后面的墙壁……" @keydown="handleActionKeydown" />
+        <el-input v-model="actionText" type="textarea" :rows="3" maxlength="2000" show-word-limit resize="none" :disabled="gameStore.isStreaming || !websocketStore.isConnected || isPaused || isEnded || !memory.ready" placeholder="例如：我检查书架后面的墙壁……" @keydown="handleActionKeydown" />
         <div class="action-footer"><span>Ctrl / ⌘ + Enter 提交行动</span><el-button type="primary" native-type="submit" :disabled="!canSend">{{ gameStore.isStreaming ? '主持人思考中…' : '提交行动' }}</el-button></div>
       </form>
     </main>
@@ -333,7 +349,7 @@ onBeforeUnmount(() => {
     <el-drawer v-model="savesDrawerVisible" title="游戏存档" direction="rtl" size="min(420px, 100vw)">
       <div class="saves-heading"><span>共 {{ saves.length }} 个存档</span><el-button text :icon="Refresh" :loading="savesLoading" @click="refreshSaves">刷新</el-button></div>
       <el-skeleton v-if="savesLoading && saves.length === 0" :rows="5" animated /><el-empty v-else-if="saves.length === 0" description="还没有存档" />
-      <div v-else class="save-list"><article v-for="save in saves" :key="save.id" class="save-item"><div><strong>{{ save.save_name }}</strong><span>第 {{ save.round_number }} 回合 · {{ formatDate(save.created_at) }}</span></div><el-tag v-if="save.is_auto" size="small" type="info">自动</el-tag><el-button type="primary" plain size="small" :loading="busyAction === 'load'" :disabled="!!busyAction || isEnded" :icon="Download" @click="handleLoad(save)">读档</el-button></article></div>
+      <div v-else class="save-list"><article v-for="save in saves" :key="save.id" class="save-item"><div><strong>{{ save.save_name }}</strong><span>第 {{ save.round_number }} 回合 · {{ formatDate(save.created_at) }}</span></div><el-tag v-if="save.is_auto" size="small" type="info">自动</el-tag><el-button type="primary" plain size="small" :loading="busyAction === 'load'" :disabled="!!busyAction || isEnded || !memory.ready" :icon="Download" @click="handleLoad(save)">读档</el-button></article></div>
     </el-drawer>
   </div>
 </template>

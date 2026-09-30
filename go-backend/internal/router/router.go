@@ -170,6 +170,7 @@ func Setup(
 			{
 				games.POST("/solo/start", gameHandler.StartSoloGame)
 				games.GET("/:roomId/state", roomHandler.GameState)
+				games.GET("/:roomId/memory-status", gameHandler.MemoryStatus)
 				games.POST("/:roomId/action", gameHandler.SubmitAction)
 				games.POST("/:roomId/skip", gameHandler.SkipTurn)
 				games.POST("/:roomId/save", gameHandler.ManualSave)

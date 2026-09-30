@@ -44,6 +44,44 @@ type fakeGameStartService struct {
 	endResult     *service.EndGameResult
 	endErr        error
 	endRequest    *service.EndGameRequest
+	memoryResult  *service.GameMemoryStatus
+	memoryErr     error
+	memoryUserID  uint
+	memoryRoomID  uint
+}
+
+func (s *fakeGameStartService) GetGameMemoryStatus(_ context.Context, userID, roomID uint) (*service.GameMemoryStatus, error) {
+	s.memoryUserID, s.memoryRoomID = userID, roomID
+	return s.memoryResult, s.memoryErr
+}
+
+func TestGameHandlerMemoryStatusAuthorizationAndContract(t *testing.T) {
+	fake := &fakeGameStartService{memoryResult: &service.GameMemoryStatus{RoomID: 41, Enabled: true, Status: "pending", TimelineID: "550e8400-e29b-41d4-a716-446655440000", Generation: "550e8400-e29b-41d4-a716-446655440001", HeadPosition: 2, DurablePosition: 1}}
+	h := NewGameHandler(fake)
+	router := gin.New()
+	router.GET("/games/:roomId/memory-status", func(c *gin.Context) {
+		if c.GetHeader("Authorization") == "Bearer valid" {
+			c.Set("user_id", uint(7))
+		}
+		h.MemoryStatus(c)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/games/41/memory-status", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || fake.memoryRoomID != 0 {
+		t.Fatalf("unauthorized status=%d service room=%d", recorder.Code, fake.memoryRoomID)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/games/41/memory-status", nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || fake.memoryUserID != 7 || fake.memoryRoomID != 41 || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	fake.memoryErr = service.ErrGameRoomNotFound
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusNotFound, 1311)
 }
 
 func (s *fakeGameStartService) EndGame(
@@ -1128,7 +1166,7 @@ func TestGameHandlerLoadGame(t *testing.T) {
 		RoomID: 41, SaveID: 91, Status: model.RoomStatusPaused, Turn: 3,
 	}}
 	router := loadGameTestRouter(NewGameHandler(fakeService), uint(7))
-	request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91}`))
+	request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91,"request_id":"550e8400-e29b-41d4-a716-446655440000"}`))
 	request.Header.Set("Content-Type", "application/json")
 	recorder := httptest.NewRecorder()
 
@@ -1138,7 +1176,8 @@ func TestGameHandlerLoadGame(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
 	}
 	if fakeService.loadRequest == nil || fakeService.loadRequest.UserID != 7 ||
-		fakeService.loadRequest.RoomID != 41 || fakeService.loadRequest.SaveID != 91 {
+		fakeService.loadRequest.RoomID != 41 || fakeService.loadRequest.SaveID != 91 ||
+		fakeService.loadRequest.RequestID != "550e8400-e29b-41d4-a716-446655440000" {
 		t.Fatalf("service request = %#v", fakeService.loadRequest)
 	}
 	var response struct {

@@ -32,6 +32,12 @@ type roomAuthorizer struct {
 
 func gameActionErrorCode(err error) int {
 	switch {
+	case errors.Is(err, repo.ErrMemoryConflict):
+		return 1342
+	case errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveNotReady):
+		return 1343
+	case errors.Is(err, repo.ErrGameArchiveCorrupt), errors.Is(err, repo.ErrMemoryGap), errors.Is(err, repo.ErrMemoryBranch):
+		return 1344
 	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
 		return 1920
 	case errors.Is(err, service.ErrMultiplayerTurnConflict):
@@ -145,7 +151,6 @@ func main() {
 	}
 	gameService.ConfigureMemoryLifecycle(memoryLifecycle, cfg.GameMemory.NewRoomsEnabled)
 	archiveWorker := service.NewGameArchiveWorker(archiveService)
-	go archiveWorker.Run()
 	gameHandler := handler.NewGameHandler(gameService)
 	userRepo := repo.NewUserRepo(db)
 	friendRepo := repo.NewFriendRepo(db)
@@ -158,6 +163,7 @@ func main() {
 	hub := ws.NewHub()
 	hub.SetRealtimeBus(realtimeBus)
 	roomRealtime := service.NewRoomRealtime(hub)
+	archiveService.ConfigureNotifier(roomRealtime)
 	gameService.ConfigureMultiplayer(roomRealtime)
 	hub.SetGameActionHandler(func(ctx context.Context, client *ws.Client, request ws.GameActionData) {
 		if request.ExpectedTurn == nil {
@@ -167,11 +173,13 @@ func main() {
 		_, err := gameService.SubmitActionStream(
 			ctx,
 			&service.SubmitGameActionRequest{
-				UserID:       client.UserID,
-				RoomID:       client.RoomID,
-				RequestID:    request.RequestID,
-				ExpectedTurn: *request.ExpectedTurn,
-				Action:       request.ActionText,
+				UserID:             client.UserID,
+				RoomID:             client.RoomID,
+				RequestID:          request.RequestID,
+				ExpectedTurn:       *request.ExpectedTurn,
+				ExpectedTimelineID: request.ExpectedTimelineID,
+				ExpectedGeneration: request.ExpectedGeneration,
+				Action:             request.ActionText,
 			},
 			func(event service.GameActionStreamEvent) {
 				switch event.Type {
@@ -225,13 +233,20 @@ func main() {
 		if err != nil {
 			code := gameActionErrorCode(err)
 			message := "AI action generation unavailable"
-			if code != 1317 {
+			if code == 1342 {
+				message = "memory branch changed; refresh room state"
+			} else if code == 1343 {
+				message = "memory archive or recovery is in progress"
+			} else if code == 1344 {
+				message = "memory state requires recovery"
+			} else if code != 1317 {
 				message = "game action rejected"
 			}
 			hub.SendErrorToUser(client.RoomID, client.UserID, code, message, request.RequestID)
 		}
 	})
 	go hub.Run()
+	go archiveWorker.Run()
 	presenceRepo, err := repo.NewPresenceRepo(redisClient, repo.DefaultPresenceTTL)
 	if err != nil {
 		log.Fatalf("Failed to initialize presence repository: %v", err)

@@ -39,6 +39,7 @@ const (
 	MsgActionStarted         MessageType = "action_started"
 	MsgActionCancelled       MessageType = "action_cancelled"
 	MsgGameStatusChanged     MessageType = "game_status_changed"
+	MsgMemoryStatusChanged   MessageType = "memory_status_changed"
 	MsgGameEnded             MessageType = "game_ended"
 )
 
@@ -114,9 +115,11 @@ type SyncRequestData struct {
 // GameActionData 是客户端通过 WS 提交行动时携带的业务数据。
 // UserID/RoomID 不从客户端读取，由订阅后的连接身份推导。
 type GameActionData struct {
-	RequestID    string `json:"request_id"`
-	ExpectedTurn *int   `json:"expected_turn"`
-	ActionText   string `json:"action_text"`
+	RequestID          string `json:"request_id"`
+	ExpectedTurn       *int   `json:"expected_turn"`
+	ExpectedTimelineID string `json:"expected_timeline_id,omitempty"`
+	ExpectedGeneration string `json:"expected_generation,omitempty"`
+	ActionText         string `json:"action_text"`
 }
 
 // SyncBatchData 重连补推批次。NextSeq 为房间当前水位。
