@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
+	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -721,5 +723,73 @@ func TestGameMemoryLifecycleIntegrationExpiryAtFinalization(t *testing.T) {
 				t.Fatalf("restored %#v %v", source, err)
 			}
 		})
+	}
+}
+
+// A6 exercises the lifecycle boundary with two independent service instances
+// sharing the same MySQL journal and Redis runtime. The first instance loses
+// the response after Redis has applied the load; the second instance must
+// finish the exact operation without minting another branch or replaying AI.
+func TestGameMemoryA6DualInstanceLifecycleRecovery(t *testing.T) {
+	ctx := context.Background()
+	f, first, firstGame := memoryLifecycleFixture(t, "solo")
+	manual, err := firstGame.CreateManualSave(ctx, &CreateManualSaveRequest{UserID: 7, RoomID: f.room.ID, SaveName: "dual-instance"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &LoadGameRequest{UserID: 7, RoomID: f.room.ID, SaveID: manual.Save.ID, RequestID: uuid.NewString()}
+	first.journal = &memoryJournalFault{MemoryLifecycleJournal: f.store, phase: "redis_applied"}
+	if _, err = firstGame.LoadGame(ctx, request); err == nil {
+		t.Fatal("first instance hid lost journal response")
+	}
+	first.journal = f.store
+	op, err := f.store.FindOperation(ctx, f.room.ID, request.RequestID)
+	if err != nil || op.Phase != "redis_applied" {
+		t.Fatalf("pending operation=%#v err=%v", op, err)
+	}
+
+	secondClient := redis.NewClient(&redis.Options{Addr: os.Getenv("TRPG_TEST_REDIS_ADDR")})
+	defer secondClient.Close()
+	secondRuntime, err := repo.NewRedisGameStateRepo(secondClient, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStore := repo.NewGameMemoryRepo(f.db)
+	secondArchive, err := NewGameArchiveService(secondRuntime, secondStore, config.DefaultGameArchiveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLifecycle, err := NewGameMemoryLifecycleService(secondStore, secondRuntime, repo.NewGameRepo(f.db), secondArchive, config.DefaultGameArchiveConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = secondLifecycle.ProcessOperation(ctx, op, true); err != nil {
+		t.Fatalf("second instance recovery: %v", err)
+	}
+
+	state, err := secondLifecycle.State(ctx, f.room.ID)
+	if err != nil || state.Status != "ready" || state.Revision != 5 || state.ActiveTimelineID == nil || *state.ActiveTimelineID == f.timeline {
+		t.Fatalf("recovered state=%#v err=%v", state, err)
+	}
+	meta, err := secondRuntime.GetGameArchive(ctx, f.room.ID)
+	if err != nil || meta.ControlOperationID != "" || meta.ArchiveState != "ready" {
+		t.Fatalf("recovered runtime=%#v err=%v", meta, err)
+	}
+	secondGame := NewGameService(repo.NewGameRepo(f.db), nil, nil, secondRuntime)
+	secondGame.ConfigureArchive(secondArchive)
+	secondGame.ConfigureMemoryLifecycle(secondLifecycle, false)
+	status, err := secondGame.GetGameMemoryStatus(ctx, 7, f.room.ID)
+	if err != nil || !status.Enabled || status.Status != "ready" {
+		t.Fatalf("existing memory room lost while new-room gate is disabled: %#v err=%v", status, err)
+	}
+	if _, err = secondGame.LoadGame(ctx, request); err != nil {
+		t.Fatalf("idempotent replay after recovery: %v", err)
+	}
+	var timelines int64
+	if err = f.db.Model(&model.GameTimeline{}).Where("room_id = ?", f.room.ID).Count(&timelines).Error; err != nil {
+		t.Fatal(err)
+	}
+	if timelines != 2 {
+		t.Fatalf("recovery created duplicate branches: %d", timelines)
 	}
 }
