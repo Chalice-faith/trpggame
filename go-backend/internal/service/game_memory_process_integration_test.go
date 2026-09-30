@@ -130,6 +130,14 @@ func memoryTestRequest(t *testing.T, process *memoryTestProcess, method, path, t
 }
 
 func TestGameMemoryA6ProcessFailoverHTTPAndWebSocket(t *testing.T) {
+	for _, mode := range []string{"solo", "multiplayer"} {
+		t.Run(mode, func(t *testing.T) {
+			gameMemoryA6ProcessFailoverHTTPAndWebSocket(t, mode)
+		})
+	}
+}
+
+func gameMemoryA6ProcessFailoverHTTPAndWebSocket(t *testing.T, mode string) {
 	if os.Getenv("TRPG_TEST_MYSQL_DSN") == "" || os.Getenv("TRPG_TEST_REDIS_ADDR") == "" {
 		t.Skip("dedicated MySQL and Redis are required")
 	}
@@ -166,11 +174,16 @@ func TestGameMemoryA6ProcessFailoverHTTPAndWebSocket(t *testing.T) {
 	defer first.stop()
 	// Let the first worker finish its initial empty scan before creating outbox data.
 	time.Sleep(250 * time.Millisecond)
-	f := newArchiveIntegrationFixture(t, "solo")
-	characterID := uint(101)
-	player := &model.RoomPlayer{RoomID: f.room.ID, UserID: 7, CharacterID: &characterID, Status: model.RoomPlayerStatusActive, IsReady: true, JoinedAt: time.Now().UTC()}
-	if err = f.db.Create(player).Error; err != nil {
-		t.Fatal(err)
+	f := newArchiveIntegrationFixture(t, mode)
+	for i, userID := range []uint{7, 8} {
+		if mode == "solo" && i > 0 {
+			break
+		}
+		characterID := uint(101 + i)
+		player := &model.RoomPlayer{RoomID: f.room.ID, UserID: userID, CharacterID: &characterID, Status: model.RoomPlayerStatusActive, IsReady: true, PlayerOrder: i, JoinedAt: time.Now().UTC()}
+		if err = f.db.Create(player).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Cleanup(func() { f.db.Where("room_id = ?", f.room.ID).Delete(&model.RoomPlayer{}) })
 	token, err := middleware.GenerateToken(7, "owner", "memory-process-test-secret", 15)
@@ -185,12 +198,22 @@ func TestGameMemoryA6ProcessFailoverHTTPAndWebSocket(t *testing.T) {
 	if status, _ := memoryTestRequest(t, first, http.MethodGet, roomPath, "", ""); status != http.StatusUnauthorized {
 		t.Fatalf("memory status missing auth: %d", status)
 	}
-	otherToken, err := middleware.GenerateToken(8, "other", "memory-process-test-secret", 15)
+	otherToken, err := middleware.GenerateToken(9, "other", "memory-process-test-secret", 15)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if status, _ := memoryTestRequest(t, first, http.MethodGet, roomPath, otherToken, ""); status != http.StatusNotFound {
 		t.Fatalf("memory status leaked room: %d", status)
+	}
+	actorToken := token
+	if mode == "multiplayer" {
+		actorToken, err = middleware.GenerateToken(8, "member", "memory-process-test-secret", 15)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status, _ := memoryTestRequest(t, first, http.MethodGet, roomPath, actorToken, ""); status != http.StatusOK {
+			t.Fatalf("active multiplayer member denied status: %d", status)
+		}
 	}
 
 	owner := uuid.NewString()
@@ -237,8 +260,38 @@ func TestGameMemoryA6ProcessFailoverHTTPAndWebSocket(t *testing.T) {
 		t.Fatalf("archive count=%d err=%v", recordCount, err)
 	}
 	staleAction := fmt.Sprintf(`{"request_id":%q,"expected_turn":1,"expected_timeline_id":%q,"expected_generation":%q,"action_text":"look"}`, uuid.NewString(), uuid.NewString(), f.generation)
-	status, body = memoryTestRequest(t, second, http.MethodPost, fmt.Sprintf("/api/v1/games/%d/action", f.room.ID), token, staleAction)
+	status, body = memoryTestRequest(t, second, http.MethodPost, fmt.Sprintf("/api/v1/games/%d/action", f.room.ID), actorToken, staleAction)
 	if status != http.StatusConflict || body["code"] != float64(1342) {
 		t.Fatalf("stale branch action status=%d body=%#v", status, body)
+	}
+	savePath := fmt.Sprintf("/api/v1/games/%d/save", f.room.ID)
+	status, body = memoryTestRequest(t, second, http.MethodPost, savePath, token, `{"save_name":"before branch"}`)
+	if status != http.StatusCreated || body["code"] != float64(0) {
+		t.Fatalf("save status=%d body=%#v", status, body)
+	}
+	saveID := uint(body["data"].(map[string]any)["save_id"].(float64))
+	loadPath := fmt.Sprintf("/api/v1/games/%d/load", f.room.ID)
+	loadRequestID := uuid.NewString()
+	loadBody := fmt.Sprintf(`{"save_id":%d,"request_id":%q}`, saveID, loadRequestID)
+	for attempt := 0; attempt < 2; attempt++ {
+		status, body = memoryTestRequest(t, second, http.MethodPost, loadPath, token, loadBody)
+		if status != http.StatusOK || body["code"] != float64(0) {
+			t.Fatalf("load attempt=%d status=%d body=%#v", attempt, status, body)
+		}
+	}
+	status, body = memoryTestRequest(t, second, http.MethodGet, roomPath, token, "")
+	newMemory := body["data"].(map[string]any)
+	if status != http.StatusOK || newMemory["status"] != "ready" || newMemory["timeline_id"] == f.timeline {
+		t.Fatalf("loaded branch status=%d body=%#v", status, body)
+	}
+	var timelineCount int64
+	if err = f.db.Model(&model.GameTimeline{}).Where("room_id = ?", f.room.ID).Count(&timelineCount).Error; err != nil || timelineCount != 2 {
+		t.Fatalf("load generated duplicate branch count=%d err=%v", timelineCount, err)
+	}
+	restarted := memoryTestStartProcess(t, binary, memoryTestFreePort(t), parsed.Addr, parsed.User, parsed.Passwd, parsed.DBName, os.Getenv("TRPG_TEST_REDIS_ADDR"), minioAddress, 250)
+	defer restarted.stop()
+	status, body = memoryTestRequest(t, restarted, http.MethodGet, roomPath, token, "")
+	if status != http.StatusOK || body["data"].(map[string]any)["timeline_id"] != newMemory["timeline_id"] {
+		t.Fatalf("restarted process branch status=%d body=%#v", status, body)
 	}
 }
