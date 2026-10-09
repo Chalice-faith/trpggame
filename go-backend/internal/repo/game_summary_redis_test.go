@@ -26,8 +26,13 @@ func TestGameSummaryRedis72ProjectionFence(t *testing.T) {
 	meta := gameArchiveKeys(room)[0]
 	summaryKey := multiplayerSummaryKey(room)
 	projectionKey := summaryKey + "_meta"
-	t.Cleanup(func() { client.Del(ctx, meta, summaryKey, projectionKey) })
+	generationKey := runtimeGenerationKey(room)
+	generation := uuid.NewString()
+	statusKey := runtimeStatusKey(room)
+	t.Cleanup(func() { client.Del(ctx, meta, summaryKey, projectionKey, generationKey, statusKey) })
 	client.HSet(ctx, meta, "timeline_id", timeline, "revision", 3, "durable_position", 20, "archive_state", "ready", "control_operation_id", "")
+	client.Set(ctx, generationKey, generation, time.Hour)
+	client.Set(ctx, statusKey, "playing", time.Hour)
 	client.Set(ctx, summaryKey, "old", time.Hour)
 	runtime, _ := NewRedisGameStateRepo(client, time.Hour)
 	if err := runtime.PublishSummary(ctx, room, timeline, 3, 1, 6, "first"); err != nil {
@@ -50,5 +55,22 @@ func TestGameSummaryRedis72ProjectionFence(t *testing.T) {
 	}
 	if client.PTTL(ctx, summaryKey).Val() <= 0 || client.PTTL(ctx, projectionKey).Val() <= 0 {
 		t.Fatal("projection TTL lost")
+	}
+	client.HSet(ctx, meta, "control_operation_id", "")
+	client.Del(ctx, summaryKey, projectionKey)
+	_ = runtime.PublishSummary(ctx, room, timeline, 3, 2, 12, "recovered from MySQL")
+	if client.Get(ctx, summaryKey).Val() != "recovered from MySQL" || client.PTTL(ctx, summaryKey).Val() <= 0 || client.PTTL(ctx, summaryKey).Val() > client.PTTL(ctx, generationKey).Val()+time.Second {
+		t.Fatal("missing cache was not recreated with runtime TTL")
+	}
+	client.Set(ctx, statusKey, "ended", time.Hour)
+	_ = runtime.PublishSummary(ctx, room, timeline, 3, 3, 13, "ended runtime")
+	if client.Get(ctx, summaryKey).Val() != "recovered from MySQL" {
+		t.Fatal("ended status fence failed")
+	}
+	client.Set(ctx, statusKey, "playing", time.Hour)
+	client.Del(ctx, summaryKey, projectionKey, generationKey)
+	_ = runtime.PublishSummary(ctx, room, timeline, 3, 3, 13, "expired runtime")
+	if client.Exists(ctx, summaryKey, projectionKey).Val() != 0 {
+		t.Fatal("projection recreated an expired runtime")
 	}
 }

@@ -128,12 +128,13 @@ func (w *GameSummaryWorker) processRoom(room uint) {
 			_ = w.repo.RetrySummary(ctx, work, category)
 			cancel()
 			log.Printf("summary_job room=%d job=%s class=%s duration_ms=%d", room, work.ID, category, time.Since(started).Milliseconds())
-			return
+		} else {
+			log.Printf("summary_job room=%d job=%s version=%d through=%d class=completed duration_ms=%d", room, work.ID, work.ExpectedVersion+1, work.ThroughPosition, time.Since(started).Milliseconds())
 		}
-		log.Printf("summary_job room=%d job=%s version=%d through=%d class=completed duration_ms=%d", room, work.ID, work.ExpectedVersion+1, work.ThroughPosition, time.Since(started).Milliseconds())
 	}
 	// A projection failure never rolls back the durable summary. Later polling
-	// republishes it, including after a restart; lifecycle fencing is in Lua.
+	// republishes it, including after a restart or another model failure;
+	// lifecycle fencing is in Lua.
 	if w.projection != nil {
 		ctx, cancel = context.WithTimeout(w.ctx, 5*time.Second)
 		defer cancel()
@@ -143,7 +144,9 @@ func (w *GameSummaryWorker) processRoom(room uint) {
 		}
 		memory, err := w.repo.LoadMemoryContext(ctx, room, *state.ActiveTimelineID)
 		if err == nil && memory.SummaryVersion > 0 {
-			_ = w.projection.PublishSummary(ctx, room, memory.TimelineID, state.Revision, memory.SummaryVersion, memory.SummaryThroughPosition, memory.Summary)
+			if err := w.projection.PublishSummary(ctx, room, memory.TimelineID, state.Revision, memory.SummaryVersion, memory.SummaryThroughPosition, memory.Summary); err != nil {
+				log.Printf("summary_projection room=%d class=storage", room)
+			}
 		}
 	}
 }

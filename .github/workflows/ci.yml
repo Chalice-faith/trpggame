@@ -167,7 +167,7 @@ jobs:
           TRPG_MIGRATIONS_DATABASE: phase3_memory_test
       - name: Verify archive, branch, control and save repositories
         working-directory: go-backend
-        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame(Memory|Summary)MySQL84'
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame((Memory|Summary)MySQL84|KeyEventBackfill)'
         env:
           TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
       - name: Verify Redis atomic archive boundaries and fault recovery

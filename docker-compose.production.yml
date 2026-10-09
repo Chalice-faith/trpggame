@@ -19,7 +19,7 @@ services:
       TRPG_JWT_SECRET: ${JWT_SECRET:?required}
       TRPG_INTERNAL_SHARED_SECRET: ${INTERNAL_SHARED_SECRET:?required}
       TRPG_AI_BASEURL: http://python-ai:8000
-      TRPG_AI_TIMEOUT: 60
+      TRPG_AI_TIMEOUT: ${AI_TIMEOUT_SECONDS:-60}
       TRPG_MINIO_ENDPOINT: minio:9000
       TRPG_MINIO_ACCESSKEY: ${MINIO_ACCESS_KEY:?required}
       TRPG_MINIO_SECRETKEY: ${MINIO_SECRET_KEY:?required}
@@ -52,7 +52,10 @@ services:
       TRPG_AI_ENVIRONMENT: production
       TRPG_AI_DEBUG: "false"
       TRPG_AI_ENABLED: ${AI_ENABLED:-true}
+      TRPG_AI_LLM_TIMEOUT: ${LLM_TIMEOUT_SECONDS:-120}
       TRPG_AI_DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      TRPG_AI_DEEPSEEK_API_BASE: ${DEEPSEEK_API_BASE:-https://api.deepseek.com}
+      TRPG_AI_DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
       TRPG_AI_REDIS_URL: redis://redis:6379/0
       TRPG_AI_REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
       TRPG_AI_MILVUS_HOST: milvus
