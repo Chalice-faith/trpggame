@@ -222,6 +222,7 @@ func (s *GameService) StartSoloGame(
 		CharacterID: &characterID,
 		PlayerOrder: 0,
 		IsReady:     true,
+		JoinedAt:    time.Now().UTC(),
 	}
 	if err := s.gameRepo.CreateRoomWithPlayer(ctx, room, player); err != nil {
 		return nil, fmt.Errorf("%w: create solo room: %v", ErrInternal, err)

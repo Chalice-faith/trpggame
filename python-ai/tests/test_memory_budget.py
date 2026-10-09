@@ -55,6 +55,22 @@ class BudgetTests(unittest.TestCase):
 
 
 class MemoryEndpointTests(unittest.TestCase):
+    def test_summary_provider_failure_logs_status_without_provider_details(self):
+        from app.config import settings
+        from app.services.llm_client import LLMAPIError
+        from app.services.summarizer import SummarizationError
+        error = SummarizationError("failed to generate summary memory")
+        error.__cause__ = LLMAPIError("private-provider-details", status_code=429)
+        with patch("app.routers.memory.summarize", AsyncMock(side_effect=error)):
+            with self.assertLogs("app.routers.memory", level="WARNING") as logs:
+                with TestClient(create_app()) as client:
+                    response = client.post("/api/v1/ai/memory/summary", headers={"X-Internal-Secret": settings.internal_shared_secret},
+                        json={"messages": [{"role": "assistant", "content": "事实"}]})
+        self.assertEqual(response.status_code, 503)
+        self.assertIn("upstream_status=429", logs.output[0])
+        self.assertNotIn("private-provider-details", logs.output[0])
+        self.assertNotIn("private-provider-details", response.text)
+
     def test_summary_requires_internal_authentication(self):
         with TestClient(create_app()) as client:
             response = client.post("/api/v1/ai/memory/summary", json={"messages": [{"role": "assistant", "content": "事实"}]})

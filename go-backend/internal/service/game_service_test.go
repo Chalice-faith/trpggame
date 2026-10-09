@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -513,6 +514,7 @@ func (r *fakeGameRuntimeRepository) DeleteSoloRoom(
 }
 
 func TestGameServiceStartSoloGame(t *testing.T) {
+	beforeStart := time.Now().UTC()
 	gameRepository := &fakeGameRepository{}
 	scriptRepository := readyGameScriptRepository("  古宅惊魂  ")
 	aiClient := &fakeGameInferenceClient{
@@ -543,6 +545,9 @@ func TestGameServiceStartSoloGame(t *testing.T) {
 		t.Fatalf("player = %#v", result.Player)
 	}
 	var turnOrder []uint
+	if result.Player.JoinedAt.Before(beforeStart) || result.Player.JoinedAt.After(time.Now().UTC()) {
+		t.Fatalf("joined_at = %v, want actual creation time (MySQL rejects zero dates)", result.Player.JoinedAt)
+	}
 	if err := json.Unmarshal(result.Room.TurnOrder, &turnOrder); err != nil ||
 		len(turnOrder) != 1 || turnOrder[0] != 7 {
 		t.Fatalf("turn order = %s, error = %v", result.Room.TurnOrder, err)

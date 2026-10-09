@@ -141,7 +141,7 @@ func (s *GameMemoryLifecycleService) Start(ctx context.Context, room *model.Game
 	}
 	body, _ := json.Marshal(image)
 	fingerprint, _ := model.MemoryHash(body)
-	op := &model.GameMemoryOperation{OperationID: id, RoomID: room.ID, Kind: "start", Fingerprint: fingerprint, SourceGeneration: generation, TargetTimelineID: &timeline, TargetSnapshot: body}
+	op := &model.GameMemoryOperation{OperationID: id, RoomID: room.ID, Kind: "start", Fingerprint: fingerprint, SourceGeneration: generation, TargetTimelineID: &timeline, TargetSnapshot: body, NextRetryAt: s.initialRecoveryTime()}
 	prepared, err := s.journal.PrepareOperation(ctx, op, &model.GameTimeline{ID: timeline, RoomID: room.ID, HistoryComplete: true})
 	if err != nil {
 		return nil, err
@@ -225,7 +225,7 @@ func (s *GameMemoryLifecycleService) Load(ctx context.Context, req *LoadGameRequ
 	}
 	body, _ := json.Marshal(image)
 	op := &model.GameMemoryOperation{OperationID: req.RequestID, RoomID: room.ID, Kind: "load", Fingerprint: fingerprint, SourceTimelineID: &source.Memory.TimelineID,
-		SourceGeneration: source.Generation, TargetTimelineID: &timeline, TargetSaveID: &save.ID, TargetSnapshot: body}
+		SourceGeneration: source.Generation, TargetTimelineID: &timeline, TargetSaveID: &save.ID, TargetSnapshot: body, NextRetryAt: s.initialRecoveryTime()}
 	target := &model.GameTimeline{ID: timeline, RoomID: room.ID, ParentID: parent, ForkPosition: position, DurablePosition: position, OriginSaveID: &save.ID, HistoryComplete: complete}
 	prepared, err := s.journal.PrepareOperationAtRevision(ctx, op, target, source.Memory.Revision)
 	if err != nil {
@@ -287,7 +287,7 @@ func (s *GameMemoryLifecycleService) End(ctx context.Context, room *model.GameRo
 		Kind     string
 	}{room.ID, *state.ActiveTimelineID, "end"})
 	op, err := s.journal.PrepareOperationAtRevision(ctx, &model.GameMemoryOperation{OperationID: id, RoomID: room.ID, Kind: "end", Fingerprint: fingerprint,
-		SourceTimelineID: state.ActiveTimelineID, SourceGeneration: source.Generation, TargetSnapshot: body}, nil, source.Memory.Revision)
+		SourceTimelineID: state.ActiveTimelineID, SourceGeneration: source.Generation, TargetSnapshot: body, NextRetryAt: s.initialRecoveryTime()}, nil, source.Memory.Revision)
 	if err != nil {
 		return nil, err
 	}
@@ -295,6 +295,14 @@ func (s *GameMemoryLifecycleService) End(ctx context.Context, room *model.GameRo
 		return nil, err
 	}
 	return &EndGameResult{RoomID: room.ID, Status: model.RoomStatusEnded}, nil
+}
+
+// Recovery must not race the initial bounded HTTP processing. In particular,
+// recovery deliberately pauses a start, whereas a successful fresh start plays.
+// No new schema or permanent lock: abandoned intents become due after this grace.
+func (s *GameMemoryLifecycleService) initialRecoveryTime() time.Time {
+	delay := max(s.options.LeaseMS, 2*s.options.OperationTimeoutMS)
+	return time.Now().UTC().Add(time.Duration(delay) * time.Millisecond)
 }
 
 func (s *GameMemoryLifecycleService) operationImage(op *model.GameMemoryOperation) (*memoryOperationImage, model.MemoryRuntimeReplacement, error) {

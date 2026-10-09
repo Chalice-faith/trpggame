@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -99,6 +100,8 @@ class DeepSeekClient:
 
         self._raise_for_status(response)
         data = self._decode_json(response.content)
+        self._raise_response_error(data)
+        self._log_usage(payload, data)
         try:
             message = data["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as exc:
@@ -135,6 +138,13 @@ class DeepSeekClient:
                         await response.aread()
                         self._raise_for_status(response)
 
+                    # Compatible relays may put an upstream failure in a JSON
+                    # body while keeping the transport status at HTTP 200.
+                    if "application/json" in response.headers.get("content-type", "").lower():
+                        await response.aread()
+                        self._raise_response_error(self._decode_json(response.content))
+                        raise LLMAPIError("DeepSeek API stream returned JSON instead of SSE")
+
                     async for line in response.aiter_lines():
                         data = self._parse_sse_data(line)
                         if data is None:
@@ -142,6 +152,10 @@ class DeepSeekClient:
                         if data == "[DONE]":
                             break
                         event = self._decode_json(data.encode("utf-8"))
+                        self._raise_response_error(event)
+                        self._log_usage(payload, event)
+                        if event.get("choices") == [] and isinstance(event.get("usage"), dict):
+                            continue
                         try:
                             content = event["choices"][0]["delta"].get("content")
                         except (KeyError, IndexError, TypeError) as exc:
@@ -213,12 +227,27 @@ class DeepSeekClient:
             payload["tool_choice"] = "auto"
         # This final guard includes tool definitions and JSON framing, and also
         # protects opening/summary calls that do not use the action assembler.
-        source = {"messages": messages, "tools": payload.get("tools", [])}
-        estimate = len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        estimate = self._input_estimate(payload)
         budget = min(settings.context_input_budget, settings.context_window_tokens - self.max_tokens - settings.context_safety_tokens)
         if estimate > budget:
             raise LLMConfigurationError("LLM input exceeds configured context budget")
         return payload
+
+    @staticmethod
+    def _input_estimate(payload: dict[str, Any]) -> int:
+        source = {"messages": payload["messages"], "tools": payload.get("tools", [])}
+        return len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+
+    def _log_usage(self, payload: dict[str, Any], data: dict[str, Any]) -> None:
+        usage = data.get("usage")
+        if not isinstance(usage, dict):
+            return
+        # Log only counters, never prompts, responses, keys or provider metadata.
+        counters = {name: usage[name] for name in ("prompt_tokens", "completion_tokens", "total_tokens")
+            if isinstance(usage.get(name), int) and not isinstance(usage[name], bool) and usage[name] >= 0}
+        if counters:
+            counters["estimated_input_tokens"] = self._input_estimate(payload)
+            logging.getLogger(__name__).info("llm_usage %s", json.dumps(counters, sort_keys=True))
 
     @staticmethod
     def _parse_tool_calls(value: Any) -> tuple[ToolCall, ...]:
@@ -272,6 +301,21 @@ class DeepSeekClient:
         if not isinstance(data, dict):
             raise LLMAPIError("DeepSeek API response must be a JSON object")
         return data
+
+    @staticmethod
+    def _raise_response_error(data: dict[str, Any]) -> None:
+        error = data.get("error")
+        if error is None:
+            return
+        status_code = None
+        if isinstance(error, dict):
+            detail = str(error.get("message") or error.get("code") or "unknown error")
+            code = error.get("code")
+            if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599:
+                status_code = code
+        else:
+            detail = str(error) or "unknown error"
+        raise LLMAPIError(f"LLM provider returned an error: {detail}", status_code=status_code)
 
     @staticmethod
     def _raise_for_status(response: httpx.Response) -> None:

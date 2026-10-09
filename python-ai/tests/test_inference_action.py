@@ -68,6 +68,52 @@ class RecordingActionService:
 
 
 class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_prompts_identify_tool_targets_for_solo_and_team_rest_and_stream(self):
+        for multiplayer in (False, True):
+            for streaming in (False, True):
+                with self.subTest(multiplayer=multiplayer, streaming=streaming):
+                    stored_state = {"hp": 18, "player_id": 999, "character_id": 999}
+
+                    class IdentityContextProvider:
+                        async def load(self, room_id, user_id, character_id, participants=None):
+                            return GameRuntimeContext("", (), stored_state, {"character_id": character_id},
+                                tuple({"user_id": uid, "character_id": cid, "player_state": {"hp": 18}}
+                                      for uid, cid in participants or []))
+
+                    async def retriever(query, script_id):
+                        return ["门厅连接书房。"]
+
+                    async def completer(prompt, system, functions):
+                        state = json.loads(system.split("## 当前角色状态\n", 1)[1])
+                        current = state["current_player"] if multiplayer else state
+                        self.assertEqual(current["player_id"], 2)
+                        self.assertEqual(current["character_id"], 4)
+                        if multiplayer:
+                            self.assertEqual([(p["player_id"], p["character_id"]) for p in state["participants"]], [(2, 4), (8, 9)])
+                        return ChatCompletion("", (ToolCall("location-1", "set_location",
+                            json.dumps({"player_id": current["player_id"], "location": "书房"})),))
+
+                    async def narrative(prompt, system):
+                        return "你走进书房。"
+
+                    async def narrative_stream(prompt, system):
+                        yield "你走进书房。"
+
+                    service = ActionInferenceService(retriever=retriever,
+                        context_provider=IdentityContextProvider(), completion_generator=completer,
+                        narrative_generator=narrative, stream_narrative_generator=narrative_stream)
+                    request = self._request()
+                    if multiplayer:
+                        request = GameActionRequest.model_validate({**request.model_dump(),
+                            "participants": [{"user_id": 2, "character_id": 4}, {"user_id": 8, "character_id": 9}]})
+                    if streaming:
+                        events = [event async for event in service.infer_stream(request)]
+                        changes = events[-1]["status_changes"]
+                    else:
+                        changes = (await service.infer(request)).status_changes
+                    self.assertEqual(changes["calls"][0]["arguments"]["player_id"], 2)
+                    self.assertEqual(stored_state["player_id"], 999)
+
     async def test_returns_direct_narrative_without_tools(self):
         calls: dict[str, object] = {}
         provider = FakeContextProvider()

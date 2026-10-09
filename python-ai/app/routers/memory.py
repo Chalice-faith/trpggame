@@ -1,4 +1,5 @@
 """Internal summary generation: returns a candidate, never writes game state."""
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from app.dependencies import require_internal_secret
@@ -24,5 +25,8 @@ async def generate_summary(request: SummaryRequest):
     try:
         candidate = await summarize([message.model_dump() for message in request.messages], previous_summary=request.previous_summary)
     except SummarizationError as exc:
+        cause = exc.__cause__ or exc
+        logging.getLogger(__name__).warning("summary_generation_failed class=%s upstream_status=%s",
+            type(cause).__name__, getattr(cause, "status_code", None))
         raise HTTPException(503, "summary generation unavailable") from exc
     return {"summary": candidate}

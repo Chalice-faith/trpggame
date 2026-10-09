@@ -79,7 +79,8 @@ func (s *GameService) submitMultiplayerAction(
 	if memoryEnabled {
 		fingerprint = memoryRequestFingerprint(fingerprint, req.ExpectedTimelineID, req.ExpectedGeneration)
 	}
-	cached, found, err := runtime.FindActionResult(ctx, room.ID, requestID, fingerprint)
+	expected := model.GameArchiveExpectation{TimelineID: req.ExpectedTimelineID, Generation: req.ExpectedGeneration}
+	cached, found, err := findGameActionResult(ctx, runtime, room.ID, requestID, fingerprint, memoryEnabled, expected)
 	if err != nil {
 		return nil, mapMultiplayerRuntimeError(err)
 	}
@@ -122,9 +123,22 @@ func (s *GameService) submitMultiplayerAction(
 	if req.ExpectedTimelineID != "" && (snapshot.Memory == nil || snapshot.Memory.TimelineID != req.ExpectedTimelineID || snapshot.Generation != req.ExpectedGeneration) {
 		return nil, repo.ErrMemoryConflict
 	}
-	acquired, err := runtime.AcquireMultiplayerAction(
-		ctx, room.ID, req.UserID, snapshot.Generation, req.ExpectedTurn, requestID, fingerprint, s.now().UTC(),
-	)
+	record, err := s.memoryActionRecord(ctx, room, memoryEnabled, req.UserID, req.ExpectedTurn, (req.ExpectedTurn+1)/len(snapshot.TurnOrder), requestID, fingerprint, "action", expected)
+	if err != nil {
+		return nil, err
+	}
+	var acquired *model.MultiplayerActionAcquireResult
+	if memoryEnabled {
+		memoryRuntime, ok := runtime.(interface {
+			AcquireMemoryMultiplayerAction(context.Context, uint, uint, int, string, string, time.Time, model.GameArchiveExpectation) (*model.MultiplayerActionAcquireResult, error)
+		})
+		if !ok {
+			return nil, ErrMultiplayerRuntimeUnavailable
+		}
+		acquired, err = memoryRuntime.AcquireMemoryMultiplayerAction(ctx, room.ID, req.UserID, req.ExpectedTurn, requestID, fingerprint, s.now().UTC(), expected)
+	} else {
+		acquired, err = runtime.AcquireMultiplayerAction(ctx, room.ID, req.UserID, snapshot.Generation, req.ExpectedTurn, requestID, fingerprint, s.now().UTC())
+	}
 	if err != nil {
 		return nil, mapMultiplayerRuntimeError(err)
 	}
@@ -229,7 +243,8 @@ func (s *GameService) submitMultiplayerAction(
 		return nil, fmt.Errorf("%w: encode multiplayer action result: %v", ErrInternal, err)
 	}
 	mutation := &model.MultiplayerActionMutation{
-		RoomID: room.ID, UserID: req.UserID, Generation: generation, ExpectedTurn: req.ExpectedTurn,
+		Archive: record,
+		RoomID:  room.ID, UserID: req.UserID, Generation: generation, ExpectedTurn: req.ExpectedTurn,
 		RequestID: requestID, RequestFingerprint: fingerprint, ResponseJSON: responseJSON, NextDeadline: nextDeadline,
 		Messages:        []model.RuntimeMessage{{Role: "user", Content: action}, {Role: "assistant", Content: result.Narrative}},
 		PlayerMutations: multiplayerRuntimeMutations(effects),
@@ -237,7 +252,7 @@ func (s *GameService) submitMultiplayerAction(
 	commit, err := runtime.CommitMultiplayerAction(ctx, mutation)
 	if err != nil {
 		if errors.Is(err, repo.ErrGameRuntimeUnavailable) {
-			cached, found, lookupErr := runtime.FindActionResult(ctx, room.ID, requestID, fingerprint)
+			cached, found, lookupErr := findGameActionResult(ctx, runtime, room.ID, requestID, fingerprint, memoryEnabled, expected)
 			if lookupErr != nil {
 				return nil, mapMultiplayerRuntimeError(lookupErr)
 			}
@@ -301,7 +316,8 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 	if player == nil || player.Status != model.RoomPlayerStatusActive {
 		return nil, ErrGameRoomNotFound
 	}
-	if _, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration); err != nil {
+	memoryEnabled, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration)
+	if err != nil {
 		return nil, err
 	}
 	snapshot, err := runtime.GetMultiplayerRoom(ctx, room.ID)
@@ -309,7 +325,8 @@ func (s *GameService) SkipMultiplayerTurn(ctx context.Context, req *SkipMultipla
 		return nil, mapMultiplayerRuntimeError(err)
 	}
 	fingerprint := multiplayerSkipFingerprint(room.ID, req.UserID, snapshot.Generation, req.ExpectedTurn, "manual")
-	if cached, found, lookupErr := runtime.FindActionResult(ctx, room.ID, req.RequestID, fingerprint); lookupErr != nil {
+	expected := model.GameArchiveExpectation{TimelineID: req.ExpectedTimelineID, Generation: req.ExpectedGeneration}
+	if cached, found, lookupErr := findGameActionResult(ctx, runtime, room.ID, req.RequestID, fingerprint, memoryEnabled, expected); lookupErr != nil {
 		return nil, mapMultiplayerRuntimeError(lookupErr)
 	} else if found {
 		var result model.MultiplayerSkipResult
@@ -404,8 +421,21 @@ func (s *GameService) skipMultiplayer(ctx context.Context, gameRepo MultiplayerG
 	}
 	response, _ := json.Marshal(result)
 	fingerprint := multiplayerSkipFingerprint(room.ID, userID, snapshot.Generation, expectedTurn, reason)
+	actor := userID
+	if actor == 0 {
+		actor = snapshot.CurrentActorID
+	}
+	expected := model.GameArchiveExpectation{Generation: snapshot.Generation}
+	if snapshot.Memory != nil {
+		expected.TimelineID = snapshot.Memory.TimelineID
+	}
+	record, err := s.memoryActionRecord(ctx, room, snapshot.Memory != nil, actor, expectedTurn, result.RoundNumber, requestID, fingerprint, "skip_"+reason, expected)
+	if err != nil {
+		return nil, err
+	}
 	committed, err := runtime.SkipMultiplayerTurn(ctx, &model.MultiplayerSkipRequest{
-		RoomID: room.ID, UserID: userID, Generation: snapshot.Generation, ExpectedTurn: expectedTurn,
+		Archive: record,
+		RoomID:  room.ID, UserID: userID, Generation: snapshot.Generation, ExpectedTurn: expectedTurn,
 		RequestID: requestID, RequestFingerprint: fingerprint, ResponseJSON: response,
 		Reason: reason, Now: now, NextDeadline: nextDeadline, Timeout: timeout,
 	})
@@ -587,6 +617,8 @@ func skipAsActionResult(result *model.MultiplayerSkipResult) *SubmitGameActionRe
 
 func mapMultiplayerRuntimeError(err error) error {
 	switch {
+	case errors.Is(err, repo.ErrMemoryConflict), errors.Is(err, repo.ErrGameArchiveBranchChanged), errors.Is(err, repo.ErrGameArchiveNotReady), errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveCorrupt):
+		return err
 	case errors.Is(err, repo.ErrGameRuntimeNotPlaying):
 		return ErrGameRoomNotPlaying
 	case errors.Is(err, repo.ErrMultiplayerNotCurrentActor):

@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -429,6 +430,10 @@ func TestGameMemoryLifecycleIntegrationLostMySQLAndWorker(t *testing.T) {
 				t.Fatal("fault hidden")
 			}
 			s.journal = f.store
+			// Simulate the grace expiring after the HTTP handler has failed.
+			if err := f.db.Model(&model.GameMemoryOperation{}).Where("operation_id = ?", req.RequestID).Update("next_retry_at", time.Now().UTC()).Error; err != nil {
+				t.Fatal(err)
+			}
 			NewGameMemoryLifecycleWorker(s).processDue()
 			op, _ := f.store.FindOperation(ctx, f.room.ID, req.RequestID)
 			state, _ := s.State(ctx, f.room.ID)
@@ -570,6 +575,70 @@ func resetMemoryStartFixture(t *testing.T, f *archiveIntegrationFixture) {
 	}
 	f.room.Status = model.RoomStatusWaiting
 	f.room.TurnOrder = order
+}
+
+type memoryStartBarrier struct {
+	MemoryLifecycleRuntime
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *memoryStartBarrier) InitializeMemoryStart(ctx context.Context, input model.MemoryRuntimeReplacement) error {
+	close(r.entered)
+	select {
+	case <-r.release:
+		return r.MemoryLifecycleRuntime.InitializeMemoryStart(ctx, input)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestGameMemoryLifecycleIntegrationLiveStartIsNotRecovered(t *testing.T) {
+	for _, mode := range []string{"solo", "multiplayer"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			f, s, _ := memoryLifecycleFixture(t, mode)
+			resetMemoryStartFixture(t, f)
+			s.ConfigureRoomStarter(repo.NewRoomRepo(f.db))
+			solo, multi := memorySnapshotFixture(mode, f.room.ID)
+			if solo != nil {
+				solo.Turn = 0
+			} else {
+				multi.CurrentTurn, multi.RoundNumber, multi.CurrentActorID = 0, 0, 7
+			}
+			barrier := &memoryStartBarrier{MemoryLifecycleRuntime: f.runtime, entered: make(chan struct{}), release: make(chan struct{})}
+			s.runtime = barrier
+			done := make(chan error, 1)
+			go func() { _, err := s.Start(ctx, f.room, solo, multi); done <- err }()
+			var releaseOnce sync.Once
+			release := func() { releaseOnce.Do(func() { close(barrier.release) }) }
+			defer release()
+			select {
+			case <-barrier.entered:
+			case <-time.After(3 * time.Second):
+				t.Fatal("start did not reach persisted-intent barrier")
+			}
+			ops, err := f.store.ListRecoverableOperations(ctx, time.Now().UTC(), 100)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, op := range ops {
+				if op.RoomID == f.room.ID {
+					t.Fatal("live start exposed to recovery")
+				}
+			}
+			// A separately running worker uses the same DB eligibility filter.
+			NewGameMemoryLifecycleWorker(s).processDue()
+			release()
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			room, err := s.games.FindRoomByID(ctx, f.room.ID)
+			if err != nil || room.Status != model.RoomStatusPlaying {
+				t.Fatalf("fresh start paused by worker: room=%#v err=%v", room, err)
+			}
+		})
+	}
 }
 
 func TestGameMemoryLifecycleIntegrationStartPendingGateAndAbort(t *testing.T) {

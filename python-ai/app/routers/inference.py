@@ -386,12 +386,13 @@ class ActionInferenceService:
         )
 
     @staticmethod
-    def _context_player_state(runtime: GameRuntimeContext) -> Mapping[str, Any]:
+    def _context_player_state(request: GameActionRequest, runtime: GameRuntimeContext) -> Mapping[str, Any]:
+        current_player = {**runtime.player_state, "player_id": request.user_id, "character_id": request.character_id}
         if not runtime.participants:
-            return runtime.player_state
+            return current_player
         return {
-            "current_player": runtime.player_state,
-            "participants": list(runtime.participants),
+            "current_player": current_player,
+            "participants": [{**participant, "player_id": participant["user_id"]} for participant in runtime.participants],
         }
 
     @staticmethod
@@ -416,7 +417,7 @@ class ActionInferenceService:
                 request.action,
                 rag_chunks=rag_chunks,
                 **self._memory_options(request, runtime),
-                player_state=self._context_player_state(runtime),
+                player_state=self._context_player_state(request, runtime),
                 character_profile=runtime.character_profile,
             )
             completion_result = await self._completion_generator(
@@ -465,7 +466,7 @@ class ActionInferenceService:
                 request.action,
                 rag_chunks=rag_chunks,
                 **self._memory_options(request, runtime),
-                player_state=self._context_player_state(runtime),
+                player_state=self._context_player_state(request, runtime),
                 character_profile=runtime.character_profile,
             )
             completion_result = await self._completion_generator(

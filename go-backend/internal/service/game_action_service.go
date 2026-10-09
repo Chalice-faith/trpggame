@@ -144,11 +144,14 @@ func (s *GameService) submitAction(
 		fingerprint = memoryRequestFingerprint(fingerprint, req.ExpectedTimelineID, req.ExpectedGeneration)
 	}
 
-	cached, found, err := s.runtimeRepo.FindActionResult(
+	expected := model.GameArchiveExpectation{TimelineID: req.ExpectedTimelineID, Generation: req.ExpectedGeneration}
+	cached, found, err := findGameActionResult(
 		ctx,
+		s.runtimeRepo,
 		room.ID,
 		requestID,
 		fingerprint,
+		memoryEnabled, expected,
 	)
 	if err != nil {
 		return nil, mapActionRuntimeError(err)
@@ -180,12 +183,18 @@ func (s *GameService) submitAction(
 	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
 		return nil, err
 	}
-	generation, err := s.runtimeRepo.BeginSoloAction(
-		ctx,
-		room.ID,
-		req.UserID,
-		req.ExpectedTurn,
-	)
+	var generation string
+	if memoryEnabled {
+		runtime, ok := s.runtimeRepo.(interface {
+			BeginMemorySoloAction(context.Context, uint, uint, int, model.GameArchiveExpectation) (string, error)
+		})
+		if !ok {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		generation, err = runtime.BeginMemorySoloAction(ctx, room.ID, req.UserID, req.ExpectedTurn, expected)
+	} else {
+		generation, err = s.runtimeRepo.BeginSoloAction(ctx, room.ID, req.UserID, req.ExpectedTurn)
+	}
 	if err != nil {
 		return nil, mapActionRuntimeError(err)
 	}
@@ -204,6 +213,10 @@ func (s *GameService) submitAction(
 		CharacterID: *player.CharacterID,
 	}
 	var aiResult *ai_client.GameActionResponse
+	record, err := s.memoryActionRecord(ctx, room, memoryEnabled, req.UserID, req.ExpectedTurn, req.ExpectedTurn+1, requestID, fingerprint, "action", expected)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.prepareInferenceMemory(ctx, aiRequest); err != nil {
 		return nil, err
 	}
@@ -250,11 +263,15 @@ func (s *GameService) submitAction(
 		Effects:     effects,
 		CurrentTurn: req.ExpectedTurn + 1,
 	}
+	if memoryEnabled {
+		result.Generation = generation
+	}
 	responseJSON, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode action result: %v", ErrInternal, err)
 	}
 	commitResult, err := s.runtimeRepo.CommitAction(ctx, &model.ActionRuntimeMutation{
+		Archive:            record,
 		RoomID:             room.ID,
 		UserID:             req.UserID,
 		Generation:         generation,
@@ -433,6 +450,8 @@ func decodeSubmitActionResult(encoded json.RawMessage, duplicate bool) (*SubmitG
 
 func mapActionRuntimeError(err error) error {
 	switch {
+	case errors.Is(err, repo.ErrMemoryConflict), errors.Is(err, repo.ErrGameArchiveBranchChanged), errors.Is(err, repo.ErrGameArchiveNotReady), errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveCorrupt):
+		return err
 	case errors.Is(err, repo.ErrGameRuntimeConflict):
 		return ErrGameActionConflict
 	case errors.Is(err, repo.ErrGameRuntimeGenerationConflict):

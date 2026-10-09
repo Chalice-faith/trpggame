@@ -165,7 +165,12 @@ func (r *GameMemoryRepo) prepareOperation(ctx context.Context, input *model.Game
 		}
 		op.Phase = "prepared"
 		op.Attempts, op.ErrorClass = 0, ""
-		op.CreatedAt, op.UpdatedAt, op.NextRetryAt = time.Now().UTC(), time.Now().UTC(), time.Now().UTC()
+		op.CreatedAt, op.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+		if op.NextRetryAt.IsZero() {
+			op.NextRetryAt = op.CreatedAt
+		} else {
+			op.NextRetryAt = op.NextRetryAt.UTC()
+		}
 		if err := tx.Create(&op).Error; err != nil {
 			return err
 		}
