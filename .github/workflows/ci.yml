@@ -167,18 +167,18 @@ jobs:
           TRPG_MIGRATIONS_DATABASE: phase3_memory_test
       - name: Verify archive, branch, control and save repositories
         working-directory: go-backend
-        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGameMemoryMySQL84'
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame(Memory|Summary)MySQL84'
         env:
           TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
       - name: Verify Redis atomic archive boundaries and fault recovery
         working-directory: go-backend
-        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGameArchiveRedis72'
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame(Archive|Summary)Redis72'
         env:
           TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
 
       - name: Verify shared archive workers and MySQL Redis fault recovery
         working-directory: go-backend
-        run: go test -race -tags=integration -count=1 ./internal/service -run '^TestGame(ArchiveIntegration|MemoryLifecycleIntegration|MemoryA5|MemoryA6)'
+        run: go test -race -tags=integration -count=1 ./internal/service -run '^TestGame(ArchiveIntegration|MemoryLifecycleIntegration|MemoryA5|MemoryA6|SummaryIntegration)'
         env:
           TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
           TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
@@ -206,3 +206,4 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: docker compose config --quiet
+      - run: docker compose --env-file .env.production.example -f docker-compose.production.yml config --quiet

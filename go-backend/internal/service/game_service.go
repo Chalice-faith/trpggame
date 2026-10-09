@@ -108,6 +108,7 @@ type GameService struct {
 	archiveService       *GameArchiveService
 	memoryLifecycle      *GameMemoryLifecycleService
 	memoryNewRooms       bool
+	inferenceMemory      InferenceMemoryRepository
 }
 
 // StartSoloGameRequest 是单人快速开始的服务层请求。

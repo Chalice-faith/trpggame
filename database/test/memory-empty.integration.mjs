@@ -16,9 +16,12 @@ try {
   await applyMigrations(db, { lockTimeoutSeconds });
   const [migrations] = await db.query('SELECT version FROM schema_migrations ORDER BY version');
   assert.deepEqual(migrations.map((row) => row.version), orderedMigrationNames);
-  for (const table of ['game_memory_states', 'game_timelines', 'game_action_records', 'game_memory_operations']) {
+  for (const table of ['game_memory_states', 'game_timelines', 'game_action_records', 'game_memory_operations', 'game_summaries', 'game_summary_work']) {
     const [rows] = await db.query(`SELECT COUNT(*) AS n FROM ${table}`);
     assert.equal(rows[0].n, 0);
   }
-  console.log('MySQL 8.4: empty 001→020 schema and idempotent rerun passed');
+  // Simulate DDL success followed by a lost migration-journal write.
+  await db.execute('DELETE FROM schema_migrations WHERE version = ?', ['024_extend_game_saves_summary.sql']);
+  await applyMigrations(db, { lockTimeoutSeconds });
+  console.log('MySQL 8.4: empty 001→024 schema, idempotent rerun and interrupted 024 recovery passed');
 } finally { await db.end(); }

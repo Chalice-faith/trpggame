@@ -13,7 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.dependencies import require_internal_secret
-from app.services.context_builder import AssembledContext, assemble_context
+from app.services.context_builder import AssembledContext, assemble_context, estimated_tokens
 from app.services.function_calling import (
     FUNCTIONS,
     FunctionCallError,
@@ -195,6 +195,28 @@ async def start_game(
     return NarrativeResponse(narrative=narrative)
 
 
+class MemoryMessage(BaseModel):
+    role: str
+    content: str
+
+
+class InferenceMemory(BaseModel):
+    timeline_id: str
+    through_position: int = Field(ge=0)
+    summary_through_position: int = Field(ge=0)
+    summary_version: int = Field(ge=0)
+    summary: str = ""
+    messages: list[MemoryMessage] = Field(default_factory=list, max_length=512)
+    key_events: list[str] = Field(default_factory=list, max_length=20)
+    degraded: bool = False
+
+    @model_validator(mode="after")
+    def validate_watermark(self):
+        if self.summary_through_position > self.through_position:
+            raise ValueError("summary watermark exceeds source watermark")
+        return self
+
+
 class GameActionRequest(BaseModel):
     room_id: int = Field(gt=0)
     user_id: int = Field(gt=0)
@@ -202,6 +224,7 @@ class GameActionRequest(BaseModel):
     script_id: int = Field(gt=0)
     character_id: int = Field(gt=0)
     participants: list[GameParticipant] = Field(default_factory=list, max_length=6)
+    memory_context: "InferenceMemory | None" = None
 
     @field_validator("action")
     @classmethod
@@ -314,6 +337,15 @@ class ActionInferenceService:
 
     MAX_TOOL_CALLS = 8
 
+    @staticmethod
+    def _action_prompt_budget() -> int:
+        from app.config import settings
+        tools = [{"type": "function", "function": definition} for definition in FUNCTIONS]
+        schema_cost = estimated_tokens(json.dumps(tools, ensure_ascii=False))
+        total = min(settings.context_input_budget, settings.context_window_tokens - settings.llm_max_tokens - settings.context_safety_tokens)
+        # Leave space for request framing and the subsequent tool-result prompt.
+        return total - schema_cost - 4096 - 256
+
     def __init__(
         self,
         *,
@@ -362,6 +394,18 @@ class ActionInferenceService:
             "participants": list(runtime.participants),
         }
 
+    @staticmethod
+    def _memory_options(request: GameActionRequest, runtime: GameRuntimeContext) -> dict[str, Any]:
+        memory = request.memory_context
+        if memory is None:
+            return {"summary_memory": runtime.summary_memory, "recent_history": runtime.recent_history,
+                    "input_budget": ActionInferenceService._action_prompt_budget()}
+        # Include the complete bounded gap after the summary, not only ten
+        # messages. The context builder applies the total budget explicitly.
+        return {"summary_memory": memory.summary, "recent_history": [message.model_dump() for message in memory.messages],
+                "max_recent_messages": max(10, len(memory.messages)), "key_events": memory.key_events, "memory_degraded": memory.degraded,
+                "input_budget": ActionInferenceService._action_prompt_budget()}
+
     async def infer(self, request: GameActionRequest) -> ActionInferenceResult:
         try:
             rag_chunks = await self._retriever(request.action, request.script_id)
@@ -371,8 +415,7 @@ class ActionInferenceService:
             context = self._context_builder(
                 request.action,
                 rag_chunks=rag_chunks,
-                summary_memory=runtime.summary_memory,
-                recent_history=runtime.recent_history,
+                **self._memory_options(request, runtime),
                 player_state=self._context_player_state(runtime),
                 character_profile=runtime.character_profile,
             )
@@ -421,8 +464,7 @@ class ActionInferenceService:
             context = self._context_builder(
                 request.action,
                 rag_chunks=rag_chunks,
-                summary_memory=runtime.summary_memory,
-                recent_history=runtime.recent_history,
+                **self._memory_options(request, runtime),
                 player_state=self._context_player_state(runtime),
                 character_profile=runtime.character_profile,
             )
@@ -473,6 +515,7 @@ class ActionInferenceService:
                 context.user_prompt,
                 tool_results,
             )
+            self._validate_final_budget(context, narrative_prompt)
             chunks: list[str] = []
             async for chunk in self._stream_narrative_generator(
                 narrative_prompt,
@@ -544,6 +587,7 @@ class ActionInferenceService:
             context.user_prompt,
             tool_results,
         )
+        self._validate_final_budget(context, narrative_prompt)
         narrative = (
             await self._narrative_generator(
                 narrative_prompt,
@@ -558,6 +602,13 @@ class ActionInferenceService:
             dice_roll=dice_roll,
             status_changes=status_changes,
         )
+
+    @staticmethod
+    def _validate_final_budget(context: AssembledContext, prompt: str) -> None:
+        from app.config import settings
+        budget = min(settings.context_input_budget, settings.context_window_tokens - settings.llm_max_tokens - settings.context_safety_tokens) - 256
+        if estimated_tokens(context.system_prompt + prompt) > budget:
+            raise ActionInferenceError("tool results exceed reserved context budget")
 
     @staticmethod
     def _build_result_prompt(

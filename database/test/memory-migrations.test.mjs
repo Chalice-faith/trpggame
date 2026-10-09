@@ -7,7 +7,7 @@ import { applyMigrations, migrationChecksum } from '../lib/runner.mjs';
 const readMigration = (name) => readFile(new URL(`../migrations/${name}`, import.meta.url));
 
 test('memory migrations follow 017 and preserve legacy save scope', async () => {
-  assert.deepEqual(orderedMigrationNames.slice(17), ['018_create_game_memory_timelines.sql', '019_create_game_action_records.sql', '020_extend_game_saves_memory.sql', '021_create_key_events.sql']);
+  assert.deepEqual(orderedMigrationNames.slice(17), ['018_create_game_memory_timelines.sql', '019_create_game_action_records.sql', '020_extend_game_saves_memory.sql', '021_create_key_events.sql', '022_create_game_summaries.sql', '023_create_game_summary_work.sql', '024_extend_game_saves_summary.sql']);
   const bodies = await Promise.all(orderedMigrationNames.slice(17).map(async (name) => (await readMigration(name)).toString()));
   assert.match(bodies[1], /UNIQUE KEY uk_game_records_position \(room_id, timeline_id, position\)/);
   assert.match(bodies[1], /UNIQUE KEY uk_game_records_request \(room_id, request_namespace, request_id\)/);
@@ -35,9 +35,9 @@ test('017 upgrade executes new CREATE statements separately without replaying ap
   };
   await applyMigrations(connection);
   assert.deepEqual(recorded, orderedMigrationNames.slice(17));
-  assert.equal(queries.filter((sql) => /CREATE TABLE IF NOT EXISTS game_/.test(sql)).length, 4);
+  assert.equal(queries.filter((sql) => /CREATE TABLE IF NOT EXISTS game_/.test(sql)).length, 6);
   assert.equal(queries.filter((sql) => /CREATE TABLE IF NOT EXISTS key_events/.test(sql)).length, 1);
-  assert.equal(queries.filter((sql) => /ALTER TABLE game_saves/.test(sql)).length, 1);
+  assert.equal(queries.filter((sql) => /ALTER TABLE game_saves/.test(sql)).length, 2);
   assert.ok(queries.every((sql) => (sql.match(/CREATE TABLE/g) ?? []).length <= 1));
 });
 

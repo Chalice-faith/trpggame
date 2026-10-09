@@ -45,7 +45,8 @@ export const useWebSocketStore = defineStore('websocket', () => {
       clearTimeout(reconnectTimer)
       reconnectTimer = undefined
     }
-    const wsUrl = `${import.meta.env.VITE_WS_URL}?token=${encodeURIComponent(authStore.accessToken)}&room_id=${targetRoomId}`
+    const endpoint = import.meta.env.VITE_WS_URL || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws`
+    const wsUrl = `${endpoint}?token=${encodeURIComponent(authStore.accessToken)}&room_id=${targetRoomId}`
     const connection = new WebSocket(wsUrl)
     socket.value = connection
 

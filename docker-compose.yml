@@ -52,13 +52,14 @@ services:
       - TRPG_AI_BASEURL=http://python-ai:8000
       - TRPG_AI_TIMEOUT=60
       - TRPG_MINIO_ENDPOINT=minio:9000
-      - TRPG_MINIO_ACCESSKEY=minioadmin
-      - TRPG_MINIO_SECRETKEY=minioadmin
-      - TRPG_MINIO_BUCKET=trpg-scripts
+      - TRPG_MINIO_ACCESSKEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - TRPG_MINIO_SECRETKEY=${MINIO_SECRET_KEY:-minioadmin}
+      - TRPG_MINIO_BUCKET=${MINIO_BUCKET:-trpg-scripts}
       - TRPG_MINIO_USESSL=false
       - TRPG_MINIO_MAXUPLOADSIZE=52428800
       - TRPG_WEBSOCKET_ALLOWEDORIGINS=${WEBSOCKET_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost,http://127.0.0.1}
       - TRPG_INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET:-dev-internal-secret-change-in-production}
+      - TRPG_GAME_MEMORY_NEW_ROOMS_ENABLED=${GAME_MEMORY_NEW_ROOMS_ENABLED:-false}
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -106,11 +107,18 @@ services:
       - TRPG_AI_REDIS_URL=redis://redis:6379/0
       - TRPG_AI_DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
       - TRPG_AI_MINIO_ENDPOINT=minio:9000
-      - TRPG_AI_MINIO_ACCESS_KEY=minioadmin
-      - TRPG_AI_MINIO_SECRET_KEY=minioadmin
+      - TRPG_AI_MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - TRPG_AI_MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - TRPG_AI_MINIO_BUCKET=${MINIO_BUCKET:-trpg-scripts}
+      - TRPG_AI_ENABLED=${AI_ENABLED:-true}
+      - TRPG_AI_EMBEDDING_MODEL=${EMBEDDING_MODEL:-BAAI/bge-large-zh-v1.5}
+      - TRPG_AI_EMBEDDING_PREWARM=${EMBEDDING_PREWARM:-false}
+      - HF_HOME=/models
       - TRPG_AI_GO_CALLBACK_BASE_URL=http://go-backend:8080/api/v1/internal
       - TRPG_AI_INTERNAL_SHARED_SECRET=${INTERNAL_SHARED_SECRET:-dev-internal-secret-change-in-production}
       - TRPG_AI_PARSE_TASK_TIMEOUT=600
+    volumes:
+      - model_cache:/models
     depends_on:
       - milvus
       - redis
@@ -189,8 +197,8 @@ services:
     environment:
       ETCD_ENDPOINTS: etcd:2379
       MINIO_ADDRESS: minio:9000
-      MINIO_ACCESS_KEY_ID: admin
-      MINIO_SECRET_ACCESS_KEY: adminadmin
+      MINIO_ACCESS_KEY_ID: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_ACCESS_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
       - "19530:19530"
       - "9091:9091"
@@ -208,8 +216,8 @@ services:
     image: minio/minio:latest
     container_name: trpg-minio
     environment:
-      MINIO_ROOT_USER: admin
-      MINIO_ROOT_PASSWORD: adminadmin
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -248,6 +256,7 @@ volumes:
   etcd_data:
   milvus_data:
   minio_data:
+  model_cache:
 
 networks:
   trpg-network:

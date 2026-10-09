@@ -30,8 +30,8 @@ ai:
 
 minio:
   endpoint: localhost:9000
-  accesskey: admin
-  secretkey: adminadmin
+  accesskey: minioadmin
+  secretkey: minioadmin
   bucket: trpg-scripts
   usessl: false
   maxuploadsize: 52428800 # 50 MiB，单位：字节

@@ -183,6 +183,8 @@ class DeepSeekClient:
         stream: bool,
         functions: Sequence[Mapping[str, Any]] = (),
     ) -> dict[str, Any]:
+        if not settings.enabled:
+            raise LLMConfigurationError("AI capability is disabled")
         if not self.api_key.strip():
             raise LLMConfigurationError("TRPG_AI_DEEPSEEK_API_KEY is required")
         if not self.api_base:
@@ -209,6 +211,13 @@ class DeepSeekClient:
                 for definition in functions
             ]
             payload["tool_choice"] = "auto"
+        # This final guard includes tool definitions and JSON framing, and also
+        # protects opening/summary calls that do not use the action assembler.
+        source = {"messages": messages, "tools": payload.get("tools", [])}
+        estimate = len(json.dumps(source, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        budget = min(settings.context_input_budget, settings.context_window_tokens - self.max_tokens - settings.context_safety_tokens)
+        if estimate > budget:
+            raise LLMConfigurationError("LLM input exceeds configured context budget")
         return payload
 
     @staticmethod

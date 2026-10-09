@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { historicalMigrationChecksums, orderedMigrationNames } from '../migrations/manifest.mjs';
-import { ensureAutoSaveUniqueness, ensureFriendships, ensureScriptChunkCount, removeLegacyForeignKeys } from './special-migrations.mjs';
+import { ensureAutoSaveUniqueness, ensureFriendships, ensureScriptChunkCount, ensureSaveSummaryColumns, removeLegacyForeignKeys } from './special-migrations.mjs';
 
 const migrationDirectory = join(dirname(fileURLToPath(import.meta.url)), '..', 'migrations');
 const migrationLockName = 'trpggame:migrations';
@@ -51,6 +51,7 @@ async function applyMigration(connection, name, body) {
     case '008_add_auto_save_uniqueness.sql': return ensureAutoSaveUniqueness(connection);
     case '009_remove_foreign_keys.sql': return removeLegacyForeignKeys(connection);
     case '010_create_friendships.sql': return ensureFriendships(connection, body);
+    case '024_extend_game_saves_summary.sql': return ensureSaveSummaryColumns(connection);
     case '018_create_game_memory_timelines.sql':
     case '019_create_game_action_records.sql':
       // These fixed migrations contain only CREATE TABLE statements, without routines

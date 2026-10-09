@@ -1,0 +1,155 @@
+# Standalone release stack. Do not merge with the development Compose file.
+services:
+  nginx:
+    build: ./vue-frontend
+    ports: ["${HTTP_BIND:-127.0.0.1:8088}:80"]
+    volumes: ["./nginx/production.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [go-backend]
+    restart: unless-stopped
+  go-backend:
+    build: ./go-backend
+    environment:
+      TRPG_SERVER_MODE: release
+      TRPG_DATABASE_HOST: mysql
+      TRPG_DATABASE_USER: ${MYSQL_USER:?required}
+      TRPG_DATABASE_PASSWORD: ${MYSQL_PASSWORD:?required}
+      TRPG_DATABASE_DBNAME: ${MYSQL_DATABASE:-trpggame}
+      TRPG_REDIS_ADDR: redis:6379
+      TRPG_REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+      TRPG_JWT_SECRET: ${JWT_SECRET:?required}
+      TRPG_INTERNAL_SHARED_SECRET: ${INTERNAL_SHARED_SECRET:?required}
+      TRPG_AI_BASEURL: http://python-ai:8000
+      TRPG_AI_TIMEOUT: 60
+      TRPG_MINIO_ENDPOINT: minio:9000
+      TRPG_MINIO_ACCESSKEY: ${MINIO_ACCESS_KEY:?required}
+      TRPG_MINIO_SECRETKEY: ${MINIO_SECRET_KEY:?required}
+      TRPG_MINIO_BUCKET: ${MINIO_BUCKET:-trpg-scripts}
+      TRPG_WEBSOCKET_ALLOWEDORIGINS: ${WEBSOCKET_ALLOWED_ORIGINS:?required}
+      TRPG_GAME_MEMORY_NEW_ROOMS_ENABLED: ${GAME_MEMORY_NEW_ROOMS_ENABLED:-false}
+      TRPG_GAME_SUMMARY_ENABLED: ${GAME_SUMMARY_ENABLED:-true}
+      TRPG_GAME_SUMMARY_TRIGGER_ACTIONS: ${GAME_SUMMARY_TRIGGER_ACTIONS:-5}
+      TRPG_GAME_SUMMARY_POLL_INTERVAL_MS: ${GAME_SUMMARY_POLL_INTERVAL_MS:-2000}
+      TRPG_GAME_SUMMARY_TIMEOUT_SECONDS: ${GAME_SUMMARY_TIMEOUT_SECONDS:-50}
+      TRPG_GAME_SUMMARY_LEASE_SECONDS: ${GAME_SUMMARY_LEASE_SECONDS:-90}
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      minio-init: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+    restart: unless-stopped
+  migrate:
+    build: {context: ., dockerfile: database/Dockerfile}
+    environment:
+      TRPG_MIGRATIONS_HOST: mysql
+      TRPG_MIGRATIONS_USER: ${MYSQL_USER:?required}
+      TRPG_MIGRATIONS_PASSWORD: ${MYSQL_PASSWORD:?required}
+      TRPG_MIGRATIONS_DATABASE: ${MYSQL_DATABASE:-trpggame}
+    depends_on:
+      mysql: {condition: service_healthy}
+    restart: "no"
+  python-ai:
+    build: ./python-ai
+    environment:
+      TRPG_AI_ENVIRONMENT: production
+      TRPG_AI_DEBUG: "false"
+      TRPG_AI_ENABLED: ${AI_ENABLED:-true}
+      TRPG_AI_DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      TRPG_AI_REDIS_URL: redis://redis:6379/0
+      TRPG_AI_REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+      TRPG_AI_MILVUS_HOST: milvus
+      TRPG_AI_MINIO_ENDPOINT: minio:9000
+      TRPG_AI_MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?required}
+      TRPG_AI_MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?required}
+      TRPG_AI_MINIO_BUCKET: ${MINIO_BUCKET:-trpg-scripts}
+      TRPG_AI_GO_CALLBACK_BASE_URL: http://go-backend:8080/api/v1/internal
+      TRPG_AI_INTERNAL_SHARED_SECRET: ${INTERNAL_SHARED_SECRET:?required}
+      TRPG_AI_EMBEDDING_PREWARM: ${EMBEDDING_PREWARM:-true}
+      TRPG_AI_CONTEXT_INPUT_BUDGET: ${CONTEXT_INPUT_BUDGET:-24000}
+      TRPG_AI_CONTEXT_WINDOW_TOKENS: ${CONTEXT_WINDOW_TOKENS:-32768}
+      TRPG_AI_CONTEXT_SAFETY_TOKENS: ${CONTEXT_SAFETY_TOKENS:-1024}
+      TRPG_AI_CONTEXT_SUMMARY_BUDGET: ${CONTEXT_SUMMARY_BUDGET:-3000}
+      TRPG_AI_CONTEXT_KEY_EVENT_BUDGET: ${CONTEXT_KEY_EVENT_BUDGET:-2000}
+      TRPG_AI_LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+      HF_HOME: /models
+    volumes: ["model_cache:/models"]
+    depends_on:
+      minio-init: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+      milvus: {condition: service_started}
+    restart: unless-stopped
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?required}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-trpggame}
+      MYSQL_USER: ${MYSQL_USER:?required}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?required}
+    volumes: ["mysql_data:/var/lib/mysql"]
+    healthcheck:
+      test: [CMD-SHELL, "mysqladmin ping -h localhost --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+  redis:
+    image: redis:7-alpine
+    environment: {REDIS_PASSWORD: "${REDIS_PASSWORD:?required}"}
+    command: [sh, -c, 'exec redis-server --requirepass "$$REDIS_PASSWORD" --appendonly yes']
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: [CMD-SHELL, 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+  minio:
+    image: minio/minio:latest
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+    command: server /data --console-address :9001
+    volumes: ["minio_data:/data"]
+    restart: unless-stopped
+  minio-init:
+    image: minio/mc:latest
+    entrypoint: ["/bin/sh", "/init/minio-init.sh"]
+    volumes: ["./scripts/minio-init.sh:/init/minio-init.sh:ro"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?required}
+      MINIO_BUCKET: ${MINIO_BUCKET:-trpg-scripts}
+      MILVUS_ACCESS_KEY: ${MILVUS_ACCESS_KEY:?required}
+      MILVUS_SECRET_KEY: ${MILVUS_SECRET_KEY:?required}
+    depends_on: [minio]
+    restart: "no"
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.5
+    environment:
+      ETCD_AUTO_COMPACTION_MODE: revision
+      ETCD_AUTO_COMPACTION_RETENTION: 1000
+      ETCD_QUOTA_BACKEND_BYTES: 4294967296
+      ETCD_SNAPSHOT_COUNT: 50000
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes: ["etcd_data:/etcd"]
+    restart: unless-stopped
+  milvus:
+    image: milvusdb/milvus:v2.4.0
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESS_KEY_ID: ${MILVUS_ACCESS_KEY:?required}
+      MINIO_SECRET_ACCESS_KEY: ${MILVUS_SECRET_KEY:?required}
+    command: milvus run standalone
+    volumes: ["milvus_data:/var/lib/milvus"]
+    depends_on:
+      etcd: {condition: service_started}
+      minio-init: {condition: service_completed_successfully}
+    restart: unless-stopped
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
+  etcd_data:
+  milvus_data:
+  model_cache:

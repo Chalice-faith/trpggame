@@ -183,6 +183,9 @@ func (s *GameMemoryLifecycleService) Load(ctx context.Context, req *LoadGameRequ
 	if err != nil {
 		return nil, err
 	}
+	if err := repo.ValidateSummarySave(save); err != nil {
+		return nil, err
+	}
 	if decoded.Multiplayer != nil {
 		if err := validateMultiplayerRoomRoster(ctx, s.games, room, decoded.Multiplayer); err != nil {
 			return nil, err

@@ -140,6 +140,9 @@ func main() {
 		log.Fatalf("Failed to initialize game runtime repository: %v", err)
 	}
 	gameService := service.NewGameService(gameRepo, scriptRepo, aiClient, gameStateRepo)
+	memoryRepo := repo.NewGameMemoryRepo(db)
+	gameService.ConfigureInferenceMemory(memoryRepo)
+	summaryWorker := service.NewGameSummaryWorker(memoryRepo, aiClient, gameStateRepo, cfg.GameSummary)
 	archiveService, err := service.NewGameArchiveService(gameStateRepo, repo.NewGameMemoryRepo(db), cfg.GameArchive)
 	if err != nil {
 		log.Fatalf("Game archive configuration: %v", err)
@@ -247,6 +250,7 @@ func main() {
 	})
 	go hub.Run()
 	go archiveWorker.Run()
+	go summaryWorker.Run()
 	presenceRepo, err := repo.NewPresenceRepo(redisClient, repo.DefaultPresenceTTL)
 	if err != nil {
 		log.Fatalf("Failed to initialize presence repository: %v", err)
@@ -343,6 +347,7 @@ func main() {
 	deadlineWorker.Stop()
 	memoryWorker.Stop()
 	archiveWorker.Stop()
+	summaryWorker.Stop()
 	realtimeBus.Stop()
 	imHub.Stop()
 	presenceCoordinator.Stop()

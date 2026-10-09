@@ -49,6 +49,28 @@ export async function ensureScriptChunkCount(connection, migrationSQL) {
   }
 }
 
+// MySQL DDL commits before the migration journal insert. Recover an interrupted
+// 024 without dropping populated columns or replaying ALTER against them.
+export async function ensureSaveSummaryColumns(connection) {
+  const definitions = new Map([
+    ['summary_timeline_id', 'char(36)'], ['summary_version', 'bigint unsigned'],
+    ['summary_through_position', 'bigint unsigned'], ['summary_input_hash', 'char(64)'],
+    ['summary_content_hash', 'char(64)'],
+  ]);
+  const [rows] = await connection.execute(`SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+    FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'game_saves'`);
+  const existing = new Map(rows.map((row) => [row.COLUMN_NAME, row]));
+  const missing = [];
+  for (const [name, type] of definitions) {
+    const column = existing.get(name);
+    if (!column) missing.push(`ADD COLUMN ${name} ${type} NULL`);
+    else if (column.COLUMN_TYPE.toLowerCase() !== type || column.IS_NULLABLE !== 'YES') {
+      throw new Error(`game_saves.${name} has an incompatible definition`);
+    }
+  }
+  if (missing.length) await connection.query(`ALTER TABLE game_saves ${missing.join(', ')}`);
+}
+
 export async function ensureAutoSaveUniqueness(connection) {
   const [columnRows] = await connection.execute(autoSaveColumnQuery);
   let columnExists = columnRows.length > 0;

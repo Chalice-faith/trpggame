@@ -45,6 +45,11 @@ class VectorStore(Protocol):
 
 _encoder: Encoder | None = None
 _encoder_lock = Lock()
+_encoder_state = "not_loaded"
+
+
+def encoder_status() -> str:
+    return _encoder_state
 
 
 def create_collection(*, store: VectorStore | None = None) -> None:
@@ -127,16 +132,19 @@ def embed_and_store(
 
 
 def _get_encoder() -> Encoder:
-    global _encoder
+    global _encoder, _encoder_state
 
     if _encoder is None:
         with _encoder_lock:
             if _encoder is None:
                 try:
+                    _encoder_state = "loading"
                     from sentence_transformers import SentenceTransformer
 
                     _encoder = SentenceTransformer(settings.embedding_model)
+                    _encoder_state = "ready"
                 except Exception as exc:
+                    _encoder_state = "failed"
                     raise EmbeddingError(
                         f"failed to load embedding model {settings.embedding_model!r}"
                     ) from exc

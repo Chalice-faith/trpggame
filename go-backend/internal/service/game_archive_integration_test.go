@@ -160,7 +160,7 @@ func newArchiveIntegrationFixture(t *testing.T, mode string) *archiveIntegration
 				}
 			}
 		}
-		for _, table := range []string{"game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
+		for _, table := range []string{"game_summary_work", "game_summaries", "key_events", "game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
 			db.Table(table).Where("room_id = ?", f.room.ID).Delete(map[string]any{})
 		}
 		db.Delete(f.room)

@@ -312,17 +312,22 @@ func (RoomPlayer) TableName() string {
 
 // GameSave 游戏存档
 type GameSave struct {
-	ID             uint            `gorm:"primaryKey" json:"id"`
-	RoomID         uint            `gorm:"index;not null" json:"room_id"`
-	SaveName       string          `gorm:"size:256;not null" json:"save_name"`
-	RoundNumber    int             `gorm:"not null;default:0" json:"round_number"`
-	SummaryMemory  string          `gorm:"type:text;not null" json:"summary_memory"`
-	RedisSnapshot  json.RawMessage `gorm:"type:json;not null" json:"redis_snapshot"`
-	RecentMessages json.RawMessage `gorm:"type:json;not null" json:"recent_messages"`
-	IsAuto         bool            `gorm:"not null;default:false" json:"is_auto"`
-	TimelineID     *string         `gorm:"size:36" json:"timeline_id,omitempty"`
-	MemoryPosition *uint64         `json:"memory_position,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
+	ID                     uint            `gorm:"primaryKey" json:"id"`
+	RoomID                 uint            `gorm:"index;not null" json:"room_id"`
+	SaveName               string          `gorm:"size:256;not null" json:"save_name"`
+	RoundNumber            int             `gorm:"not null;default:0" json:"round_number"`
+	SummaryMemory          string          `gorm:"type:text;not null" json:"summary_memory"`
+	RedisSnapshot          json.RawMessage `gorm:"type:json;not null" json:"redis_snapshot"`
+	RecentMessages         json.RawMessage `gorm:"type:json;not null" json:"recent_messages"`
+	IsAuto                 bool            `gorm:"not null;default:false" json:"is_auto"`
+	TimelineID             *string         `gorm:"size:36" json:"timeline_id,omitempty"`
+	MemoryPosition         *uint64         `json:"memory_position,omitempty"`
+	SummaryTimelineID      *string         `json:"summary_timeline_id,omitempty"`
+	SummaryVersion         *uint64         `json:"summary_version,omitempty"`
+	SummaryThroughPosition *uint64         `json:"summary_through_position,omitempty"`
+	SummaryInputHash       *string         `json:"-"`
+	SummaryContentHash     *string         `json:"-"`
+	CreatedAt              time.Time       `json:"created_at"`
 }
 
 // TableName 自定义表名

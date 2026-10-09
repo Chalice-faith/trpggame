@@ -33,5 +33,7 @@ try {
   assert.ok(!indexes.some((row) => row.Key_name === 'idx_game_saves_auto_round'));
   assert.ok(indexes.some((row) => row.Key_name === 'idx_game_saves_auto_timeline_round'));
   await applyMigrations(db, { lockTimeoutSeconds });
-  console.log('MySQL 8.4: 017→020 upgrade, legacy JSON preservation, branch autosave uniqueness and rerun passed');
+  const [summaries] = await db.query('SELECT summary_version,summary_timeline_id,summary_through_position,summary_input_hash,summary_content_hash FROM game_saves');
+  assert.ok(summaries.every((row) => Object.values(row).every((value) => value === null)));
+  console.log('MySQL 8.4: 017→024 upgrade, legacy JSON preservation, branch autosave uniqueness and rerun passed');
 } finally { await db.end(); }

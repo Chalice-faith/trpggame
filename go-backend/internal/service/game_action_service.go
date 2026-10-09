@@ -204,6 +204,9 @@ func (s *GameService) submitAction(
 		CharacterID: *player.CharacterID,
 	}
 	var aiResult *ai_client.GameActionResponse
+	if err := s.prepareInferenceMemory(ctx, aiRequest); err != nil {
+		return nil, err
+	}
 	streamedNarrative := false
 	if observer != nil {
 		if streamClient, ok := s.aiClient.(GameInferenceStreamClient); ok {

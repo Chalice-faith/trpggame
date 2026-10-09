@@ -64,15 +64,45 @@ func memorySaveHash(save *model.GameSave) (string, error) {
 		messages[index] = canonical
 	}
 	return model.MemoryHash(struct {
-		RoomID     uint
-		Round      int
-		TimelineID *string
-		Position   *uint64
-		Summary    string
-		Snapshot   json.RawMessage
-		Messages   []json.RawMessage
-	}{save.RoomID, save.RoundNumber, save.TimelineID, save.MemoryPosition, save.SummaryMemory, snapshot, messages})
+		RoomID          uint
+		Round           int
+		TimelineID      *string
+		Position        *uint64
+		Summary         string
+		Snapshot        json.RawMessage
+		Messages        []json.RawMessage
+		SummaryMetadata any `json:",omitempty"`
+	}{save.RoomID, save.RoundNumber, save.TimelineID, save.MemoryPosition, save.SummaryMemory, snapshot, messages, summarySaveMetadata(save)})
 }
+
+func summarySaveMetadata(save *model.GameSave) any {
+	if save.SummaryVersion == nil {
+		return nil
+	}
+	return struct {
+		Timeline         *string
+		Version, Through *uint64
+	}{save.SummaryTimelineID, save.SummaryVersion, save.SummaryThroughPosition}
+}
+
+func validateSummarySave(save *model.GameSave) error {
+	if save.SummaryVersion == nil {
+		if save.SummaryTimelineID != nil || save.SummaryThroughPosition != nil || save.SummaryInputHash != nil || save.SummaryContentHash != nil {
+			return model.ErrInvalidMemoryData
+		}
+		return nil
+	}
+	if save.SummaryTimelineID == nil || !model.ValidMemoryUUID(*save.SummaryTimelineID) || save.SummaryThroughPosition == nil || save.MemoryPosition == nil || *save.SummaryThroughPosition > *save.MemoryPosition || save.SummaryInputHash == nil || save.SummaryContentHash == nil {
+		return model.ErrInvalidMemoryData
+	}
+	hash, err := memorySaveHash(save)
+	if err != nil || hash != *save.SummaryContentHash {
+		return ErrMemoryConflict
+	}
+	return nil
+}
+
+func ValidateSummarySave(save *model.GameSave) error { return validateSummarySave(save) }
 
 func (r *GameRepo) createMemorySave(ctx context.Context, input *model.GameSave) (bool, error) {
 	copy := *input
@@ -94,6 +124,12 @@ func (r *GameRepo) createMemorySave(ctx context.Context, input *model.GameSave) 
 		if timeline.Status != "active" || *copy.MemoryPosition < timeline.ForkPosition || *copy.MemoryPosition > timeline.DurablePosition {
 			return ErrMemoryGap
 		}
+		if copy.SummaryVersion != nil {
+			if err := validateSummarySave(&copy); err != nil {
+				return err
+			}
+			hash = *copy.SummaryInputHash
+		}
 		var memory struct {
 			Memory struct {
 				HistoryComplete bool `json:"history_complete"`
@@ -104,6 +140,22 @@ func (r *GameRepo) createMemorySave(ctx context.Context, input *model.GameSave) 
 		}
 		if memory.Memory.HistoryComplete != timeline.HistoryComplete {
 			return ErrMemoryBranch
+		}
+		if copy.SummaryVersion == nil {
+			summary, err := summaryAt(tx, copy.RoomID, *copy.TimelineID, *copy.MemoryPosition)
+			if err != nil {
+				return err
+			}
+			copy.SummaryTimelineID = &summary.TimelineID
+			copy.SummaryVersion = &summary.Version
+			copy.SummaryThroughPosition = &summary.ThroughPosition
+			copy.SummaryMemory = summary.Content
+			copy.SummaryInputHash = &hash
+			contentHash, err := memorySaveHash(&copy)
+			if err != nil {
+				return err
+			}
+			copy.SummaryContentHash = &contentHash
 		}
 		if err := tx.Create(&copy).Error; err != nil {
 			var duplicate *mysqlDriver.MySQLError
@@ -116,6 +168,12 @@ func (r *GameRepo) createMemorySave(ctx context.Context, input *model.GameSave) 
 				return err
 			}
 			existingHash, err := memorySaveHash(&existing)
+			if existing.SummaryInputHash != nil {
+				if issue := validateSummarySave(&existing); issue != nil {
+					return issue
+				}
+				existingHash = *existing.SummaryInputHash
+			}
 			if err != nil || existingHash != hash {
 				return ErrMemoryConflict
 			}

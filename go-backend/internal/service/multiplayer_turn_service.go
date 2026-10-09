@@ -152,6 +152,10 @@ func (s *GameService) submitMultiplayerAction(
 		CharacterID: actorCharacterID, Participants: participants,
 	}
 	var aiResult *ai_client.GameActionResponse
+	if err := s.prepareInferenceMemory(ctx, aiRequest); err != nil {
+		s.cancelMultiplayerAction(room, req, generation, requestID, fingerprint, "memory_unavailable")
+		return nil, err
+	}
 	streamed := false
 	if streamClient, ok := s.aiClient.(GameInferenceStreamClient); ok {
 		aiResult, err = streamClient.SubmitActionStream(ctx, aiRequest, func(event ai_client.ActionStreamEvent) error {

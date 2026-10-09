@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/viper"
@@ -18,6 +19,7 @@ type Config struct {
 	Internal    InternalConfig    `mapstructure:"internal"`
 	GameArchive GameArchiveConfig `mapstructure:"game_archive"`
 	GameMemory  GameMemoryConfig  `mapstructure:"game_memory"`
+	GameSummary GameSummaryConfig `mapstructure:"game_summary"`
 }
 
 type GameMemoryConfig struct {
@@ -114,10 +116,56 @@ func Load() (*Config, error) {
 	if err := cfg.GameArchive.Validate(); err != nil {
 		return nil, err
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
+// Validate fails closed for release deployments without printing secret values.
+func (c *Config) Validate() error {
+	if c.Server.Mode != "debug" && c.Server.Mode != "test" && c.Server.Mode != "release" {
+		return fmt.Errorf("invalid server.mode")
+	}
+	if err := c.GameSummary.Validate(); err != nil {
+		return err
+	}
+	if c.AI.Timeout <= 0 {
+		return fmt.Errorf("ai.timeout must be positive")
+	}
+	if c.Server.Mode != "release" {
+		return nil
+	}
+	for name, value := range map[string]string{"jwt.secret": c.JWT.Secret, "internal.shared_secret": c.Internal.SharedSecret} {
+		if len(value) < 32 || unsafeSecret(value) {
+			return fmt.Errorf("release requires a strong %s (at least 32 characters)", name)
+		}
+	}
+	for name, value := range map[string]string{"database.password": c.Database.Password, "redis.password": c.Redis.Password, "minio.secretkey": c.MinIO.SecretKey} {
+		if len(value) < 16 || unsafeSecret(value) {
+			return fmt.Errorf("release requires a strong %s (at least 16 characters)", name)
+		}
+	}
+	if c.Database.User == "root" || c.MinIO.AccessKey == "admin" || c.MinIO.AccessKey == "minioadmin" {
+		return fmt.Errorf("release requires non-administrator database and MinIO users")
+	}
+	if strings.TrimSpace(c.WebSocket.AllowedOrigins) == "" || c.WebSocket.AllowedOrigins == DefaultWebSocketAllowedOrigins {
+		return fmt.Errorf("release requires explicit websocket.allowedorigins")
+	}
+	return nil
+}
+
+func unsafeSecret(value string) bool {
+	v := strings.ToLower(strings.TrimSpace(value))
+	return v == "" || v == "minioadmin" || v == "adminadmin" || v == "trpg123" || v == "123456" || strings.Contains(v, "change-me") || strings.Contains(v, "change-in-production") || strings.Contains(v, "replace-with") || strings.HasPrefix(v, "dev-")
+}
+
 func setDefaults(v *viper.Viper) {
+	v.SetDefault("game_summary.enabled", true)
+	v.SetDefault("game_summary.trigger_actions", 5)
+	v.SetDefault("game_summary.poll_interval_ms", 2000)
+	v.SetDefault("game_summary.timeout_seconds", 50)
+	v.SetDefault("game_summary.lease_seconds", 90)
 	v.SetDefault("game_memory.new_rooms_enabled", false)
 	d := DefaultGameArchiveConfig()
 	v.SetDefault("game_archive.poll_interval_ms", d.PollIntervalMS)

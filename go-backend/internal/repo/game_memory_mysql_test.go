@@ -49,7 +49,7 @@ func newMemoryFixture(t *testing.T) *memoryFixture {
 	}
 	f := &memoryFixture{db: db, repo: NewGameMemoryRepo(db), roomID: room.ID, rootID: uuid.NewString(), generation: uuid.NewString()}
 	t.Cleanup(func() {
-		for _, table := range []string{"key_events", "game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
+		for _, table := range []string{"game_summary_work", "game_summaries", "key_events", "game_action_records", "game_memory_operations", "game_memory_states", "game_timelines", "game_saves"} {
 			if err := db.Table(table).Where("room_id = ?", room.ID).Delete(map[string]any{}).Error; err != nil {
 				t.Error(err)
 			}
