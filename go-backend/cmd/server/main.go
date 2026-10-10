@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +14,9 @@ import (
 	"trpggame/internal/ai_client"
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
+	"trpggame/internal/imws"
+	"trpggame/internal/realtime"
+	"trpggame/internal/realtimebus"
 	"trpggame/internal/repo"
 	"trpggame/internal/router"
 	"trpggame/internal/service"
@@ -19,11 +24,81 @@ import (
 	"trpggame/internal/ws"
 )
 
+// roomAuthorizer keeps solo rooms owner-only while admitting active multiplayer members.
+type roomAuthorizer struct {
+	rooms       *repo.RoomRepo
+	roomService *service.RoomService
+}
+
+func gameActionErrorCode(err error) int {
+	switch {
+	case errors.Is(err, repo.ErrMemoryConflict):
+		return 1342
+	case errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveNotReady):
+		return 1343
+	case errors.Is(err, repo.ErrGameArchiveCorrupt), errors.Is(err, repo.ErrMemoryGap), errors.Is(err, repo.ErrMemoryBranch):
+		return 1344
+	case errors.Is(err, service.ErrMultiplayerRuntimeUnavailable):
+		return 1920
+	case errors.Is(err, service.ErrMultiplayerTurnConflict):
+		return 1921
+	case errors.Is(err, service.ErrMultiplayerNotActor):
+		return 1922
+	case errors.Is(err, service.ErrMultiplayerActionInProgress):
+		return 1923
+	case errors.Is(err, service.ErrMultiplayerRequestConflict):
+		return 1924
+	case errors.Is(err, service.ErrMultiplayerAIUnavailable):
+		return 1927
+	case errors.Is(err, service.ErrInvalidGameAction):
+		return 1310
+	case errors.Is(err, service.ErrGameRoomNotFound):
+		return 1311
+	case errors.Is(err, service.ErrGamePlayerNotFound):
+		return 1312
+	case errors.Is(err, service.ErrGameRoomNotPlaying):
+		return 1313
+	case errors.Is(err, service.ErrGameActionConflict):
+		return 1314
+	case errors.Is(err, service.ErrActionRequestConflict):
+		return 1315
+	case errors.Is(err, service.ErrInsufficientItems):
+		return 1316
+	case errors.Is(err, service.ErrGameRuntimeUnavailable):
+		return 1318
+	case errors.Is(err, service.ErrInvalidActionEffects):
+		return 1319
+	default:
+		return 1317
+	}
+}
+
+func (a roomAuthorizer) Authorize(ctx context.Context, userID, roomID uint) error {
+	_, err := a.rooms.AuthorizeSubscription(ctx, userID, roomID)
+	return err
+}
+
+func (a roomAuthorizer) Snapshot(ctx context.Context, userID, roomID uint) (json.RawMessage, error) {
+	isSolo, err := a.rooms.AuthorizeSubscription(ctx, userID, roomID)
+	if err != nil || isSolo {
+		return nil, err
+	}
+	snapshot, err := a.roomService.Get(ctx, userID, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(snapshot)
+}
+
 func main() {
 	// 加载配置
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load config: %v", err)
+	}
+	allowedOrigins, err := realtime.ParseAllowedOrigins(cfg.WebSocket.AllowedOrigins)
+	if err != nil {
+		log.Fatalf("Invalid WebSocket allowed origins: %v", err)
 	}
 
 	// 初始化数据库连接
@@ -65,20 +140,190 @@ func main() {
 		log.Fatalf("Failed to initialize game runtime repository: %v", err)
 	}
 	gameService := service.NewGameService(gameRepo, scriptRepo, aiClient, gameStateRepo)
+	memoryRepo := repo.NewGameMemoryRepo(db)
+	gameService.ConfigureInferenceMemory(memoryRepo)
+	summaryWorker := service.NewGameSummaryWorker(memoryRepo, aiClient, gameStateRepo, cfg.GameSummary)
+	archiveService, err := service.NewGameArchiveService(gameStateRepo, repo.NewGameMemoryRepo(db), cfg.GameArchive)
+	if err != nil {
+		log.Fatalf("Game archive configuration: %v", err)
+	}
+	gameService.ConfigureArchive(archiveService)
+	memoryLifecycle, err := service.NewGameMemoryLifecycleService(repo.NewGameMemoryRepo(db), gameStateRepo, gameRepo, archiveService, cfg.GameArchive)
+	if err != nil {
+		log.Fatalf("Game memory lifecycle configuration: %v", err)
+	}
+	gameService.ConfigureMemoryLifecycle(memoryLifecycle, cfg.GameMemory.NewRoomsEnabled)
+	archiveWorker := service.NewGameArchiveWorker(archiveService)
 	gameHandler := handler.NewGameHandler(gameService)
+	userRepo := repo.NewUserRepo(db)
+	friendRepo := repo.NewFriendRepo(db)
+	realtimeBus, err := realtimebus.New(redisClient, realtimebus.Options{})
+	if err != nil {
+		log.Fatalf("Failed to initialize realtime bus: %v", err)
+	}
 
 	// 启动 WebSocket Hub
 	hub := ws.NewHub()
+	hub.SetRealtimeBus(realtimeBus)
+	roomRealtime := service.NewRoomRealtime(hub)
+	archiveService.ConfigureNotifier(roomRealtime)
+	gameService.ConfigureMultiplayer(roomRealtime)
+	hub.SetGameActionHandler(func(ctx context.Context, client *ws.Client, request ws.GameActionData) {
+		if request.ExpectedTurn == nil {
+			hub.SendErrorToUser(client.RoomID, client.UserID, 1506, "invalid game action", request.RequestID)
+			return
+		}
+		_, err := gameService.SubmitActionStream(
+			ctx,
+			&service.SubmitGameActionRequest{
+				UserID:             client.UserID,
+				RoomID:             client.RoomID,
+				RequestID:          request.RequestID,
+				ExpectedTurn:       *request.ExpectedTurn,
+				ExpectedTimelineID: request.ExpectedTimelineID,
+				ExpectedGeneration: request.ExpectedGeneration,
+				Action:             request.ActionText,
+			},
+			func(event service.GameActionStreamEvent) {
+				switch event.Type {
+				case "narrative_chunk":
+					payload, marshalErr := json.Marshal(ws.NarrativeChunkData{
+						Content: event.Content,
+						IsFinal: false,
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgNarrativeChunk, payload, request.RequestID)
+					}
+				case "dice_roll":
+					if event.Result == nil || event.Result.DiceRoll == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(event.Result.DiceRoll)
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgDiceRoll, payload, request.RequestID)
+					}
+				case "status_update":
+					if event.Result == nil || event.Result.Effects == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(ws.StatusUpdateData{
+						PlayerID: client.UserID,
+						Changes: map[string]any{
+							"player_state_changes": event.Result.Effects.PlayerStateChanges,
+							"items":                event.Result.Effects.Items,
+							"buffs":                event.Result.Effects.Buffs,
+							"events":               event.Result.Effects.Events,
+						},
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgStatusUpdate, payload, request.RequestID)
+					}
+				case "narrative_complete":
+					if event.Result == nil {
+						return
+					}
+					payload, marshalErr := json.Marshal(ws.NarrativeCompleteData{
+						Narrative:   event.Result.Narrative,
+						CurrentTurn: event.Result.CurrentTurn,
+						Duplicate:   event.Result.Duplicate,
+					})
+					if marshalErr == nil {
+						hub.SendToUserWithRequestID(client.RoomID, client.UserID, ws.MsgNarrativeComplete, payload, request.RequestID)
+					}
+				}
+			},
+		)
+		if err != nil {
+			code := gameActionErrorCode(err)
+			message := "AI action generation unavailable"
+			if code == 1342 {
+				message = "memory branch changed; refresh room state"
+			} else if code == 1343 {
+				message = "memory archive or recovery is in progress"
+			} else if code == 1344 {
+				message = "memory state requires recovery"
+			} else if code != 1317 {
+				message = "game action rejected"
+			}
+			hub.SendErrorToUser(client.RoomID, client.UserID, code, message, request.RequestID)
+		}
+	})
 	go hub.Run()
+	go archiveWorker.Run()
+	go summaryWorker.Run()
+	presenceRepo, err := repo.NewPresenceRepo(redisClient, repo.DefaultPresenceTTL)
+	if err != nil {
+		log.Fatalf("Failed to initialize presence repository: %v", err)
+	}
+	imHub := imws.NewHub()
+	imHub.SetRealtimeBus(realtimeBus)
+	realtimeBus.SetRoomHandler(hub.HandleRoomEvent)
+	realtimeBus.SetUserHandler(imHub.HandleUserEvent)
+	realtimeBus.SetControlHandler(func(event realtimebus.ControlEvent) {
+		switch event.Scope {
+		case realtimebus.ScopeGame:
+			hub.HandleControl(event)
+		case realtimebus.ScopeIM:
+			imHub.HandleControl(event)
+		}
+	})
+	realtimeStartContext, cancelRealtimeStart := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := realtimeBus.Start(realtimeStartContext); err != nil {
+		cancelRealtimeStart()
+		log.Fatalf("Failed to start realtime bus: %v", err)
+	}
+	cancelRealtimeStart()
+	deadlineWorker := service.NewMultiplayerDeadlineWorker(gameStateRepo, gameService)
+	go deadlineWorker.Run()
+	presenceCoordinator := service.NewPresenceCoordinator(presenceRepo, friendRepo, imHub)
+	presenceCoordinator.SetGamePresenceRepository(gameRepo)
+	gameService.ConfigurePresence(presenceCoordinator)
+	imHub.SetPresenceObserver(presenceCoordinator)
+	go presenceCoordinator.Run()
+	go imHub.Run()
+	friendshipPublisher := service.NewRealtimeFriendshipPublisher(userRepo, imHub)
+	presenceProvider := service.NewRedisPresenceProvider(presenceRepo)
+	presenceProvider.SetGamePresenceRepository(gameRepo)
+	friendService := service.NewFriendService(
+		friendRepo,
+		userRepo,
+		presenceProvider,
+		friendshipPublisher,
+	)
+	friendHandler := handler.NewFriendHandler(friendService)
+	chatRepo := repo.NewChatRepo(db)
+	chatService := service.NewChatService(chatRepo, userRepo)
+	chatHandler := handler.NewChatHandler(chatService)
+	groupRepo := repo.NewGroupRepo(db)
+	groupService := service.NewGroupService(groupRepo)
+	chatRealtime := service.NewChatRealtime(chatService, imHub)
+	groupService.SetMutationPublisher(chatRealtime)
+	groupHandler := handler.NewGroupHandler(groupService)
+	roomRepo := repo.NewRoomRepo(db)
+	roomService := service.NewRoomService(roomRepo)
+	roomService.ConfigureMultiplayer(gameStateRepo, aiClient, realtimeBus)
+	memoryLifecycle.ConfigureRoomStarter(roomRepo)
+	roomService.ConfigureMemoryLifecycle(memoryLifecycle, cfg.GameMemory.NewRoomsEnabled)
+	memoryWorker := service.NewGameMemoryLifecycleWorker(memoryLifecycle)
+	go memoryWorker.Run()
+	roomService.SetMutationPublisher(roomRealtime)
+	roomService.SetPresenceNotifier(presenceCoordinator)
+	roomHandler := handler.NewRoomHandler(roomService)
+	imHub.SetInboundHandler(chatRealtime)
 
-	// 初始化路由
+	// 初始化路由（游戏与 IM WebSocket 分别管理连接）
+	wsHandlers := router.WebSocketHandlers{
+		Game: ws.HandleWebSocket(hub, cfg.JWT.Secret, allowedOrigins, roomAuthorizer{rooms: roomRepo, roomService: roomService}),
+		IM:   imws.HandleWebSocket(imHub, cfg.JWT.Secret, allowedOrigins),
+	}
 	r := router.Setup(
 		cfg,
 		db,
-		hub,
+		wsHandlers,
 		scriptHandler,
 		internalScriptHandler,
 		gameHandler,
+		router.RESTHandlers{Friend: friendHandler, Chat: chatHandler, Group: groupHandler, Room: roomHandler},
 	)
 
 	// 启动服务器
@@ -99,6 +344,13 @@ func main() {
 	log.Println("Shutting down server...")
 
 	// 关闭 WebSocket Hub
+	deadlineWorker.Stop()
+	memoryWorker.Stop()
+	archiveWorker.Stop()
+	summaryWorker.Stop()
+	realtimeBus.Stop()
+	imHub.Stop()
+	presenceCoordinator.Stop()
 	hub.Stop()
 
 	log.Println("Server stopped")

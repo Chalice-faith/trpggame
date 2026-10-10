@@ -78,6 +78,46 @@ class RedisGameContextProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.character_profile, {"character_id": 13})
         self.assertTrue(redis.closed)
 
+    async def test_loads_each_multiplayer_participant_state(self):
+        class TeamRedis(FakeRedis):
+            async def hgetall(self, key: str):
+                self.calls.append(("hgetall", key))
+                return {
+                    "room:7:player:11": {"hp": "18"},
+                    "room:7:player:12": {"hp": "9", "location": "门外"},
+                }[key]
+
+        redis = TeamRedis()
+        provider = RedisGameContextProvider(
+            redis_factory=lambda *args, **kwargs: redis,
+        )
+
+        result = await provider.load(
+            room_id=7,
+            user_id=11,
+            character_id=13,
+            participants=[(11, 13), (12, 14)],
+        )
+
+        self.assertEqual(
+            result.participants,
+            (
+                {"user_id": 11, "character_id": 13, "player_state": {"hp": 18}},
+                {
+                    "user_id": 12,
+                    "character_id": 14,
+                    "player_state": {"hp": 9, "location": "门外"},
+                },
+            ),
+        )
+        self.assertEqual(
+            [call for call in redis.calls if call[0] == "hgetall"],
+            [
+                ("hgetall", "room:7:player:11"),
+                ("hgetall", "room:7:player:12"),
+            ],
+        )
+
     async def test_rejects_malformed_round_and_closes_client(self):
         redis = FakeRedis(rounds=["not-json"])
         provider = RedisGameContextProvider(redis_factory=lambda *args, **kwargs: redis)

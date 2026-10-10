@@ -21,11 +21,16 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    const isRefreshRequest = originalRequest?.url?.endsWith('/auth/refresh')
+    if (
+      error.response?.status === 401 &&
+      !originalRequest?._retry &&
+      !isRefreshRequest
+    ) {
       originalRequest._retry = true
       const authStore = useAuthStore()
-      await authStore.refreshAccessToken()
-      if (authStore.accessToken) {
+      const refreshed = await authStore.refreshAccessToken()
+      if (refreshed && authStore.accessToken) {
         originalRequest.headers.Authorization = `Bearer ${authStore.accessToken}`
         return api(originalRequest)
       }

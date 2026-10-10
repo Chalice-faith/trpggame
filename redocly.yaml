@@ -1,0 +1,6 @@
+extends:
+  - recommended
+
+rules:
+  # 仓库暂未提供可引用的许可证文件或 URL，不让该元数据警告干扰接口契约校验。
+  info-license-strict: off

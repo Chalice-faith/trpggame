@@ -2,6 +2,8 @@ package config
 
 import (
 	"log"
+	"os"
+	"time"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -11,7 +13,10 @@ import (
 // InitDB 初始化数据库连接
 func InitDB(cfg *DatabaseConfig) (*gorm.DB, error) {
 	db, err := gorm.Open(mysql.Open(cfg.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
+		Logger: logger.New(log.New(os.Stdout, "", log.LstdFlags), logger.Config{
+			LogLevel: logger.Warn, SlowThreshold: time.Second,
+			ParameterizedQueries: true, IgnoreRecordNotFoundError: true,
+		}),
 	})
 	if err != nil {
 		return nil, err

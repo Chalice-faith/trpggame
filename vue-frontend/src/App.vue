@@ -1,5 +1,37 @@
 <script setup lang="ts">
-// TRPG Game — AI 驱动的桌面角色扮演主持人
+import { watch } from 'vue'
+import { useAuthStore } from '@/stores/auth'
+import { useChatStore } from '@/stores/chat'
+import { useFriendsStore } from '@/stores/friends'
+import { useIMStore } from '@/stores/im'
+import { useGroupsStore } from '@/stores/groups'
+import { useRoomsStore } from '@/stores/rooms'
+import { useWebSocketStore } from '@/stores/websocket'
+
+const authStore = useAuthStore()
+const chatStore = useChatStore()
+const friendsStore = useFriendsStore()
+const imStore = useIMStore()
+const groupsStore = useGroupsStore()
+const roomsStore = useRoomsStore()
+const websocketStore = useWebSocketStore()
+
+watch(
+  () => authStore.isLoggedIn,
+  (loggedIn) => {
+    if (loggedIn) {
+      void imStore.connect()
+    } else {
+      imStore.disconnect()
+      chatStore.clear()
+      friendsStore.clear()
+      groupsStore.clear()
+      roomsStore.clear()
+      websocketStore.disconnect()
+    }
+  },
+  { immediate: true }
+)
 </script>
 
 <template>

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -19,11 +20,13 @@ import (
 
 // SubmitGameActionRequest 是玩家行动的服务层请求。
 type SubmitGameActionRequest struct {
-	UserID       uint
-	RoomID       uint
-	RequestID    string
-	ExpectedTurn int
-	Action       string
+	UserID             uint
+	RoomID             uint
+	RequestID          string
+	ExpectedTurn       int
+	ExpectedTimelineID string
+	ExpectedGeneration string
+	Action             string
 }
 
 // ActionDiceRoll 是对客户端稳定的骰子响应契约。
@@ -40,17 +43,59 @@ type ActionDiceRoll struct {
 
 // SubmitGameActionResult 是可缓存并幂等重放的玩家行动结果。
 type SubmitGameActionResult struct {
-	Narrative   string          `json:"narrative"`
-	DiceRoll    *ActionDiceRoll `json:"dice_roll,omitempty"`
-	Effects     *ActionEffects  `json:"effects"`
-	CurrentTurn int             `json:"current_turn"`
-	Duplicate   bool            `json:"-"`
+	Narrative          string                    `json:"narrative"`
+	DiceRoll           *ActionDiceRoll           `json:"dice_roll,omitempty"`
+	Effects            *ActionEffects            `json:"effects,omitempty"`
+	MultiplayerEffects *MultiplayerActionEffects `json:"multiplayer_effects,omitempty"`
+	Generation         string                    `json:"generation,omitempty"`
+	CurrentTurn        int                       `json:"current_turn"`
+	RoundNumber        int                       `json:"round_number,omitempty"`
+	CurrentActorID     uint                      `json:"current_actor_id,omitempty"`
+	DeadlineAt         *time.Time                `json:"deadline_at,omitempty"`
+	Duplicate          bool                      `json:"-"`
+	Memory             *model.GameArchiveRuntime `json:"memory,omitempty"`
 }
+
+// GameActionStreamEvent 是游戏层向 WebSocket 层暴露的稳定事件。
+// 只有 narrative_chunk 在 AI 调用期间发送；其余事件均在运行态提交成功后发送。
+type GameActionStreamEvent struct {
+	Type        string
+	Content     string
+	Result      *SubmitGameActionResult
+	Multiplayer bool
+	Generation  string
+	CurrentTurn int
+	PlayerID    uint
+	Reason      string
+}
+
+// ActionStreamObserver 接收一次行动的流式事件。
+type ActionStreamObserver func(event GameActionStreamEvent)
 
 // SubmitAction 校验持久权限，调用 AI，并通过 Redis CAS 原子提交运行态。
 func (s *GameService) SubmitAction(
 	ctx context.Context,
 	req *SubmitGameActionRequest,
+) (*SubmitGameActionResult, error) {
+	return s.submitAction(ctx, req, nil)
+}
+
+// SubmitActionStream 提交行动并在 AI 生成及权威状态提交期间发出事件。
+func (s *GameService) SubmitActionStream(
+	ctx context.Context,
+	req *SubmitGameActionRequest,
+	observer ActionStreamObserver,
+) (*SubmitGameActionResult, error) {
+	if observer == nil {
+		return s.SubmitAction(ctx, req)
+	}
+	return s.submitAction(ctx, req, observer)
+}
+
+func (s *GameService) submitAction(
+	ctx context.Context,
+	req *SubmitGameActionRequest,
+	observer ActionStreamObserver,
 ) (*SubmitGameActionResult, error) {
 	action, requestID, fingerprint, err := validateGameActionRequest(req)
 	if err != nil {
@@ -60,9 +105,26 @@ func (s *GameService) SubmitAction(
 	room, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, req.RoomID, req.UserID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, ErrGameRoomNotFound
+			multiplayerRepo, ok := s.gameRepo.(MultiplayerGameRepository)
+			if !ok {
+				return nil, ErrGameRoomNotFound
+			}
+			room, err = multiplayerRepo.FindRoomByID(ctx, req.RoomID)
+			if err != nil {
+				if errors.Is(err, gorm.ErrRecordNotFound) {
+					return nil, ErrGameRoomNotFound
+				}
+				return nil, fmt.Errorf("%w: find multiplayer room: %v", ErrInternal, err)
+			}
+			if room == nil || room.IsSolo {
+				return nil, ErrGameRoomNotFound
+			}
+		} else {
+			return nil, fmt.Errorf("%w: find game room: %v", ErrInternal, err)
 		}
-		return nil, fmt.Errorf("%w: find game room: %v", ErrInternal, err)
+	}
+	if !room.IsSolo {
+		return s.submitMultiplayerAction(ctx, req, room, action, requestID, fingerprint, observer)
 	}
 	player, err := s.gameRepo.FindPlayer(ctx, room.ID, req.UserID)
 	if err != nil {
@@ -74,35 +136,117 @@ func (s *GameService) SubmitAction(
 	if player.CharacterID == nil || *player.CharacterID == 0 {
 		return nil, ErrGamePlayerNotFound
 	}
+	memoryEnabled, err := s.verifyMemoryExpectation(ctx, room, req.ExpectedTimelineID, req.ExpectedGeneration)
+	if err != nil {
+		return nil, err
+	}
+	if memoryEnabled {
+		fingerprint = memoryRequestFingerprint(fingerprint, req.ExpectedTimelineID, req.ExpectedGeneration)
+	}
 
-	cached, found, err := s.runtimeRepo.FindActionResult(
+	expected := model.GameArchiveExpectation{TimelineID: req.ExpectedTimelineID, Generation: req.ExpectedGeneration}
+	cached, found, err := findGameActionResult(
 		ctx,
+		s.runtimeRepo,
 		room.ID,
 		requestID,
 		fingerprint,
+		memoryEnabled, expected,
 	)
 	if err != nil {
 		return nil, mapActionRuntimeError(err)
 	}
 	if found {
-		return decodeSubmitActionResult(cached.ResponseJSON, true)
+		if cached == nil {
+			return nil, fmt.Errorf("%w: empty cached action result", ErrInternal)
+		}
+		result, err := decodeSubmitActionResult(cached.ResponseJSON, true)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+			return nil, err
+		}
+		if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, result.CurrentTurn, result.Memory); err != nil {
+			return nil, err
+		}
+		s.refreshArchiveResult(ctx, room.ID, result)
+		emitCommittedActionEvents(observer, result)
+		return result, nil
 	}
 	if room.Status != model.RoomStatusPlaying {
 		return nil, ErrGameRoomNotPlaying
 	}
+	if err := s.requireMemoryReady(ctx, room); err != nil {
+		return nil, err
+	}
+	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+		return nil, err
+	}
+	var generation string
+	if memoryEnabled {
+		runtime, ok := s.runtimeRepo.(interface {
+			BeginMemorySoloAction(context.Context, uint, uint, int, model.GameArchiveExpectation) (string, error)
+		})
+		if !ok {
+			return nil, ErrGameRuntimeUnavailable
+		}
+		generation, err = runtime.BeginMemorySoloAction(ctx, room.ID, req.UserID, req.ExpectedTurn, expected)
+	} else {
+		generation, err = s.runtimeRepo.BeginSoloAction(ctx, room.ID, req.UserID, req.ExpectedTurn)
+	}
+	if err != nil {
+		return nil, mapActionRuntimeError(err)
+	}
+	if req.ExpectedGeneration != "" && generation != req.ExpectedGeneration {
+		return nil, repo.ErrMemoryConflict
+	}
+	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, req.ExpectedTurn); err != nil {
+		return nil, err
+	}
 
-	aiResult, err := s.aiClient.SubmitAction(ctx, &ai_client.GameActionRequest{
+	aiRequest := &ai_client.GameActionRequest{
 		RoomID:      room.ID,
 		UserID:      req.UserID,
 		Action:      action,
 		ScriptID:    room.ScriptID,
 		CharacterID: *player.CharacterID,
-	})
+	}
+	var aiResult *ai_client.GameActionResponse
+	record, err := s.memoryActionRecord(ctx, room, memoryEnabled, req.UserID, req.ExpectedTurn, req.ExpectedTurn+1, requestID, fingerprint, "action", expected)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.prepareInferenceMemory(ctx, aiRequest); err != nil {
+		return nil, err
+	}
+	streamedNarrative := false
+	if observer != nil {
+		if streamClient, ok := s.aiClient.(GameInferenceStreamClient); ok {
+			aiResult, err = streamClient.SubmitActionStream(ctx, aiRequest, func(event ai_client.ActionStreamEvent) error {
+				if event.Type == "narrative_chunk" && event.Content != "" {
+					streamedNarrative = true
+					observer(GameActionStreamEvent{Type: "narrative_chunk", Content: event.Content})
+				}
+				return nil
+			})
+		} else {
+			aiResult, err = s.aiClient.SubmitAction(ctx, aiRequest)
+		}
+	} else {
+		aiResult, err = s.aiClient.SubmitAction(ctx, aiRequest)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("%w: infer game action: %v", ErrAIUnavailable, err)
 	}
 	if aiResult == nil || strings.TrimSpace(aiResult.Narrative) == "" {
 		return nil, ErrEmptyActionNarrative
+	}
+	if observer != nil && !streamedNarrative {
+		observer(GameActionStreamEvent{
+			Type:    "narrative_chunk",
+			Content: strings.TrimSpace(aiResult.Narrative),
+		})
 	}
 	effects, err := InterpretActionEffects(req.UserID, aiResult.StatusChanges)
 	if err != nil {
@@ -119,13 +263,18 @@ func (s *GameService) SubmitAction(
 		Effects:     effects,
 		CurrentTurn: req.ExpectedTurn + 1,
 	}
+	if memoryEnabled {
+		result.Generation = generation
+	}
 	responseJSON, err := json.Marshal(result)
 	if err != nil {
 		return nil, fmt.Errorf("%w: encode action result: %v", ErrInternal, err)
 	}
 	commitResult, err := s.runtimeRepo.CommitAction(ctx, &model.ActionRuntimeMutation{
+		Archive:            record,
 		RoomID:             room.ID,
 		UserID:             req.UserID,
+		Generation:         generation,
 		ExpectedTurn:       req.ExpectedTurn,
 		RequestID:          requestID,
 		RequestFingerprint: fingerprint,
@@ -144,7 +293,41 @@ func (s *GameService) SubmitAction(
 	if commitResult == nil || (!commitResult.Duplicate && commitResult.CurrentTurn != result.CurrentTurn) {
 		return nil, fmt.Errorf("%w: invalid action commit result", ErrInternal)
 	}
-	return decodeSubmitActionResult(commitResult.ResponseJSON, commitResult.Duplicate)
+	committedResult, err := decodeSubmitActionResult(commitResult.ResponseJSON, commitResult.Duplicate)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.advancePersistentGameProgress(ctx, room.ID, req.UserID, committedResult.CurrentTurn, committedResult.Memory); err != nil {
+		return nil, err
+	}
+	if err := s.flushPendingAutomaticGameSaves(ctx, room.ID, req.UserID); err != nil {
+		return nil, err
+	}
+	s.refreshArchiveResult(ctx, room.ID, committedResult)
+	emitCommittedActionEvents(observer, committedResult)
+	return committedResult, nil
+}
+
+func emitCommittedActionEvents(observer ActionStreamObserver, result *SubmitGameActionResult) {
+	if observer == nil || result == nil {
+		return
+	}
+	if result.DiceRoll != nil {
+		observer(GameActionStreamEvent{Type: "dice_roll", Result: result})
+	}
+	if hasActionEffects(result.Effects) {
+		observer(GameActionStreamEvent{Type: "status_update", Result: result})
+	}
+	observer(GameActionStreamEvent{
+		Type:    "narrative_complete",
+		Result:  result,
+		Content: result.Narrative,
+	})
+}
+
+func hasActionEffects(effects *ActionEffects) bool {
+	return effects != nil && (len(effects.PlayerStateChanges) > 0 ||
+		len(effects.Items) > 0 || len(effects.Buffs) > 0 || len(effects.Events) > 0)
 }
 
 func validateGameActionRequest(
@@ -173,6 +356,11 @@ func validateGameActionRequest(
 	}
 	fingerprintBytes := sha256.Sum256(payload)
 	return action, requestID, fmt.Sprintf("%x", fingerprintBytes), nil
+}
+
+func memoryRequestFingerprint(base, timelineID, generation string) string {
+	value := sha256.Sum256([]byte(base + "|" + timelineID + "|" + generation))
+	return fmt.Sprintf("%x", value)
 }
 
 func normalizeActionDiceRoll(value *ai_client.DiceRollData) (*ActionDiceRoll, error) {
@@ -262,7 +450,11 @@ func decodeSubmitActionResult(encoded json.RawMessage, duplicate bool) (*SubmitG
 
 func mapActionRuntimeError(err error) error {
 	switch {
+	case errors.Is(err, repo.ErrMemoryConflict), errors.Is(err, repo.ErrGameArchiveBranchChanged), errors.Is(err, repo.ErrGameArchiveNotReady), errors.Is(err, repo.ErrMemoryBusy), errors.Is(err, repo.ErrGameArchiveCorrupt):
+		return err
 	case errors.Is(err, repo.ErrGameRuntimeConflict):
+		return ErrGameActionConflict
+	case errors.Is(err, repo.ErrGameRuntimeGenerationConflict):
 		return ErrGameActionConflict
 	case errors.Is(err, repo.ErrGameRuntimeNotPlaying):
 		return ErrGameRoomNotPlaying

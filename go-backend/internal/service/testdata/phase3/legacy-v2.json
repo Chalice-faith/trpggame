@@ -1,0 +1,25 @@
+{
+  "id": 72,
+  "room_id": 41,
+  "save_name": "Phase 3 legacy three players",
+  "round_number": 5,
+  "summary_memory": "三名玩家已共同打开大厅的门。",
+  "redis_snapshot": {
+    "version": 2,
+    "room_id": 41,
+    "status": "paused",
+    "generation": "10000000-0000-4000-8000-000000000001",
+    "current_turn": 15,
+    "round_number": 5,
+    "turn_order": [7, 8, 9],
+    "current_actor_id": 7,
+    "deadline_at": null,
+    "players": [
+      {"user_id": 7, "character_id": 101, "player_state": {"hp": "12"}, "items": [], "buffs": []},
+      {"user_id": 8, "character_id": 102, "player_state": {"hp": "9"}, "items": [], "buffs": []},
+      {"user_id": 9, "character_id": 103, "player_state": {"hp": "10"}, "items": [], "buffs": []}
+    ]
+  },
+  "recent_messages": [{"role": "assistant", "content": "大厅的门缓缓打开。"}],
+  "is_auto": false
+}

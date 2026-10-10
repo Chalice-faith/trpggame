@@ -7,28 +7,75 @@ import (
 	"trpggame/internal/config"
 	"trpggame/internal/handler"
 	"trpggame/internal/middleware"
-	"trpggame/internal/ws"
+	"trpggame/internal/openapi"
 )
+
+// WebSocketHandlers 由 main 组装，Router 只负责注册对应路径。
+type WebSocketHandlers struct {
+	Game gin.HandlerFunc
+	IM   gin.HandlerFunc
+}
+
+// RESTHandlers 收拢由 main 组装的业务 Handler；省略时仍注册路由，便于契约和鉴权测试。
+type RESTHandlers struct {
+	Friend *handler.FriendHandler
+	Chat   *handler.ChatHandler
+	Group  *handler.GroupHandler
+	Room   *handler.RoomHandler
+}
+
+var websocketLogSkipPaths = []string{"/ws", "/ws/im"}
 
 // Setup 初始化所有路由并返回 Gin Engine
 func Setup(
 	cfg *config.Config,
 	db *gorm.DB,
-	hub *ws.Hub,
+	wsHandlers WebSocketHandlers,
 	scriptHandler *handler.ScriptHandler,
 	internalScriptHandler *handler.InternalScriptHandler,
 	gameHandler *handler.GameHandler,
+	restHandlers ...RESTHandlers,
 ) *gin.Engine {
-	r := gin.Default()
+	r := gin.New()
+	r.Use(
+		gin.LoggerWithConfig(gin.LoggerConfig{SkipPaths: websocketLogSkipPaths}),
+		gin.Recovery(),
+	)
 
 	// 全局中间件
 	r.Use(middleware.CORS())
 
+	// 公共 REST API 文档（规范与 UI 均嵌入 Go 二进制）
+	openapi.RegisterRoutes(r)
+
 	// 初始化 handlers（依赖注入）
 	userHandler := handler.NewUserHandler(db, cfg)
+	friendHandler := handler.NewFriendHandler(nil)
+	chatHandler := handler.NewChatHandler(nil)
+	groupHandler := handler.NewGroupHandler(nil)
+	roomHandler := handler.NewRoomHandler(nil)
+	if len(restHandlers) > 0 {
+		if restHandlers[0].Friend != nil {
+			friendHandler = restHandlers[0].Friend
+		}
+		if restHandlers[0].Chat != nil {
+			chatHandler = restHandlers[0].Chat
+		}
+		if restHandlers[0].Group != nil {
+			groupHandler = restHandlers[0].Group
+		}
+		if restHandlers[0].Room != nil {
+			roomHandler = restHandlers[0].Room
+		}
+	}
 
-	// WebSocket 端点
-	r.GET("/ws", ws.HandleWebSocket(hub))
+	// WebSocket 端点（鉴权与连接依赖由 main 组装后传入）
+	if wsHandlers.Game != nil {
+		r.GET("/ws", wsHandlers.Game)
+	}
+	if wsHandlers.IM != nil {
+		r.GET("/ws/im", wsHandlers.IM)
+	}
 
 	// API v1
 	v1 := r.Group("/api/v1")
@@ -56,6 +103,56 @@ func Setup(
 			{
 				users.GET("/me", userHandler.GetProfile)
 				users.PUT("/me", userHandler.UpdateProfile)
+				users.GET("/search", friendHandler.SearchUsers)
+			}
+
+			friendRequests := authorized.Group("/friend-requests")
+			{
+				friendRequests.POST("", friendHandler.SendRequest)
+				friendRequests.GET("", friendHandler.ListRequests)
+				friendRequests.POST("/:requestId/accept", friendHandler.AcceptRequest)
+				friendRequests.POST("/:requestId/reject", friendHandler.RejectRequest)
+			}
+
+			friends := authorized.Group("/friends")
+			{
+				friends.GET("", friendHandler.ListFriends)
+				friends.DELETE("/:friendUserId", friendHandler.DeleteFriend)
+			}
+
+			conversations := authorized.Group("/conversations")
+			{
+				conversations.POST("/direct", chatHandler.CreateDirect)
+				conversations.GET("", chatHandler.ListConversations)
+				conversations.GET("/:conversationId/messages", chatHandler.ListMessages)
+				conversations.POST("/:conversationId/read", chatHandler.MarkRead)
+			}
+
+			groups := authorized.Group("/groups")
+			{
+				groups.POST("", groupHandler.Create)
+				groups.GET("", groupHandler.List)
+				groups.GET("/:groupId", groupHandler.Get)
+				groups.PATCH("/:groupId", groupHandler.Update)
+				groups.POST("/:groupId/members", groupHandler.Invite)
+				groups.GET("/:groupId/members", groupHandler.ListMembers)
+				groups.PATCH("/:groupId/members/:userId", groupHandler.SetRole)
+				groups.DELETE("/:groupId/members/:userId", groupHandler.Remove)
+				groups.POST("/:groupId/transfer", groupHandler.Transfer)
+			}
+
+			rooms := authorized.Group("/rooms")
+			{
+				rooms.POST("", roomHandler.Create)
+				rooms.GET("", roomHandler.List)
+				rooms.POST("/join", roomHandler.Join)
+				rooms.GET("/:roomId", roomHandler.Get)
+				rooms.POST("/:roomId/character", roomHandler.SelectCharacter)
+				rooms.POST("/:roomId/ready", roomHandler.SetReady)
+				rooms.POST("/:roomId/leave", roomHandler.Leave)
+				rooms.POST("/:roomId/members/:userId/remove", roomHandler.Remove)
+				rooms.POST("/:roomId/transfer", roomHandler.Transfer)
+				rooms.POST("/:roomId/start", roomHandler.Start)
 			}
 
 			// 剧本 (Phase 1 M1.3 实现)
@@ -72,13 +169,17 @@ func Setup(
 			games := authorized.Group("/games")
 			{
 				games.POST("/solo/start", gameHandler.StartSoloGame)
+				games.GET("/:roomId/state", roomHandler.GameState)
+				games.GET("/:roomId/memory-status", gameHandler.MemoryStatus)
+				games.GET("/:roomId/key-events", gameHandler.ListKeyEvents)
 				games.POST("/:roomId/action", gameHandler.SubmitAction)
-				games.POST("/:roomId/save", handler.ManualSave)
-				games.GET("/:roomId/saves", handler.ListSaves)
-				games.POST("/:roomId/load", handler.LoadGame)
-				games.POST("/:roomId/pause", handler.PauseGame)
-				games.POST("/:roomId/resume", handler.ResumeGame)
-				games.POST("/:roomId/end", handler.EndGame)
+				games.POST("/:roomId/skip", gameHandler.SkipTurn)
+				games.POST("/:roomId/save", gameHandler.ManualSave)
+				games.GET("/:roomId/saves", gameHandler.ListSaves)
+				games.POST("/:roomId/load", gameHandler.LoadGame)
+				games.POST("/:roomId/pause", gameHandler.PauseGame)
+				games.POST("/:roomId/resume", gameHandler.ResumeGame)
+				games.POST("/:roomId/end", gameHandler.EndGame)
 			}
 		}
 	}

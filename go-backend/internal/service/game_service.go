@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 
 	"trpggame/internal/ai_client"
@@ -23,6 +24,9 @@ const (
 type GameRepository interface {
 	CreateRoomWithPlayer(ctx context.Context, room *model.GameRoom, player *model.RoomPlayer) error
 	CreateSave(ctx context.Context, save *model.GameSave) error
+	CreateAutoSave(ctx context.Context, save *model.GameSave) (bool, error)
+	ListSaves(ctx context.Context, roomID uint) ([]model.GameSave, error)
+	FindSaveByID(ctx context.Context, roomID, saveID uint) (*model.GameSave, error)
 	FindRoomByIDAndOwnerID(ctx context.Context, id, ownerID uint) (*model.GameRoom, error)
 	FindPlayer(ctx context.Context, roomID, userID uint) (*model.RoomPlayer, error)
 	TransitionRoomStatus(
@@ -32,6 +36,8 @@ type GameRepository interface {
 		from []model.RoomStatus,
 		to model.RoomStatus,
 	) (bool, error)
+	AdvanceRoomProgress(ctx context.Context, roomID, ownerID uint, turn int) (bool, error)
+	ReplacePausedRoomProgress(ctx context.Context, roomID, ownerID uint, turn int) (bool, error)
 }
 
 // GameScriptRepository 描述单人游戏启动所需的剧本查询能力。
@@ -52,11 +58,25 @@ type GameInferenceClient interface {
 	) (*ai_client.GameActionResponse, error)
 }
 
+// GameInferenceStreamClient 是可选的 AI 流式能力；保留独立接口以兼容
+// 现有同步客户端和测试替身。
+type GameInferenceStreamClient interface {
+	SubmitActionStream(
+		ctx context.Context,
+		req *ai_client.GameActionRequest,
+		handler ai_client.ActionStreamHandler,
+	) (*ai_client.GameActionResponse, error)
+}
+
 // GameRuntimeRepository 描述单人游戏运行态初始化与失败清理能力。
 type GameRuntimeRepository interface {
 	InitializeSoloRoom(ctx context.Context, state *model.SoloRuntimeState) error
 	DeleteSoloRoom(ctx context.Context, roomID, userID uint) error
 	CaptureSoloRoom(ctx context.Context, roomID, userID uint) (*model.SoloRuntimeSnapshot, error)
+	RestoreSoloRoom(ctx context.Context, snapshot *model.SoloRuntimeSnapshot) error
+	BeginSoloAction(ctx context.Context, roomID, userID uint, expectedTurn int) (string, error)
+	ListPendingAutoSaves(ctx context.Context, roomID, userID uint) ([]model.PendingAutoSave, error)
+	AcknowledgeAutoSave(ctx context.Context, roomID uint, turn int, generation string) error
 	FindActionResult(
 		ctx context.Context,
 		roomID uint,
@@ -67,14 +87,28 @@ type GameRuntimeRepository interface {
 		ctx context.Context,
 		mutation *model.ActionRuntimeMutation,
 	) (*model.ActionCommitResult, error)
+	TransitionSoloRoomStatus(
+		ctx context.Context,
+		roomID uint,
+		userID uint,
+		from []model.RoomStatus,
+		to model.RoomStatus,
+	) (bool, error)
 }
 
 // GameService 单人游戏业务逻辑。
 type GameService struct {
-	gameRepo    GameRepository
-	scriptRepo  GameScriptRepository
-	aiClient    GameInferenceClient
-	runtimeRepo GameRuntimeRepository
+	gameRepo             GameRepository
+	scriptRepo           GameScriptRepository
+	aiClient             GameInferenceClient
+	runtimeRepo          GameRuntimeRepository
+	multiplayerPublisher MultiplayerActionPublisher
+	presenceNotifier     GamePresenceNotifier
+	now                  func() time.Time
+	archiveService       *GameArchiveService
+	memoryLifecycle      *GameMemoryLifecycleService
+	memoryNewRooms       bool
+	inferenceMemory      InferenceMemoryRepository
 }
 
 // StartSoloGameRequest 是单人快速开始的服务层请求。
@@ -103,7 +137,35 @@ func NewGameService(
 		scriptRepo:  scriptRepository,
 		aiClient:    aiClient,
 		runtimeRepo: runtimeRepository,
+		now:         time.Now,
 	}
+}
+
+func (s *GameService) ConfigureMultiplayer(publisher MultiplayerActionPublisher) {
+	if s != nil {
+		s.multiplayerPublisher = publisher
+	}
+}
+
+func (s *GameService) ConfigurePresence(notifier GamePresenceNotifier) {
+	if s != nil {
+		s.presenceNotifier = notifier
+	}
+}
+
+func (s *GameService) ConfigureArchive(archive *GameArchiveService) {
+	s.archiveService = archive
+}
+
+func (s *GameService) ConfigureMemoryLifecycle(lifecycle *GameMemoryLifecycleService, newRooms bool) {
+	s.memoryLifecycle, s.memoryNewRooms = lifecycle, newRooms
+}
+
+func (s *GameService) memoryState(ctx context.Context, roomID uint) (*model.GameMemoryState, error) {
+	if s.memoryLifecycle == nil {
+		return nil, nil
+	}
+	return s.memoryLifecycle.State(ctx, roomID)
 }
 
 // StartSoloGame 校验剧本与角色，创建房间，并在开场生成成功后启动游戏。
@@ -160,6 +222,7 @@ func (s *GameService) StartSoloGame(
 		CharacterID: &characterID,
 		PlayerOrder: 0,
 		IsReady:     true,
+		JoinedAt:    time.Now().UTC(),
 	}
 	if err := s.gameRepo.CreateRoomWithPlayer(ctx, room, player); err != nil {
 		return nil, fmt.Errorf("%w: create solo room: %v", ErrInternal, err)
@@ -191,9 +254,23 @@ func (s *GameService) StartSoloGame(
 	}
 
 	openingNarrative := strings.TrimSpace(opening.Narrative)
+	if s.memoryNewRooms && s.memoryLifecycle != nil {
+		snapshot := &model.SoloRuntimeSnapshot{Version: model.SoloRuntimeSnapshotVersion, RoomID: room.ID, UserID: req.UserID,
+			Status: model.RoomStatusPaused, TurnOrder: []uint{req.UserID}, PlayerState: playerState,
+			Items: []model.RuntimeItem{}, Buffs: []model.RuntimeBuff{}, RecentMessages: []model.RuntimeMessage{{Role: "assistant", Content: openingNarrative}}}
+		if _, err := s.memoryLifecycle.Start(ctx, room, snapshot, nil); err != nil {
+			return nil, err
+		}
+		started, err := s.gameRepo.FindRoomByIDAndOwnerID(ctx, room.ID, req.UserID)
+		if err != nil {
+			return nil, err
+		}
+		return &StartSoloGameResult{Room: started, Player: player, OpeningNarrative: openingNarrative}, nil
+	}
 	if err := s.runtimeRepo.InitializeSoloRoom(ctx, &model.SoloRuntimeState{
 		RoomID:      room.ID,
 		UserID:      req.UserID,
+		Generation:  uuid.NewString(),
 		Status:      model.RoomStatusPlaying,
 		Turn:        room.RoundNumber,
 		PlayerState: playerState,

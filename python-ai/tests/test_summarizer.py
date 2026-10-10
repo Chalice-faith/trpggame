@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import patch
+
+from app.config import settings
 
 from app.services.summarizer import (
     MAX_SUMMARY_LENGTH,
@@ -19,6 +23,50 @@ def summary_of_length(length: int) -> str:
 
 
 class SummarizerTests(unittest.IsolatedAsyncioTestCase):
+    async def test_length_repair_preserves_original_sources_and_excludes_invalid_candidate(self):
+        prompts = []
+
+        async def generator(prompt, system):
+            prompts.append(prompt)
+            return "不可信的候选" * 150 if len(prompts) == 1 else summary_of_length(300)
+
+        result = await summarize([{"role": "user", "content": "暗号是青鸦七号"}],
+            previous_summary="已进入书房", generator=generator)
+        self.assertEqual(len(result), 300)
+        self.assertEqual(len(prompts), 2)
+        self.assertIn(prompts[0], prompts[1])
+        self.assertIn("青鸦七号", prompts[1])
+        self.assertNotIn("不可信的候选", prompts[1])
+
+    async def test_two_length_failures_are_bounded(self):
+        calls = 0
+
+        async def generator(prompt, system):
+            nonlocal calls
+            calls += 1
+            return "过短"
+
+        with self.assertRaises(SummaryLengthError):
+            await summarize([{"role": "user", "content": "继续"}], generator=generator)
+        self.assertEqual(calls, 2)
+
+    async def test_length_repair_uses_one_overall_timeout(self):
+        calls = 0
+
+        async def generator(prompt, system):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return "过短"
+            await asyncio.sleep(1)
+            return summary_of_length(300)
+
+        with patch.object(settings, "llm_timeout", 0.01):
+            with self.assertRaises(SummarizationError) as raised:
+                await summarize([{"role": "user", "content": "继续"}], generator=generator)
+        self.assertIsInstance(raised.exception.__cause__, TimeoutError)
+        self.assertEqual(calls, 2)
+
     def test_should_summarize_every_five_rounds(self):
         self.assertFalse(should_summarize(0))
         self.assertFalse(should_summarize(4))
@@ -107,7 +155,7 @@ class SummarizerTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_wraps_generator_failure(self):
         async def generator(prompt: str, system_prompt: str) -> str:
-            raise OSError("GLM unavailable")
+            raise OSError("DeepSeek unavailable")
 
         with self.assertRaisesRegex(SummarizationError, "generate") as raised:
             await summarize(

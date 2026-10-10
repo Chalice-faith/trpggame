@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from fastapi.testclient import TestClient
@@ -53,8 +54,66 @@ class RecordingActionService:
             raise self.error
         return self.result
 
+    async def infer_stream(self, request: GameActionRequest):
+        self.requests.append(request)
+        if self.error is not None:
+            raise self.error
+        yield {"type": "narrative_chunk", "content": self.result.narrative}
+        yield {
+            "type": "complete",
+            "narrative": self.result.narrative,
+            "dice_roll": self.result.dice_roll,
+            "status_changes": self.result.status_changes,
+        }
+
 
 class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_actual_prompts_identify_tool_targets_for_solo_and_team_rest_and_stream(self):
+        for multiplayer in (False, True):
+            for streaming in (False, True):
+                with self.subTest(multiplayer=multiplayer, streaming=streaming):
+                    stored_state = {"hp": 18, "player_id": 999, "character_id": 999}
+
+                    class IdentityContextProvider:
+                        async def load(self, room_id, user_id, character_id, participants=None):
+                            return GameRuntimeContext("", (), stored_state, {"character_id": character_id},
+                                tuple({"user_id": uid, "character_id": cid, "player_state": {"hp": 18}}
+                                      for uid, cid in participants or []))
+
+                    async def retriever(query, script_id):
+                        return ["门厅连接书房。"]
+
+                    async def completer(prompt, system, functions):
+                        state = json.loads(system.split("## 当前角色状态\n", 1)[1])
+                        current = state["current_player"] if multiplayer else state
+                        self.assertEqual(current["player_id"], 2)
+                        self.assertEqual(current["character_id"], 4)
+                        if multiplayer:
+                            self.assertEqual([(p["player_id"], p["character_id"]) for p in state["participants"]], [(2, 4), (8, 9)])
+                        return ChatCompletion("", (ToolCall("location-1", "set_location",
+                            json.dumps({"player_id": current["player_id"], "location": "书房"})),))
+
+                    async def narrative(prompt, system):
+                        return "你走进书房。"
+
+                    async def narrative_stream(prompt, system):
+                        yield "你走进书房。"
+
+                    service = ActionInferenceService(retriever=retriever,
+                        context_provider=IdentityContextProvider(), completion_generator=completer,
+                        narrative_generator=narrative, stream_narrative_generator=narrative_stream)
+                    request = self._request()
+                    if multiplayer:
+                        request = GameActionRequest.model_validate({**request.model_dump(),
+                            "participants": [{"user_id": 2, "character_id": 4}, {"user_id": 8, "character_id": 9}]})
+                    if streaming:
+                        events = [event async for event in service.infer_stream(request)]
+                        changes = events[-1]["status_changes"]
+                    else:
+                        changes = (await service.infer(request)).status_changes
+                    self.assertEqual(changes["calls"][0]["arguments"]["player_id"], 2)
+                    self.assertEqual(stored_state["player_id"], 999)
+
     async def test_returns_direct_narrative_without_tools(self):
         calls: dict[str, object] = {}
         provider = FakeContextProvider()
@@ -202,6 +261,108 @@ class ActionInferenceServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ActionInferenceError, "function call execution"):
             await service.infer(self._request())
 
+    async def test_multiplayer_context_allows_effects_for_roster_members(self):
+        provider_calls: list[tuple[object, ...]] = []
+        assembled: dict[str, object] = {}
+
+        class TeamContextProvider:
+            async def load(self, room_id, user_id, character_id, participants=None):
+                provider_calls.append((room_id, user_id, character_id, participants))
+                return GameRuntimeContext(
+                    summary_memory="队伍进入古宅。",
+                    recent_history=(),
+                    player_state={"hp": 18},
+                    character_profile={"character_id": character_id},
+                    participants=(
+                        {"user_id": 2, "character_id": 4, "player_state": {"hp": 18}},
+                        {"user_id": 8, "character_id": 9, "player_state": {"hp": 9}},
+                    ),
+                )
+
+        async def retriever(query: str, script_id: int) -> list[str]:
+            return ["context"]
+
+        async def completer(prompt: str, system: str, functions) -> ChatCompletion:
+            return ChatCompletion(
+                content="",
+                tool_calls=(ToolCall(
+                    id="heal-1",
+                    name="update_player_status",
+                    arguments='{"player_id":8,"field":"hp","value":11}',
+                ),),
+            )
+
+        def context_builder(action: str, **context) -> AssembledContext:
+            assembled.update(context)
+            return AssembledContext("system", "prompt", ())
+
+        async def generator(prompt: str, system: str) -> str:
+            return "同伴恢复了体力。"
+
+        service = ActionInferenceService(
+            retriever=retriever,
+            context_provider=TeamContextProvider(),
+            context_builder=context_builder,
+            completion_generator=completer,
+            narrative_generator=generator,
+        )
+        request = GameActionRequest(
+            room_id=1,
+            user_id=2,
+            action="我为同伴包扎",
+            script_id=3,
+            character_id=4,
+            participants=[
+                {"user_id": 2, "character_id": 4},
+                {"user_id": 8, "character_id": 9},
+            ],
+        )
+
+        result = await service.infer(request)
+
+        self.assertEqual(provider_calls, [(1, 2, 4, [(2, 4), (8, 9)])])
+        self.assertEqual(assembled["player_state"]["participants"][1]["user_id"], 8)
+        self.assertEqual(result.status_changes["calls"][0]["arguments"]["player_id"], 8)
+
+    async def test_stream_emits_chunks_then_authoritative_completion(self):
+        async def retriever(query: str, script_id: int) -> list[str]:
+            return ["书架藏有线索。"]
+
+        async def completer(prompt: str, system: str, functions) -> ChatCompletion:
+            return ChatCompletion(
+                content="",
+                tool_calls=(
+                    ToolCall(
+                        id="item-1",
+                        name="add_item",
+                        arguments='{"player_id":2,"item_name":"黄铜钥匙"}',
+                    ),
+                ),
+            )
+
+        async def narrative_stream(prompt: str, system: str):
+            yield "你发现"
+            yield "一把黄铜钥匙。"
+
+        service = ActionInferenceService(
+            retriever=retriever,
+            context_provider=FakeContextProvider(),
+            context_builder=lambda action, **context: AssembledContext(
+                "system", "user prompt", ()
+            ),
+            completion_generator=completer,
+            stream_narrative_generator=narrative_stream,
+        )
+
+        events = [event async for event in service.infer_stream(self._request())]
+
+        self.assertEqual(
+            [event["type"] for event in events],
+            ["narrative_chunk", "narrative_chunk", "complete"],
+        )
+        self.assertEqual(events[-1]["narrative"], "你发现一把黄铜钥匙。")
+        self.assertEqual(events[-1]["status_changes"]["calls"][0]["name"], "add_item")
+
     @staticmethod
     def _request() -> GameActionRequest:
         return GameActionRequest(
@@ -244,6 +405,25 @@ class ActionInferenceEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["dice_roll"]["result"], 17)
         self.assertEqual(service.requests[0].action, "我检查书架")
+
+    def test_stream_endpoint_returns_ndjson_events(self):
+        service = RecordingActionService(
+            ActionInferenceResult(narrative="流式叙事。")
+        )
+        app = create_app()
+        app.dependency_overrides[get_action_inference_service] = lambda: service
+
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/ai/inference/action/stream",
+                json=self._request_body(),
+                headers=self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        events = [json.loads(line) for line in response.text.splitlines()]
+        self.assertEqual([event["type"] for event in events], ["narrative_chunk", "complete"])
+        self.assertEqual(events[-1]["narrative"], "流式叙事。")
 
     def test_endpoint_requires_internal_secret_and_valid_action(self):
         app = create_app()

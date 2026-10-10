@@ -18,6 +18,8 @@
 
 ## 📖 项目简介
 
+2026-10-09 已补齐 MinIO 同源配置、独立发布 Compose、摘要持久任务和上下文预算。部署命令、启用开关及本机真实存储验收见 [部署与摘要优化验收记录](docs/部署与摘要优化验收记录.md)。OpenRouter 免费模型已完成真实开场、20 次行动和三个持久摘要周期；续跑因免费日额度耗尽中断，叙事与道具状态一致性、51 次行动长局及目标发布仍待验收，见 [B 验收记录](docs/M3.1-B验收记录.md)。
+
 **TRPGGame** 是一个基于多人在线聊天平台的 **AI 驱动 TRPG 主持人**系统，支持玩家通过文本聊天的方式随时随地进行单人或多人的桌面角色扮演游戏。
 
 AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定——让玩家无需寻找专业主持人即可获得高质量的跑团体验。
@@ -29,7 +31,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 | 找 GM 难，专业主持人稀缺 | AI 代理 GM，7×24 小时可用 |
 | 跑团门槛高（规则复杂、准备耗时） | 导入 PDF 剧本即可开始，AI 自动理解剧情 |
 | 线下凑人难、时间协调成本高 | 在线异步/同步结合，随时开团 |
-| 长剧本 AI 记忆衰退、幻觉严重 | RAG + MMR + 摘要记忆，稳定 100+ 轮 |
+| 长剧本 AI 记忆衰退、幻觉严重 | RAG + MMR + 持久摘要与上下文预算，长局质量待真实模型验证 |
 
 ---
 
@@ -37,25 +39,46 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 
 ### Phase 1 — MVP（单人 AI 跑团闭环）🚧 *开发中*
 
-- ✅ **用户系统**：注册、登录、JWT 鉴权、个人信息管理
-- ✅ **基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
-- ✅ **剧本系统（代码级）**：PDF 上传 → 解析清洗 → 结构化切片 → 向量化存储 → 状态查询/失败重试
-- 🚧 **RAG 检索**：剧本片段召回、MMR 去重及上下文组装
-- 🚧 **AI 叙事核心**：GLM-4-Long 推理、RAG 检索（含 MMR 去重）、Function Calling、摘要记忆
-- 🚧 **单人游戏**：快速开始、自由文本交互、骰子检定、角色状态管理、存档读档
-- 🚧 **前端**：Vue 3 SPA — 单人跑团聊天界面
+**已完成：**
 
-### Phase 2 — 多人社交 📋 *规划中*
+- ✅ **M1.1 项目骨架与基础设施**：Docker Compose 一键启动（MySQL、Redis、Milvus、MinIO、Nginx）
+- ✅ **M1.2 用户系统**：注册、登录、JWT 鉴权（Access 15min + Refresh 7d）、个人信息
+- ✅ **M1.3 剧本系统**：PDF 上传 → MinIO 存储 → Python 解析（提取/清洗/切片）→ BGE 向量化 → Milvus 检索；剧本列表/详情/删除/重新解析；解析进度回写（内部回调 + 共享密钥鉴权）
+- ✅ **M1.4 AI 推理核心**：DeepSeek-V4-Flash 推理、RAG 检索（Top-20 → MMR → Top-5）、Function Calling、摘要记忆（每 5 轮）、服务端骰子检定
+- ✅ **M1.5 单人游戏后端闭环**：
+  - 单人快速开始、玩家行动同步 REST 链路
+  - 手动存档 / 存档列表 / 读档 / 暂停 / 恢复 / 结束
+  - 每 10 回合自动存档（MySQL 幂等唯一约束 + Redis 待持久化快照）
+  - Redis 玩家状态（HP/MP/SAN/道具/Buff）、摘要记忆、最近消息、行动幂等缓存
+  - 运行态世代隔离，防止旧 AI 结果污染新时间线
 
-- 好友系统（添加/删除/在线状态）
-- IM 系统（WebSocket 私聊/群聊/AI 拉群/心跳重连）
-- 多人跑团（4-6 人回合制、角色选择、广播叙事）
+**进行中：**
 
-### Phase 3 — 体验增强 📋 *规划中*
+- 🚧 **M1.6 联调与验收**：自动化与 CI 已通过，真实依赖部署和端到端接口测试待执行
 
-- 记忆增强（关键事件标记、语义记忆检索）
-- 体验优化（回合计时器、自定义角色、投票决策）
-- 移动端适配
+### Phase 2 — 多人社交 🚧 *M2.0、M2.1 已完成本地浏览器功能验收并等待真实部署；M2.2—M2.4 已完整验收*
+
+- ✅ **M2.0-A**：Origin 白名单、公共 JWT 鉴权和 IM 消息契约
+- ✅ **M2.0-B**：游戏 WebSocket 接入公共握手组件
+- ✅ **M2.0-C**：独立 `/ws/im` 通道、Ping/Pong 和单连接接管基础
+- ✅ **M2.0-D**：D1—D4、GitHub Actions CI #27（含 targeted race）及本地浏览器双通道/4001 接管验收通过；真实域名与 Nginx 部署验收待执行
+- ✅ **M2.1**：好友 REST、Redis presence、实时事件、Vue 闭环、CI #32 与本地双账号浏览器验收通过；真实域名与 Nginx 部署验收待执行
+- ✅ **M2.2**：私聊持久化、REST、WebSocket 可靠投递及 Vue 会话/消息界面已完成；提交 `8260628` 的 CI 与真实双账号浏览器验收通过
+- ✅ **M2.3-A**：群规模、角色权限、历史可见性、群聊扇出和 IM 限流设计已确认冻结
+- ✅ **M2.3-B**：014—015 迁移、群组事务、REST/OpenAPI 与群会话摘要已完成；提交 `971021a` 的 CI #40 全部通过
+- ✅ **M2.3-C**：群成员批量扇出、群变化/系统消息实时推送和每连接加权 IM 限流已提交为 `3715f9f`，CI 已通过
+- ✅ **M2.3-D**：Vue 群界面 `e1ec8fc` 与验收修复 `5b3f130` 均通过 CI；MySQL 8.4 和三账号真实浏览器验收完成，详见 [M2.3 验收记录](docs/M2.3验收记录.md)
+- ✅ **M2.4-A**：多人房间与等待大厅产品决策已确认
+- ✅ **M2.4-B**：016—017 迁移、房间持久化与十个 REST 操作已提交为 `6a2ed79`，CI 七个作业通过；✅ **M2.4-C**：多人 WS 成员授权、版本事件与失权断连已提交为 `bfa6efe`，CI #47 六个作业通过；✅ **M2.4-D**：Vue 大厅、实时版本合并、三账号浏览器验收及提交 `8cb1ded` 的 CI #48 全部通过；[实施方案](docs/M2.4实施方案.md) · [验收记录](docs/M2.4验收记录.md)
+
+### Phase 3 — 体验增强 🚧 *M3.1-A 代码已交付，M3.1-B 整体验收待完成*
+
+- M3.0：真实验收反馈、产品决策与回归基线
+- M3.1：行动档案、读档时间线、关键事件、摘要与语义记忆
+- M3.2：自定义角色、剧情投票、Web 响应式与工程优化
+- M3.3：真实端到端、性能、升级恢复与发布验收
+
+完整路线见 [Phase 3 规划设计](docs/Phase3规划设计.md)。当前分支 `dev/phase3`，M3.1-A/A1—A6 已交付，证据及 CI 结果见 [分块验证记录](docs/M3.1-A验收记录.md)。M3.1-B/B1—B3 本机实现与验证已落地，历史事件补录及摘要缓存恢复已补齐，见 [实施方案](docs/M3.1-B实施方案.md) 与 [B 验收记录](docs/M3.1-B验收记录.md)。新模式默认关闭，真实模型、长局与目标部署仍待验收，C 未开始。
 
 ---
 
@@ -78,7 +101,7 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 │      Go Backend (Gin)       │   │   Python AI (FastAPI)   │
 │  ┌───────────────────────┐  │   │  ┌───────────────────┐  │
 │  │   HTTP Handler        │  │   │  │ PDF 解析/清洗     │  │
-│  │   (REST API)          │  │   │  │ 文本切片/元数据    │  │
+│  │   (REST API + WS)     │  │   │  │ 文本切片/元数据    │  │
 │  └─────────┬─────────────┘  │   │  └────────┬──────────┘  │
 │  ┌─────────▼─────────────┐  │   │  ┌────────▼──────────┐  │
 │  │   WebSocket Hub       │  │   │  │ Embedding + RAG   │  │
@@ -86,16 +109,16 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 │  └─────────┬─────────────┘  │   │  └────────┬──────────┘  │
 │  ┌─────────▼─────────────┐  │   │  ┌────────▼──────────┐  │
 │  │   Service Layer       │◄─┼──┼──►│ LLM 推理          │  │
-│  │   User/Game/Script    │  │   │  │ (GLM-4-Long)      │  │
-│  └───┬───┬───┬───────────┘  │   │  ├───────────────────┤  │
-└──────┼───┼───┼──────────────┘   │  │ Function Calling   │
-       │   │   │                   │  │ 摘要记忆/骰子服务  │
-       ▼   ▼   ▼                   │  └───────────────────┘
-┌────────┐ ┌──────┐ ┌──────────┐  └──────────┬────────────┘
-│  MySQL   │ │Redis │ │  MinIO   │            │
-│ (持久化) │ │(缓存)│ │(PDF存储) │            ▼
-└────────┘ └──────┘ └──────────┘   ┌───────────────────┐
-                                   │     Milvus        │
+│  │   User/Script/Game    │  │   │  │ (DeepSeek-V4)     │  │
+│  │   (含存档/自动存档)    │  │   │  ├───────────────────┤  │
+│  └───┬───┬───┬───────────┘  │   │  │ Function Calling   │  │
+└──────┼───┼───┼──────────────┘   │  │ 摘要记忆/骰子服务  │  │
+       │   │   │                   │  └───────────────────┘  │
+       ▼   ▼   ▼                  └──────────┬────────────┘
+┌────────┐ ┌──────┐ ┌──────────┐             │
+│ MySQL  │ │Redis │ │  MinIO   │             ▼
+│ (持久化)│ │(运行态)│ │(PDF存储) │   ┌───────────────────┐
+└────────┘ └──────┘ └──────────┘   │     Milvus        │
                                    │  (向量检索)        │
                                    └───────────────────┘
 ```
@@ -108,13 +131,13 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 | **UI** | Element Plus + Pinia + Axios | 中文友好组件，状态管理，HTTP 封装 |
 | **业务后端** | Go 1.22 + Gin + GORM + gorilla/websocket | 高并发、低延迟，天然适合 IM 场景 |
 | **AI 服务** | Python 3.11 + FastAPI | 生态丰富，LLM/向量/PDF 库齐全 |
-| **AI 模型** | GLM-4-Long（1M 上下文窗口） | 成本低、上下文长，适合长剧本场景 |
-| **关系数据库** | MySQL 8.4 | 成熟稳定，支持 JSON 字段 |
-| **缓存/状态** | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
+| **AI 模型** | DeepSeek-V4-Flash | 成本低、1M 上下文窗口，适合长剧本场景 |
+| **关系数据库** | MySQL 8.4 | 成熟稳定，npm 迁移器 + advisory lock |
+| **缓存/运行态** | Redis 7 | 玩家实时状态、Function Calling 缓存、幂等缓存 |
 | **向量数据库** | Milvus 2.4 | 高性能向量检索，支持 MMR 去重 |
 | **对象存储** | MinIO | 自部署 S3 兼容文件存储 |
 | **反向代理** | Nginx | HTTPS/WSS 终止 + 路由 |
-| **容器化** | Docker + Docker Compose | 本地开发/测试 |
+| **容器化** | Docker + Docker Compose | 本地开发/测试环境 |
 
 ---
 
@@ -123,47 +146,50 @@ AI 承担传统人类 GM 的职责——叙事推进、NPC 扮演、规则裁定
 ```
 trpggame/
 ├── docker-compose.yml          # Docker 编排（全栈启动）
+├── .env.example                # 环境变量模板（复制为 .env 使用）
 ├── .gitignore
 │
 ├── go-backend/                 # Go 业务后端
 │   ├── cmd/server/main.go      # 入口
 │   ├── internal/
-│   │   ├── config/             # 配置加载 (Viper)
-│   │   ├── middleware/         # JWT 鉴权、CORS、日志
-│   │   ├── handler/            # HTTP + WS Handler
-│   │   ├── service/            # 业务逻辑
-│   │   ├── repo/               # 数据访问层 (GORM)
+│   │   ├── config/             # 配置加载 (Viper + 环境变量)
+│   │   ├── middleware/         # JWT 鉴权、内部回调鉴权、CORS、日志
+│   │   ├── handler/            # HTTP + WS Handler（含内部脚本回调）
+│   │   ├── service/            # 业务逻辑（游戏行动/存档/自动存档/暂停恢复/结束）
+│   │   ├── repo/               # 数据访问层 (GORM + Redis 运行态)
 │   │   ├── model/              # 数据模型
 │   │   ├── ws/                 # WebSocket Hub + Client
-│   │   └── ai_client/          # Python AI 服务 HTTP 客户端
-│   ├── pkg/
-│   │   ├── jwt/                # JWT 生成/校验
-│   │   └── response/           # 统一响应格式
-│   ├── migrations/             # SQL 迁移脚本
-│   ├── Dockerfile              # 多阶段构建
+│   │   ├── ai_client/          # Python AI 服务 HTTP 客户端
+│   │   └── storage/            # MinIO 存储
+├── database/                    # npm 数据库迁移工具
+│   ├── migrations/               # SQL 迁移 (001-010)
+│   ├── scripts/migrate.mjs       # 迁移执行入口
+│   └── lib/                      # checksum、锁与兼容迁移逻辑
+││   ├── Dockerfile              # 多阶段构建
 │   ├── go.mod
 │   └── go.sum
 │
 ├── python-ai/                  # Python AI 服务
 │   ├── app/
 │   │   ├── main.py             # FastAPI 入口
-│   │   ├── config.py           # 配置
-│   │   ├── routers/            # API 路由
-│   │   ├── services/           # 业务服务（PDF 解析/RAG/LLM/摘要/骰子）
-│   │   ├── models/             # Pydantic 模型
-│   │   └── utils/              # 工具（文本清洗、MMR 算法）
+│   │   ├── config.py           # 配置（环境变量 + 默认值）
+│   │   ├── dependencies.py     # 依赖注入
+│   │   ├── routers/            # 剧本解析 / AI 推理 API
+│   │   └── services/           # PDF 解析/RAG/LLM/摘要/骰子/上下文组装/对象存储
+│   ├── tests/                  # 42+ 单元测试
 │   ├── requirements.txt
-│   ├── Dockerfile
-│   └── tests/
+│   └── Dockerfile
 │
 ├── vue-frontend/               # Vue 3 前端 SPA
 │   ├── src/
 │   │   ├── App.vue             # 根组件
 │   │   ├── main.ts             # 入口
+│   │   ├── api/                # API 封装
 │   │   ├── router/             # Vue Router 路由
 │   │   ├── stores/             # Pinia 状态管理
 │   │   ├── views/              # 页面视图
-│   │   ├── components/         # 通用组件
+│   │   ├── features/           # 功能模块
+│   │   ├── composables/        # 组合式函数
 │   │   └── style.css           # 全局样式
 │   ├── index.html
 │   ├── .env                    # 环境变量
@@ -178,11 +204,26 @@ trpggame/
 └── docs/                       # 项目文档
     ├── 需求文档.md             # 产品需求文档 V1.1
     ├── 技术设计文档.md         # 技术设计文档 V1.1
-    ├── CLAUDE.md               # AI 开发辅助文档
-    ├── M1.3开发计划.md         # Phase 1.3 开发计划
-    ├── M1.3验收记录.md         # Phase 1.3 验收结果
-    ├── 开发暂停交接.md         # 暂停状态与恢复顺序
-    └── 开发问题记录.md         # 非阻塞问题跟踪
+    ├── 部署指南.md             # 部署快速开始手册
+    ├── M1.3验收记录.md         # M1.3 剧本系统验收记录
+    ├── M2.0验收记录.md         # M2.0 契约与实时通信基础验收记录
+    ├── M2.1验收记录.md         # M2.1 好友与在线状态代码级验收记录
+    ├── API接口测试文档.md       # Swagger 风格 REST / WebSocket / AI 接口测试文档
+    ├── 未完成事项.md           # 各阶段待办、责任方与完成标准
+    ├── Phase2规划设计.md       # 多人社交阶段范围、架构与开发顺序
+    ├── Phase3规划设计.md       # 记忆、角色、投票与阶段验收规划草案
+    ├── M3.1-A实施方案.md       # 首块时间线、行动档案、存档兼容与测试计划
+    ├── M2.0实施方案.md         # Phase 2 契约与实时通信基础实施步骤
+    ├── M2.1实施方案.md         # 好友与在线状态契约、状态机和分块计划
+    ├── M2.2实施方案.md         # 私聊、可靠投递与断线恢复设计
+    ├── M2.3实施方案.md         # 群组与群聊实施方案
+    ├── M2.4实施方案.md         # 多人房间与等待大厅实施方案
+    ├── M2.5实施方案.md         # 多人回合、运行态 V2 与验收方案
+    ├── M2.5验收记录.md         # M2.5 本地三账号真实浏览器验收证据
+    ├── M2.5主分支合并与真实验收清单.md # 目标环境验收与合并门禁
+    ├── 开发暂停交接.md         # 开发交接与恢复说明
+    ├── 开发问题记录.md         # 开发问题记录
+    └── CLAUDE.md               # AI 开发辅助文档
 ```
 
 ---
@@ -195,38 +236,48 @@ trpggame/
 - [Go 1.22+](https://go.dev/dl/)（本地开发）
 - [Node.js 18+](https://nodejs.org/)（前端开发）
 - [Python 3.11+](https://www.python.org/)（AI 服务开发）
-- GLM-4 API Key（需要配置到 `docker-compose.yml` 的 `GLM_API_KEY` 环境变量）
+- DeepSeek API Key（可选，缺省则 AI 推理不可用）
 
-### Docker Compose 一键启动（推荐）
+### 1. 准备环境变量
 
 ```bash
-# 克隆项目
-cd trpggame
+# 在项目根目录
+cp .env.example .env
+```
 
-# 启动全栈
+编辑 `.env`，至少填写：
+
+| 变量 | 说明 | 是否必填 |
+|------|------|---------|
+| `DEEPSEEK_API_KEY` | DeepSeek 的 API Key | 否（缺省则 AI 推理不可用） |
+| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 | 建议改强密码 |
+| `MYSQL_PASSWORD` | 业务账号 `trpg` 的密码 | 建议改强密码 |
+| `INTERNAL_SHARED_SECRET` | Go ↔ Python 内部回调密钥 | 建议改随机值 |
+
+### 2. Docker Compose 一键启动（推荐）
+
+```bash
 docker compose up -d
 
 # 仅启动基础设施（本地开发时使用）
-docker compose up -d mysql redis milvus etcd minio
-
-# 查看日志
-docker compose logs -f go-backend python-ai
+docker compose up -d mysql redis minio
+docker compose up -d mysql redis minio etcd milvus   # 含 AI 所需
 ```
+
+> **关键依赖关系**：`go-backend` 启动时会**依次连接 MySQL、Redis、MinIO，任一连不上都会直接退出**。因此无论哪种部署方式，这三个服务都必须先就绪。
 
 启动后访问：
 - **前端**：http://localhost:5173
-- **MinIO 控制台**：http://localhost:9001（admin / adminadmin）
 - **Go 后端**：http://localhost:8080
-- **Python AI**：http://localhost:8000
+- **Python AI**：http://localhost:8000/health
+- **MinIO 控制台**：http://localhost:9001（默认 `minioadmin/minioadmin`）
 
-### 本地开发
+### 3. 本地开发
 
 #### Go 后端
 
 ```bash
 cd go-backend
-
-# 确保基础设施已启动（MySQL + Redis）
 go mod download
 go run cmd/server/main.go
 ```
@@ -235,11 +286,9 @@ go run cmd/server/main.go
 
 ```bash
 cd python-ai
-
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-
 uvicorn app.main:app --reload --port 8000
 ```
 
@@ -247,14 +296,31 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 cd vue-frontend
-
 npm install
 npm run dev
+```
+
+### 4. 验证
+
+```bash
+# Go 后端测试
+cd go-backend && go test ./... && go vet ./...
+
+# Python AI 测试
+cd python-ai && python -m unittest discover tests
+
+# Vue 前端测试
+cd vue-frontend && npm run build && npm test
+
+# Docker Compose 配置校验
+docker compose config --quiet
 ```
 
 ---
 
 ## 🔌 API 概述
+
+完整请求/响应字段、错误码、`curl` 示例和 WebSocket 测试步骤见：[API接口测试文档](docs/API接口测试文档.md)。Go 服务启动后可通过 `/api/docs/index.html` 使用 Swagger UI。
 
 ### 认证模块
 
@@ -271,16 +337,33 @@ npm run dev
 | GET | `/api/v1/users/me` | 获取个人信息 |
 | PUT | `/api/v1/users/me` | 更新个人信息 |
 
+### 好友与私聊模块（M2.1 / M2.2-B）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/users/search` | 搜索用户 |
+| POST | `/api/v1/friend-requests` | 发送好友申请 |
+| GET | `/api/v1/friend-requests` | 查询收到或发出的申请 |
+| POST | `/api/v1/friend-requests/:requestId/accept` | 接受好友申请 |
+| POST | `/api/v1/friend-requests/:requestId/reject` | 拒绝好友申请 |
+| GET | `/api/v1/friends` | 查询好友与在线状态 |
+| DELETE | `/api/v1/friends/:friendUserId` | 删除好友 |
+| POST | `/api/v1/conversations/direct` | 获取或创建好友私聊 |
+| GET | `/api/v1/conversations` | 查询会话列表 |
+| GET | `/api/v1/conversations/:conversationId/messages` | 按 `before_seq` 查询历史消息 |
+| POST | `/api/v1/conversations/:conversationId/read` | 单调推进当前用户已读水位 |
+
 ### 剧本模块
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/v1/scripts/upload` | 上传 PDF 剧本 |
-| GET | `/api/v1/scripts` | 剧本列表 |
+| GET | `/api/v1/scripts` | 剧本列表（分页） |
 | GET | `/api/v1/scripts/:id` | 剧本详情 |
-| DELETE | `/api/v1/scripts/:id` | 删除剧本 |
+| POST | `/api/v1/scripts/:id/retry` | 重新解析失败剧本 |
+| DELETE | `/api/v1/scripts/:id` | 删除剧本（级联清理 Milvus/MinIO/MySQL） |
 
-### 游戏模块
+### 游戏模块（M1.5 单人闭环）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -289,31 +372,40 @@ npm run dev
 | POST | `/api/v1/games/:roomId/save` | 手动存档 |
 | GET | `/api/v1/games/:roomId/saves` | 存档列表 |
 | POST | `/api/v1/games/:roomId/load` | 读档 |
+| POST | `/api/v1/games/:roomId/pause` | 暂停 |
+| POST | `/api/v1/games/:roomId/resume` | 恢复 |
+| POST | `/api/v1/games/:roomId/end` | 结束游戏 |
+
+### 内部回调（Go ↔ Python）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/internal/scripts/:id/status` | 剧本解析状态回写（`INTERNAL_SHARED_SECRET` 鉴权） |
 
 ### WebSocket
 
-连接：`ws://localhost:8080/ws?token=<JWT>`
+连接：`ws://localhost:8080/ws?token=<JWT>&room_id=<ROOM_ID>`
 
 **客户端 → 服务端：**
 
-| type | 说明 | Phase |
-|------|------|-------|
-| `ping` | 心跳 | 1 |
-| `game_action` | 提交游戏行动 | 1 |
-| `sync` | 重连补推请求 | 1 |
+| type | 说明 | 状态 |
+|------|------|------|
+| `ping` | 心跳 | Phase 1 |
+| `game_action` | 提交游戏行动 | 开发中 |
+| `sync` | 重连补推请求 | 开发中 |
 
 **服务端 → 客户端：**
 
-| type | 说明 | Phase |
-|------|------|-------|
-| `pong` | 心跳响应 | 1 |
-| `narrative_chunk` | AI 流式输出片段 | 1 |
-| `narrative_complete` | AI 输出完毕 | 1 |
-| `dice_roll` | 骰子检定结果 | 1 |
-| `status_update` | 角色状态变更 | 1 |
-| `script_progress` | 剧本解析进度 | 1 |
-| `system` | 系统通知 | 1 |
-| `error` | 错误消息 | 1 |
+| type | 说明 | 状态 |
+|------|------|------|
+| `pong` | 心跳响应 | Phase 1 |
+| `narrative_chunk` | AI 流式输出片段 | 代码完成，待真实验收 |
+| `narrative_complete` | AI 输出完毕 | 代码完成，待真实验收 |
+| `dice_roll` | 骰子检定结果 | 代码完成，待真实验收 |
+| `status_update` | 角色状态变更 | 代码完成，待真实验收 |
+| `script_progress` | 剧本解析进度 | 开发中 |
+| `system` | 系统通知 | Phase 1 |
+| `error` | 错误消息 | Phase 1 |
 
 ---
 
@@ -334,7 +426,7 @@ npm run dev
         ▼
 ┌─────────────────┐
 │ 2. LLM 推理      │
-│  - GLM-4-Long    │
+│  - DeepSeek-V4  │
 │  - 叙事生成      │
 │  - 规则裁定      │
 │  - Function Call │ → 需要状态变更时调用
@@ -360,40 +452,71 @@ AI 可调用的 Function Calling 函数：
 | `add_buff` | `player_id, buff_name, duration` | 角色获得 BUFF/DEBUFF |
 | `set_location` | `player_id, location` | 更新角色当前位置 |
 | `trigger_event` | `event_name, description` | 记录关键剧情事件 |
-| `roll_dice` | `dice_type, target, reason` | 触发骰子检定 |
+| `roll_dice` | `dice_type, modifier` | 触发骰子检定（服务端真随机） |
 
 ---
 
 ## 🗺 开发路线图
 
-### Phase 1 — MVP（单人 AI 跑团闭环）⏸️ **暂停开发**
+### Phase 1 — MVP（单人 AI 跑团闭环）🎯 **进行中**
 
-- M1.1 项目骨架与基础设施 ✅
-- M1.2 用户系统 ✅
-- M1.3 剧本系统 🧪（功能完成，待 Docker Compose 端到端验收）
-- M1.4 AI 推理核心 📋（尚未开始）
-- M1.5 游戏系统（单人）📋（尚未开始）
-- M1.6 联调与验收
+- ✅ M1.1 项目骨架与基础设施
+- ✅ M1.2 用户系统
+- ✅ M1.3 剧本系统（代码级验收通过，Docker 端到端验收暂缓）
+- ✅ M1.4 AI 推理核心
+- ✅ M1.5 单人游戏后端闭环
+- ✅ M1.5 WebSocket 行动流式事件与 Vue 单人游戏最小闭环
+- ✅ M1.5 前端收尾：存档工具栏、完整状态面板、骰子反馈与操作状态
+- ✅ Vue 单人游戏页面（最小闭环）
+- 🚧 M1.6 真实依赖部署与端到端接口验收（暂缓）
 
-### Phase 2 — 多人社交 📋 *规划中*
+### Phase 2 — 多人社交 🚧 *代码与本地功能闭环完成，等待目标环境真实验收*
 
-- M2.1 好友系统
-- M2.2 IM 聊天系统
-- M2.3 群组系统
-- M2.4 多人游戏房间
+- ✅ M2.0-A 实时通信契约与安全配置
+- ✅ M2.0-B WebSocket 公共握手组件
+- ✅ M2.0-C IM WebSocket 连接基础
+- ✅ M2.0-D 并发、异常关闭、竞态与收尾验证（D1—D4 已提交，GitHub Actions CI #27 含 targeted race 全部通过）
+- ✅ M2.1-A 好友与在线状态契约、状态机和 presence 设计已冻结
+- ✅ M2.1-B 好友迁移、持久化、REST、OpenAPI 与 MySQL 8.4 并发验证
+- ✅ M2.1-C Redis 在线租约、IM 生命周期观察与实时事件
+- ✅ M2.1-D Vue 好友页、全局 IM Store、CI #32 与本地双账号浏览器验收通过
+- ✅ M2.2-A 私聊、可靠投递与断线恢复设计已冻结
+- ✅ M2.2-B 会话/消息迁移、持久化、REST、OpenAPI 与 MySQL 8.4 并发验证
+- ✅ M2.2-C IM WebSocket 可靠投递：chat_message/ack、conversation_updated、im_sync 补齐与 32 KiB 帧
+- ✅ M2.2-D Vue 聊天界面、状态管理、CI 与真实双账号浏览器验收完成
+- ✅ M2.3 群组系统（CI #44 与三账号验收通过）
+- ✅ M2.4 多人游戏房间与等待大厅（CI #48 与三账号浏览器验收通过）
+- ✅ M2.5 多人回合与本地验收（M2.5-A—F 已实现；提交 `500b8ab` 的 CI #54 七个作业及确定性 AI fixture 边界内的三账号真实浏览器验收通过；真实 DeepSeek/Milvus/目标部署验收待执行）
 
-### Phase 3 — 体验增强 📋 *规划中*
+### Phase 3 — 体验增强 🚧 *M3.1-A 开发中*
 
-- M3.1 记忆增强
-- M3.2 体验优化
+- M3.0 准备、决策与基线
+- M3.1 记忆增强（A 底座 → B 事件/摘要 → C 检索 → D 验收）
+- M3.2 体验优化（A 角色 → B 投票 → C Web → D 工程）
+- M3.3 阶段验收与发布收口
+
+执行依据：[Phase 3 规划设计](docs/Phase3规划设计.md)；新增规则确认后再冻结各块实施方案。
 
 ---
 
 ## ⚙️ 环境变量
 
+### .env（项目根目录）
+
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `GLM_API_KEY` | GLM-4-Long API Key | - |
+| `DEEPSEEK_API_KEY` | DeepSeek API Key | 空（AI 推理不可用） |
+| `MYSQL_ROOT_PASSWORD` | MySQL root 密码 | - |
+| `MYSQL_DATABASE` | 业务数据库名 | `trpggame` |
+| `MYSQL_USER` | 业务账号 | `trpg` |
+| `MYSQL_PASSWORD` | 业务账号密码 | - |
+| `INTERNAL_SHARED_SECRET` | Go ↔ Python 内部回调密钥 | - |
+| `WEBSOCKET_ALLOWED_ORIGINS` | 浏览器 WebSocket Origin 白名单 | 本地 Vue 与 Nginx 地址 |
+
+### Go 后端（docker-compose 注入）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
 | `TRPG_SERVER_PORT` | Go 服务端口 | `8080` |
 | `TRPG_SERVER_MODE` | Go 运行模式 | `debug` |
 | `TRPG_DATABASE_*` | MySQL 连接配置 | 见 docker-compose.yml |
@@ -401,6 +524,33 @@ AI 可调用的 Function Calling 函数：
 | `TRPG_JWT_SECRET` | JWT 签名密钥 | `dev-secret-change-in-production` |
 | `TRPG_MINIO_*` | MinIO 连接配置 | 见 docker-compose.yml |
 | `TRPG_AI_BASEURL` | Python AI 服务地址 | `http://python-ai:8000` |
+| `TRPG_AI_TIMEOUT` | AI 请求超时 | `60` |
+| `TRPG_WEBSOCKET_ALLOWEDORIGINS` | 游戏与 IM WebSocket Origin 白名单 | 本地 Vue 与 Nginx 地址 |
+| `TRPG_INTERNAL_SHARED_SECRET` | 内部回调密钥 | `dev-internal-secret-change-in-production` |
+
+### Python AI（docker-compose 注入）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `TRPG_AI_DEBUG` | 调试模式 | `true` |
+| `TRPG_AI_MILVUS_HOST/PORT` | Milvus 连接 | `milvus:19530` |
+| `TRPG_AI_REDIS_URL` | Redis 连接 | `redis://redis:6379/0` |
+| `TRPG_AI_DEEPSEEK_API_KEY` | DeepSeek API Key | `${DEEPSEEK_API_KEY}` |
+| `TRPG_AI_DEEPSEEK_MODEL` | DeepSeek 模型 | `deepseek-v4-flash` |
+| `TRPG_AI_MINIO_*` | MinIO 连接配置 | `minioadmin/minioadmin` |
+| `TRPG_AI_GO_CALLBACK_BASE_URL` | Go 内部回调地址 | `http://go-backend:8080/api/v1/internal` |
+| `TRPG_AI_PARSE_TASK_TIMEOUT` | 剧本解析超时 | `600` |
+
+---
+
+## 🧪 测试
+
+| 项目 | 命令 | 覆盖范围 |
+|------|------|---------|
+| Go | `go test ./...` + `go vet ./...` | Repository/Service/Handler/AI Client |
+| 数据库 | `npm run db:test` | npm 迁移器、checksum、锁与特殊迁移兼容性 |
+| Python | `python -m unittest discover tests` | 42+ 测试：PDF 解析、切片、RAG、LLM、骰子、上下文组装 |
+| Vue | `npm run build` + `npm test` | TypeScript 检查 + Vitest 组件测试 |
 
 ---
 

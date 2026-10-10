@@ -6,6 +6,7 @@ func TestLoadUsesUnderscoreEnvironmentVariables(t *testing.T) {
 	t.Setenv("TRPG_AI_TIMEOUT", "321")
 	t.Setenv("TRPG_MINIO_MAXUPLOADSIZE", "1024")
 	t.Setenv("TRPG_INTERNAL_SHARED_SECRET", "test-internal-secret")
+	t.Setenv("TRPG_WEBSOCKET_ALLOWEDORIGINS", "https://game.example.com, https://admin.example.com")
 
 	cfg, err := Load()
 	if err != nil {
@@ -20,6 +21,24 @@ func TestLoadUsesUnderscoreEnvironmentVariables(t *testing.T) {
 	}
 	if cfg.Internal.SharedSecret != "test-internal-secret" {
 		t.Fatalf("Internal.SharedSecret = %q, want %q", cfg.Internal.SharedSecret, "test-internal-secret")
+	}
+	if cfg.WebSocket.AllowedOrigins != "https://game.example.com, https://admin.example.com" {
+		t.Fatalf("WebSocket.AllowedOrigins = %q", cfg.WebSocket.AllowedOrigins)
+	}
+}
+
+func TestLoadUsesDefaultWebSocketOrigins(t *testing.T) {
+	t.Setenv("TRPG_WEBSOCKET_ALLOWEDORIGINS", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.WebSocket.AllowedOrigins != DefaultWebSocketAllowedOrigins {
+		t.Fatalf(
+			"WebSocket.AllowedOrigins = %q, want %q",
+			cfg.WebSocket.AllowedOrigins,
+			DefaultWebSocketAllowedOrigins,
+		)
 	}
 }
 

@@ -1,0 +1,10 @@
+.git
+.artifacts
+node_modules
+**/node_modules
+**/.venv
+**/dist
+.env
+.env.local
+.env.production
+key.txt

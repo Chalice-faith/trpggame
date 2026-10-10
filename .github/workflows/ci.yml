@@ -8,6 +8,19 @@ permissions:
   contents: read
 
 jobs:
+  openapi:
+    name: OpenAPI validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run api:lint
+
   go:
     name: Go tests
     runs-on: ubuntu-latest
@@ -20,8 +33,12 @@ jobs:
         with:
           go-version-file: go-backend/go.mod
           cache-dependency-path: go-backend/go.sum
-      - run: go test ./...
-      - run: go vet ./...
+      - name: Run Go tests
+        run: go test ./...
+      - name: Race test realtime packages
+        run: go test -race -count=1 ./internal/repo ./internal/service ./internal/realtime ./internal/realtimebus ./internal/ws ./internal/imws ./internal/router
+      - name: Run Go vet
+        run: go vet ./...
 
   python:
     name: Python tests
@@ -40,6 +57,131 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: python -m compileall -q app tests
       - run: python -m unittest discover -s tests -v
+
+  database:
+    name: Database migration tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run db:test
+
+  social-mysql:
+    name: Social persistence (MySQL 8.4)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: trpggame
+          MYSQL_USER: trpg
+          MYSQL_PASSWORD: trpg123
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-backend/go.mod
+          cache-dependency-path: go-backend/go.sum
+      - run: npm ci
+      - name: Apply database migrations
+        run: npm run db:migrate
+        env:
+          TRPG_MIGRATIONS_HOST: 127.0.0.1
+          TRPG_MIGRATIONS_PORT: "3306"
+          TRPG_MIGRATIONS_DATABASE: trpggame
+          TRPG_MIGRATIONS_USER: trpg
+          TRPG_MIGRATIONS_PASSWORD: trpg123
+      - name: Run social persistence integration tests
+        working-directory: go-backend
+        run: go test -tags=integration -count=1 ./internal/service -run 'Test(Friend|Chat|Group|Room)ServiceMySQL84'
+        env:
+          TRPG_TEST_MYSQL_DSN: "trpg:trpg123@tcp(127.0.0.1:3306)/trpggame?charset=utf8mb4&parseTime=True&loc=UTC"
+
+  memory-mysql:
+    name: Game memory persistence (MySQL 8.4 + Redis 7.2)
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: phase3_memory_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    env:
+      TRPG_MIGRATIONS_HOST: 127.0.0.1
+      TRPG_MIGRATIONS_PORT: "3306"
+      TRPG_MIGRATIONS_USER: root
+      TRPG_MIGRATIONS_PASSWORD: root
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go-backend/go.mod
+          cache-dependency-path: go-backend/go.sum
+      - run: npm ci
+      - name: Verify empty memory schema
+        run: npm run db:test:memory-empty
+        env:
+          TRPG_MIGRATIONS_DATABASE: phase3_empty_memory_test
+      - name: Verify 017 upgrade and legacy saves
+        run: npm run db:test:memory-upgrade
+        env:
+          TRPG_MIGRATIONS_DATABASE: phase3_memory_test
+      - name: Verify archive, branch, control and save repositories
+        working-directory: go-backend
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame((Memory|Summary)MySQL84|KeyEventBackfill)'
+        env:
+          TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
+      - name: Verify Redis atomic archive boundaries and fault recovery
+        working-directory: go-backend
+        run: go test -race -tags=integration -count=1 ./internal/repo -run '^TestGame(Archive|Summary)Redis72'
+        env:
+          TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
+
+      - name: Verify shared archive workers and MySQL Redis fault recovery
+        working-directory: go-backend
+        run: go test -race -tags=integration -count=1 ./internal/service -run '^TestGame(ArchiveIntegration|MemoryLifecycleIntegration|MemoryA5|MemoryA6|SummaryIntegration)'
+        env:
+          TRPG_TEST_MYSQL_DSN: "root:root@tcp(127.0.0.1:3306)/phase3_memory_test?charset=utf8mb4&parseTime=True&loc=UTC"
+          TRPG_TEST_REDIS_ADDR: "127.0.0.1:6379"
 
   vue:
     name: Vue tests and build
@@ -64,3 +206,4 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: docker compose config --quiet
+      - run: docker compose --env-file .env.production.example -f docker-compose.production.yml config --quiet

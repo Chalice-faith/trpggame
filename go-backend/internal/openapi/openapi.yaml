@@ -1,0 +1,3213 @@
+openapi: 3.0.3
+info:
+  title: TRPG Game Public API
+  version: 2.3.0-m2.3-b
+  license:
+    name: Project license not specified
+  description: |
+    TRPG Game 对前端开放的 Go REST API，包含 M2.1 好友关系、M2.2 私聊和 M2.3-B 群组持久化接口。
+
+    所有业务响应均使用 `code` 和 `message`；除删除剧本外，成功响应还包含 `data`。
+    `code = 0` 表示业务成功。WebSocket、Python AI 和 Go 内部回调不属于本公共规范。
+servers:
+  - url: /
+    description: 当前 Swagger UI 所在服务
+tags:
+  - name: Auth
+    description: 注册、登录和令牌刷新
+  - name: Users
+    description: 当前用户资料与用户搜索
+  - name: Friends
+    description: 好友申请、好友关系与在线状态快照
+  - name: Conversations
+    description: 私聊/群聊会话、历史消息与当前用户已读水位
+  - name: Groups
+    description: 私有群组、成员与角色管理
+  - name: Scripts
+    description: PDF 剧本上传、查询和管理
+  - name: Games
+    description: Phase 1 单人游戏生命周期
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: 注册用户
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+            example:
+              username: tester01
+              email: tester01@example.com
+              password: secret123
+              nickname: 测试员
+      responses:
+        '200':
+          description: 注册成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '409':
+          description: 用户名或邮箱已存在（业务码 1100）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                usernameExists:
+                  value: {code: 1100, message: username already exists}
+                emailExists:
+                  value: {code: 1100, message: email already exists}
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: 登录
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example: {username: tester01, password: secret123}
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          description: 用户名或密码错误（业务码 1101）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1101, message: invalid username or password}
+
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: 刷新访问令牌
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: 刷新成功，同时轮换 refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          description: refresh token 无效（业务码 1102）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1102, message: invalid refresh token}
+
+  /api/v1/users/me:
+    get:
+      tags: [Users]
+      summary: 获取当前用户资料
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 用户不存在（业务码 1103）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1103, message: user not found}
+    put:
+      tags: [Users]
+      summary: 更新当前用户资料
+      operationId: updateCurrentUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+            example:
+              nickname: 新昵称
+              avatar_url: https://example.com/avatar.png
+      responses:
+        '200':
+          description: 更新成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          description: 请求字段无效（业务码 1000）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1000, message: invalid request parameters}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: 更新失败（业务码 1104）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1104, message: internal error}
+
+  /api/v1/users/search:
+    get:
+      tags: [Users, Friends]
+      summary: 搜索可添加的用户
+      operationId: searchUsers
+      parameters:
+        - name: keyword
+          in: query
+          required: true
+          schema: {type: string, minLength: 1, maxLength: 50}
+          description: 精确用户 ID/用户名，或不少于 2 字符的昵称前缀
+      responses:
+        '200':
+          description: 搜索成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserSearchResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests:
+    post:
+      tags: [Friends]
+      summary: 发送好友申请
+      operationId: sendFriendRequest
+      description: 重复同向申请、反向自动接受和已是好友均幂等返回当前权威关系。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SendFriendRequest'}
+      responses:
+        '200':
+          description: 当前关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400':
+          description: 参数无效（1600）或不能添加自己（1602）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 目标用户不存在（1601）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 好友关系状态冲突（1605）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+    get:
+      tags: [Friends]
+      summary: 查询好友申请
+      operationId: listFriendRequests
+      parameters:
+        - name: direction
+          in: query
+          schema: {type: string, enum: [incoming, outgoing], default: incoming}
+        - name: status
+          in: query
+          schema: {type: string, enum: [pending, rejected], default: pending}
+        - {$ref: '#/components/parameters/FriendCursor'}
+        - {$ref: '#/components/parameters/FriendRequestLimit'}
+      responses:
+        '200':
+          description: 申请列表
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests/{requestId}/accept:
+    post:
+      tags: [Friends]
+      summary: 接受好友申请
+      operationId: acceptFriendRequest
+      parameters:
+        - {$ref: '#/components/parameters/FriendRequestId'}
+      responses:
+        '200':
+          description: 当前权威关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/FriendForbidden'}
+        '404': {$ref: '#/components/responses/FriendRequestNotFound'}
+        '409': {$ref: '#/components/responses/FriendStateConflict'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friend-requests/{requestId}/reject:
+    post:
+      tags: [Friends]
+      summary: 拒绝好友申请
+      operationId: rejectFriendRequest
+      parameters:
+        - {$ref: '#/components/parameters/FriendRequestId'}
+      responses:
+        '200':
+          description: 当前权威关系
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendRequestResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/FriendForbidden'}
+        '404': {$ref: '#/components/responses/FriendRequestNotFound'}
+        '409': {$ref: '#/components/responses/FriendStateConflict'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friends:
+    get:
+      tags: [Friends]
+      summary: 查询好友列表
+      operationId: listFriends
+      parameters:
+        - {$ref: '#/components/parameters/FriendCursor'}
+        - {$ref: '#/components/parameters/FriendLimit'}
+      responses:
+        '200':
+          description: 按稳定关系 ID 倒序分页的好友列表
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/FriendPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/friends/{friendUserId}:
+    delete:
+      tags: [Friends]
+      summary: 删除好友
+      operationId: deleteFriend
+      parameters:
+        - {$ref: '#/components/parameters/FriendUserId'}
+      responses:
+        '200':
+          description: 删除成功或重复删除
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SimpleSuccessResponse'}
+        '400': {$ref: '#/components/responses/InvalidFriendRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 好友关系不存在（1606）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/FriendInternalError'}
+
+  /api/v1/rooms:
+    post:
+      tags: [Rooms]
+      summary: 以本人已就绪且预设角色充足的剧本创建多人等待房间
+      operationId: createRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateRoomRequest'}
+      responses:
+        '200':
+          description: 创建后的权威大厅快照
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/RoomCreateConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+    get:
+      tags: [Rooms]
+      summary: 列出本人仍为有效成员的多人房间，最多 100 个
+      operationId: listRooms
+      responses:
+        '200':
+          description: 按房间 ID 倒序排列
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomListResponse'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/join:
+    post:
+      tags: [Rooms]
+      summary: 凭房间码加入或幂等返回已有成员关系
+      operationId: joinRoom
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/JoinRoomRequest'}
+      responses:
+        '200':
+          description: 加入后的权威大厅快照
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomRejoinDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomJoinConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}:
+    get:
+      tags: [Rooms]
+      summary: 有效成员读取权威大厅快照
+      operationId: getRoom
+      parameters:
+        - {$ref: '#/components/parameters/RoomId'}
+      responses:
+        '200':
+          description: 房间、有效成员与候选角色
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/character:
+    post:
+      tags: [Rooms]
+      summary: 有效成员选择或更换本人未占用角色
+      operationId: selectRoomCharacter
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SelectRoomCharacterRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/ready:
+    post:
+      tags: [Rooms]
+      summary: 设置本人准备状态；准备前必须选角
+      operationId: setRoomReady
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetRoomReadyRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/leave:
+    post:
+      tags: [Rooms]
+      summary: 普通成员离开等待大厅；房主须先转让
+      operationId: leaveRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/members/{userId}/remove:
+    post:
+      tags: [Rooms]
+      summary: 房主从等待大厅移除其他有效成员
+      operationId: removeRoomMember
+      parameters:
+        - {$ref: '#/components/parameters/RoomId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/transfer:
+    post:
+      tags: [Rooms]
+      summary: 房主主动转让等待大厅所有权
+      operationId: transferRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferRoomRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/rooms/{roomId}/start:
+    post:
+      tags: [Rooms]
+      summary: 房主在至少两名成员已各选不同角色并全部准备时事务开局
+      operationId: startRoom
+      parameters: [{$ref: '#/components/parameters/RoomId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RoomVersionRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/RoomSnapshot'}
+        '400': {$ref: '#/components/responses/InvalidRoomRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/RoomPermissionDenied'}
+        '404': {$ref: '#/components/responses/RoomNotFound'}
+        '409': {$ref: '#/components/responses/RoomMutationConflict'}
+        '500': {$ref: '#/components/responses/RoomUnavailable'}
+
+  /api/v1/groups:
+    post:
+      tags: [Groups]
+      summary: 创建私有群组
+      operationId: createGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateGroupRequest'}
+      responses:
+        '200':
+          description: 群组、唯一群会话和群主成员关系已原子创建
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    get:
+      tags: [Groups]
+      summary: 查询当前用户的有效群组
+      operationId: listGroups
+      parameters:
+        - {$ref: '#/components/parameters/GroupCursor'}
+        - {$ref: '#/components/parameters/GroupLimit'}
+      responses:
+        '200':
+          description: 按群组 ID 倒序稳定分页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}:
+    get:
+      tags: [Groups]
+      summary: 查询当前成员可见的群详情
+      operationId: getGroup
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      responses:
+        '200':
+          description: 当前用户视角的群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    patch:
+      tags: [Groups]
+      summary: 群主修改群名称或头像
+      operationId: updateGroup
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateGroupRequest'}
+      responses:
+        '200':
+          description: 更新后或无状态变化的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409': {$ref: '#/components/responses/GroupVersionConflict'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/members:
+    get:
+      tags: [Groups]
+      summary: 查询有效群成员
+      operationId: listGroupMembers
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupCursor'}
+        - {$ref: '#/components/parameters/GroupMemberLimit'}
+      responses:
+        '200':
+          description: 按成员关系 ID 倒序稳定分页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupMemberPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    post:
+      tags: [Groups]
+      summary: 群主或管理员批量邀请好友
+      operationId: inviteGroupMembers
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/InviteGroupMembersRequest'}
+      responses:
+        '200':
+          description: 邀请后的权威群详情；已在群内的目标保持幂等
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 版本冲突（1806）、非好友（1803）或群已满（1804）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/members/{userId}:
+    patch:
+      tags: [Groups]
+      summary: 群主调整管理员或普通成员角色
+      operationId: setGroupMemberRole
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SetGroupMemberRoleRequest'}
+      responses:
+        '200':
+          description: 调整后的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 群主或版本冲突（1805/1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+    delete:
+      tags: [Groups]
+      summary: 主动退群或移除群成员
+      operationId: removeGroupMember
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+        - {$ref: '#/components/parameters/GroupUserId'}
+        - {$ref: '#/components/parameters/ExpectedGroupVersion'}
+      responses:
+        '200':
+          description: 操作后的群版本；主动退群时当前角色和人数可能省略
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 群主不能直接退出（1805）或版本冲突（1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/groups/{groupId}/transfer:
+    post:
+      tags: [Groups]
+      summary: 原子转让群主
+      operationId: transferGroupOwner
+      parameters:
+        - {$ref: '#/components/parameters/GroupId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferGroupRequest'}
+      responses:
+        '200':
+          description: 转让后的权威群详情
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GroupResponse'}
+        '400': {$ref: '#/components/responses/InvalidGroupRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/GroupPermissionDenied'}
+        '404': {$ref: '#/components/responses/GroupNotFound'}
+        '409':
+          description: 新群主无效（1805）或版本冲突（1806）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '500': {$ref: '#/components/responses/GroupUnavailable'}
+
+  /api/v1/conversations/direct:
+    post:
+      tags: [Conversations]
+      summary: 获取或创建好友私聊
+      operationId: createDirectConversation
+      description: 双方并发调用仍返回同一个会话；删除好友后保留旧会话，但不能通过本接口恢复发送权限。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateDirectConversationRequest'}
+      responses:
+        '200':
+          description: 当前用户视角的私聊摘要
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '409': {$ref: '#/components/responses/FriendshipRequired'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations:
+    get:
+      tags: [Conversations]
+      summary: 查询当前用户的私聊与群聊会话
+      operationId: listConversations
+      parameters:
+        - {$ref: '#/components/parameters/ConversationCursor'}
+        - {$ref: '#/components/parameters/ConversationLimit'}
+      responses:
+        '200':
+          description: 按最近活动时间和会话 ID 倒序排列的会话页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ConversationPageResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations/{conversationId}/messages:
+    get:
+      tags: [Conversations]
+      summary: 查询当前有效成员可见的会话历史消息
+      operationId: listConversationMessages
+      description: 数据库向旧消息查询，响应 items 始终按 seq 升序。
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+        - name: before_seq
+          in: query
+          required: false
+          description: 只返回 seq 小于该值的消息；省略时返回最新一页
+          schema: {type: integer, format: int64, minimum: 1}
+        - {$ref: '#/components/parameters/MessageLimit'}
+      responses:
+        '200':
+          description: 历史消息页
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MessagePageResponse'}
+        '400': {$ref: '#/components/responses/InvalidMessageQuery'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/ConversationNotFound'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/conversations/{conversationId}/read:
+    post:
+      tags: [Conversations]
+      summary: 单调推进当前用户的已读水位
+      operationId: markConversationRead
+      parameters:
+        - {$ref: '#/components/parameters/ConversationId'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/MarkConversationReadRequest'}
+      responses:
+        '200':
+          description: 当前权威已读水位与未读数
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ReadResultResponse'}
+        '400': {$ref: '#/components/responses/InvalidConversationRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404': {$ref: '#/components/responses/ConversationNotFound'}
+        '409': {$ref: '#/components/responses/ReadSequenceConflict'}
+        '500': {$ref: '#/components/responses/ChatUnavailable'}
+
+  /api/v1/scripts/upload:
+    post:
+      tags: [Scripts]
+      summary: 上传 PDF 剧本
+      description: 上传成功仅表示解析任务已受理，客户端应轮询剧本详情直到状态变为 ready 或 failed。
+      operationId: uploadScript
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: PDF 文件；当前默认上限为 50 MiB
+                title:
+                  type: string
+                  maxLength: 200
+                  description: 可选；为空时使用文件名
+                description:
+                  type: string
+      responses:
+        '202':
+          description: 解析任务已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptUploadResponse'
+        '400':
+          description: 缺少文件（1200）或 PDF/标题校验失败（1202）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                missingFile:
+                  value: {code: 1200, message: script PDF file is required}
+                invalidPdf:
+                  value: {code: 1202, message: script file has an invalid PDF signature}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          description: 文件过大（业务码 1201）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1201, message: script PDF file is too large}
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts:
+    get:
+      tags: [Scripts]
+      summary: 查询当前用户的剧本列表
+      operationId: listScripts
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptListResponse'
+        '400':
+          description: 分页参数无效（业务码 1204）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1204, message: invalid pagination parameters}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts/{id}:
+    parameters:
+      - $ref: '#/components/parameters/ScriptId'
+    get:
+      tags: [Scripts]
+      summary: 获取剧本详情与预设角色
+      operationId: getScriptDetail
+      responses:
+        '200':
+          description: 查询成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptDetailResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+    delete:
+      tags: [Scripts]
+      summary: 删除剧本
+      description: 仅允许删除 ready 或 failed 状态；服务会依次清理向量、对象文件和数据库记录。
+      operationId: deleteScript
+      responses:
+        '200':
+          description: 删除成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SimpleSuccessResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '409':
+          $ref: '#/components/responses/ScriptStatusConflict'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/scripts/{id}/retry:
+    parameters:
+      - $ref: '#/components/parameters/ScriptId'
+    post:
+      tags: [Scripts]
+      summary: 重试失败的剧本解析
+      description: 仅允许当前用户拥有且状态为 failed 的剧本。
+      operationId: retryScript
+      responses:
+        '202':
+          description: 重试任务已受理
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScriptRetryResponse'
+        '400':
+          $ref: '#/components/responses/InvalidScriptId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/ScriptNotFound'
+        '409':
+          $ref: '#/components/responses/ScriptStatusConflict'
+        '500':
+          $ref: '#/components/responses/ScriptInternalError'
+
+  /api/v1/games/solo/start:
+    post:
+      tags: [Games]
+      summary: 开始单人游戏
+      description: 剧本必须为 ready，角色必须属于该剧本。
+      operationId: startSoloGame
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSoloGameRequest'
+            example: {script_id: 9, character_id: 12}
+      responses:
+        '201':
+          description: 游戏创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StartSoloGameResponse'
+        '400':
+          description: 请求无效（业务码 1300）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1300, message: invalid game request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 剧本不存在（1301）或角色不存在（1303）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                scriptNotFound:
+                  value: {code: 1301, message: script not found}
+                characterNotFound:
+                  value: {code: 1303, message: character not found in script}
+        '409':
+          description: 剧本未就绪（1302）或游戏创建冲突（1305）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              examples:
+                scriptNotReady:
+                  value: {code: 1302, message: script is not ready}
+                startConflict:
+                  value: {code: 1305, message: game start status conflict}
+        '503':
+          description: AI 开场叙事不可用（业务码 1304）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1304, message: AI opening generation unavailable}
+        '500':
+          description: 内部错误（业务码 1306）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1306, message: internal error}
+
+  /api/v1/games/{roomId}/action:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 同步提交玩家行动
+      description: 前端实时交互优先使用 WebSocket；本接口提供相同业务能力的同步响应。
+      operationId: submitGameAction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitActionRequest'
+            example:
+              request_id: 550e8400-e29b-41d4-a716-446655440000
+              expected_turn: 0
+              action_text: 观察房间并寻找出口
+      responses:
+        '200':
+          description: 行动处理成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubmitActionResponse'
+        '400':
+          description: 行动请求无效（业务码 1310）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1310, message: invalid game action}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 房间不存在（1311）或玩家不存在（1312）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: 房间非 playing（1313）、回合冲突（1314）、request_id 冲突（1315）或道具不足（1316）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '502':
+          description: AI 返回非法状态变化（业务码 1319）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1319, message: AI returned invalid action effects}
+        '503':
+          description: AI 行动生成不可用（1317）或游戏运行态不可用（1318）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '500':
+          description: 内部错误（业务码 1320）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1320, message: internal error}
+
+  /api/v1/games/{roomId}/state:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 获取多人游戏 V2 运行态
+      description: 仅冻结成员可读；返回 Redis 权威水位、当前行动者、截止时间和全体公开状态；已结束房间在运行态留存期间可只读查看最近记录。
+      operationId: getMultiplayerGameState
+      responses:
+        '200':
+          description: 多人运行态
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MultiplayerGameStateResponse'
+        '400':
+          description: 请求无效（1900）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或当前用户不是冻结成员（1901）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 多人运行态不可用或不一致（1920）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
+  /api/v1/games/{roomId}/memory-status:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 查询游戏归档与恢复状态
+      description: 单人房主或多人有效成员可读。旧房间返回 disabled；断线后可据此确认时间线、世代和待归档水位。此接口不返回历史正文。
+      operationId: getGameMemoryStatus
+      responses:
+        '200':
+          description: 当前权威状态
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GameMemoryStatusResponse'}
+        '400':
+          description: 请求无效（1340）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或无权访问（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 状态暂不可用（1341）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
+  /api/v1/games/{roomId}/key-events:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 分页读取当前剧情分支的关键事件
+      description: 单人房主或多人有效成员可读。timeline_id 必须是当前时间线；读档切换分支后旧分页请求返回冲突。事件只来自已归档的正式行动。
+      operationId: listGameKeyEvents
+      parameters:
+        - name: timeline_id
+          in: query
+          required: true
+          schema: {type: string, format: uuid}
+        - name: after_position
+          in: query
+          schema: {type: integer, format: int64, minimum: 0}
+        - name: after_index
+          in: query
+          schema: {type: integer, minimum: 0, maximum: 65535}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+      responses:
+        '200':
+          description: 按提交位置和来源内序号升序排列的事件
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GameKeyEventPageResponse'}
+        '400':
+          description: 请求参数无效（1342）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: 房间不存在或无权访问（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 时间线已变更或记忆控制中（1343）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 事件暂不可用（1344）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
+  /api/v1/games/{roomId}/skip:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 当前行动者主动跳过多人回合
+      operationId: skipMultiplayerTurn
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SkipTurnRequest'}
+      responses:
+        '200':
+          description: 回合已跳过或幂等重放
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/SkipTurnResponse'}
+        '400':
+          description: 请求无效（1310）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403':
+          description: 不是当前行动者（1922）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '404':
+          description: 房间或成员不存在（1311）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '409':
+          description: 回合冲突、已有行动或请求 ID 冲突（1921/1923/1924）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+        '503':
+          description: 多人运行态不可用（1920）
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ApiError'}
+
+  /api/v1/games/{roomId}/save:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 创建手动存档
+      operationId: createManualSave
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ManualSaveRequest'
+            example: {save_name: 进入密室前}
+      responses:
+        '201':
+          description: 存档创建成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ManualSaveResponse'
+        '400':
+          description: 请求无效（业务码 1321）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1321, message: invalid game save request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前房间状态不可存档（业务码 1322）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1322, message: game room cannot be saved}
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1323）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1323, message: internal error}
+
+  /api/v1/games/{roomId}/saves:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    get:
+      tags: [Games]
+      summary: 查询房间存档列表
+      operationId: listGameSaves
+      responses:
+        '200':
+          description: 查询成功；不返回 Redis 快照和消息正文
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameSaveListResponse'
+        '400':
+          description: 请求无效（业务码 1324）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1324, message: invalid game save query}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '500':
+          description: 内部错误（业务码 1325）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1325, message: internal error}
+
+  /api/v1/games/{roomId}/load:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 从存档恢复游戏
+      description: 恢复完成后房间保持 paused，需要再调用恢复接口。
+      operationId: loadGame
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoadGameRequest'
+            example: {save_id: 91, request_id: 550e8400-e29b-41d4-a716-446655440000}
+      responses:
+        '200':
+          description: 读档成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoadGameResponse'
+        '400':
+          description: 请求无效（业务码 1332）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1332, message: invalid game load request}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: 房间不存在（1311）或存档不存在（1333）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '409':
+          description: 存档损坏（1334）、房间状态不可读档（1335）、分支变化（1342）、恢复中（1343）或 V2 多人存档阵容与冻结成员不兼容（1925）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1336）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+              example: {code: 1336, message: internal error}
+
+  /api/v1/games/{roomId}/pause:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 暂停游戏
+      operationId: pauseGame
+      responses:
+        '200':
+          description: 暂停成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: paused}
+        '400':
+          description: 请求无效（业务码 1326）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可暂停（业务码 1327）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1328）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/v1/games/{roomId}/resume:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 恢复游戏
+      operationId: resumeGame
+      responses:
+        '200':
+          description: 恢复成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: playing}
+        '400':
+          description: 请求无效（业务码 1329）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可恢复（业务码 1330）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1331）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+  /api/v1/games/{roomId}/end:
+    parameters:
+      - $ref: '#/components/parameters/RoomId'
+    post:
+      tags: [Games]
+      summary: 结束游戏
+      operationId: endGame
+      responses:
+        '200':
+          description: 结束成功
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GameStatusResponse'
+              example:
+                code: 0
+                message: ok
+                data: {room_id: 41, status: ended}
+        '400':
+          description: 请求无效（业务码 1337）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/GameRoomNotFound'
+        '409':
+          description: 当前状态不可结束（业务码 1338）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+        '503':
+          $ref: '#/components/responses/GameRuntimeUnavailable'
+        '500':
+          description: 内部错误（业务码 1339）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApiError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    ScriptId:
+      name: id
+      in: path
+      required: true
+      description: 当前用户拥有的剧本 ID
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 9
+    RoomId:
+      name: roomId
+      in: path
+      required: true
+      description: 游戏房间 ID；单人游戏接口限房主，多人大厅接口限有效成员
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 41
+    Page:
+      name: page
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: page_size
+      in: query
+      required: false
+      description: 必须为正整数；超过 100 时服务端按 100 处理
+      schema:
+        type: integer
+        minimum: 1
+        default: 20
+    FriendRequestId:
+      name: requestId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    FriendUserId:
+      name: friendUserId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    FriendCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页最后一条关系的 ID；下一页查询更小的 ID
+      schema: {type: string, pattern: '^[1-9][0-9]*$'}
+    FriendRequestLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    FriendLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    ConversationId:
+      name: conversationId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    ConversationCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 服务端生成的 opaque base64url 游标，客户端不得解析或构造
+      schema: {type: string, minLength: 1, maxLength: 64}
+    ConversationLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    MessageLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    GroupId:
+      name: groupId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    GroupUserId:
+      name: userId
+      in: path
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+    GroupCursor:
+      name: cursor
+      in: query
+      required: false
+      description: 上一页最后一条记录的 ID；下一页查询更小的 ID
+      schema: {type: string, pattern: '^[1-9][0-9]*$'}
+    GroupLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+    GroupMemberLimit:
+      name: limit
+      in: query
+      required: false
+      schema: {type: integer, minimum: 1, maximum: 100, default: 50}
+    ExpectedGroupVersion:
+      name: expected_version
+      in: query
+      required: true
+      schema: {type: integer, format: int64, minimum: 1}
+
+  responses:
+    Unauthorized:
+      description: 缺少 JWT（1001）或 JWT 无效/过期（1002）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          examples:
+            missingToken:
+              value: {code: 1001, message: Missing authorization header}
+            invalidToken:
+              value: {code: 1002, message: Invalid or expired token}
+    InvalidScriptId:
+      description: 剧本 ID 非法（业务码 1205）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1205, message: invalid script ID}
+    ScriptNotFound:
+      description: 剧本不存在或不属于当前用户（业务码 1206）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1206, message: script not found}
+    ScriptStatusConflict:
+      description: 剧本状态不允许当前操作（业务码 1211）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1211, message: script status transition conflict}
+    ScriptInternalError:
+      description: 剧本服务内部错误（业务码 1203）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1203, message: internal error}
+    GameRoomNotFound:
+      description: 房间不存在或不属于当前用户（业务码 1311）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1311, message: game room not found}
+    GameRuntimeUnavailable:
+      description: Redis 游戏运行态不可用（业务码 1318）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+          example: {code: 1318, message: game runtime unavailable}
+    InvalidFriendRequest:
+      description: 好友请求参数无效（业务码 1600）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1600, message: invalid friend request}
+    InvalidFriendQuery:
+      description: 搜索、分页或游标参数无效（业务码 1607）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1607, message: invalid pagination or cursor}
+    FriendRequestNotFound:
+      description: 好友申请不存在（业务码 1603）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1603, message: friend request not found}
+    FriendForbidden:
+      description: 无权处理好友申请（业务码 1604）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1604, message: friend operation forbidden}
+    FriendStateConflict:
+      description: 好友关系状态冲突（业务码 1605）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1605, message: friendship state conflict}
+    FriendInternalError:
+      description: 好友模块内部错误（业务码 1699）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1699, message: internal error}
+    InvalidConversationRequest:
+      description: 会话请求、ID、分页参数或游标无效（业务码 1708）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1708, message: invalid conversation request}
+    ConversationNotFound:
+      description: 会话不存在或当前用户不是成员（业务码 1709）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1709, message: conversation not found}
+    FriendshipRequired:
+      description: 当前双方不是已接受好友（业务码 1710）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1710, message: friendship required}
+    InvalidMessageQuery:
+      description: 历史消息分页参数无效（业务码 1713）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1713, message: invalid message query}
+    ReadSequenceConflict:
+      description: 已读水位超过会话当前 seq（业务码 1714）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1714, message: read sequence conflict}
+    ChatUnavailable:
+      description: 会话或消息服务内部错误（业务码 1716）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1716, message: chat unavailable}
+    InvalidRoomRequest:
+      description: 房间请求参数无效（1900）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomNotFound:
+      description: 房间不存在或无访问权（1901）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomCreateConflict:
+      description: 剧本未就绪或角色不足（1902/1903）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomJoinConflict:
+      description: 房间已满或不在等待中（1904/1905）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomRejoinDenied:
+      description: 被移除成员不可重新加入（1906）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomUnavailable:
+      description: 房间服务内部错误（1907）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomSnapshot:
+      description: 变更后的权威大厅快照
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/RoomSnapshotResponse'}
+    RoomMutationConflict:
+      description: 房间已开局、版本冲突（1908，附 current_version）、角色已占用（1911）、开局条件不足（1912）或房主须先转让（1913）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    RoomPermissionDenied:
+      description: 仅房主可操作（1909）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+    InvalidGroupRequest:
+      description: 群请求、字段、分页参数或游标无效（业务码 1800）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1800, message: invalid group request}
+    GroupNotFound:
+      description: 群不存在或当前用户不是有效成员（业务码 1801）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1801, message: group not found}
+    GroupPermissionDenied:
+      description: 当前群角色无操作权限（业务码 1802）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1802, message: group permission denied}
+    GroupVersionConflict:
+      description: expected_version 已过期（业务码 1806）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1806, message: group version conflict}
+    GroupUnavailable:
+      description: 群服务或事务失败（业务码 1807）
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ApiError'}
+          example: {code: 1807, message: group unavailable}
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          format: int32
+          minimum: 1
+        message:
+          type: string
+
+    SimpleSuccessResponse:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+
+    PublicUser:
+      type: object
+      required: [id, username, nickname, avatar_url]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        username: {type: string}
+        nickname: {type: string}
+        avatar_url: {type: string}
+
+    FriendshipSummary:
+      type: object
+      required: [id, status]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [pending, accepted, rejected]}
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+          description: 仅 pending 关系返回
+
+    UserSearchItem:
+      type: object
+      required: [user, friendship]
+      properties:
+        user: {$ref: '#/components/schemas/PublicUser'}
+        friendship:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/FriendshipSummary'}
+
+    UserSearchResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              maxItems: 20
+              items: {$ref: '#/components/schemas/UserSearchItem'}
+
+    SendFriendRequest:
+      type: object
+      required: [target_user_id]
+      properties:
+        target_user_id: {type: integer, format: int64, minimum: 1}
+
+    FriendRequestItem:
+      type: object
+      required: [id, status, direction, requested_by, peer, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [pending, accepted, rejected]}
+        direction: {type: string, enum: [incoming, outgoing, friend]}
+        requested_by: {type: integer, format: int64, minimum: 1}
+        peer: {$ref: '#/components/schemas/PublicUser'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        responded_at: {type: string, format: date-time, nullable: true}
+
+    FriendRequestResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/FriendRequestItem'}
+
+    FriendRequestPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/FriendRequestItem'}
+            next_cursor: {type: string, nullable: true}
+
+    FriendItem:
+      type: object
+      required: [id, peer, presence, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        peer: {$ref: '#/components/schemas/PublicUser'}
+        presence: {type: string, enum: [online, offline, unknown]}
+        updated_at: {type: string, format: date-time}
+
+    FriendPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/FriendItem'}
+            next_cursor: {type: string, nullable: true}
+
+    CreateDirectConversationRequest:
+      type: object
+      required: [peer_user_id]
+      additionalProperties: false
+      properties:
+        peer_user_id: {type: integer, format: int64, minimum: 1}
+
+    CreateRoomRequest:
+      type: object
+      required: [name, script_id, max_players]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 128}
+        script_id: {type: integer, format: int64, minimum: 1}
+        max_players: {type: integer, minimum: 4, maximum: 6}
+
+    JoinRoomRequest:
+      type: object
+      required: [room_code]
+      additionalProperties: false
+      properties:
+        room_code: {type: string, minLength: 8, maxLength: 8}
+
+    RoomVersionRequest:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      properties:
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SelectRoomCharacterRequest:
+      type: object
+      required: [character_id, expected_version]
+      additionalProperties: false
+      properties:
+        character_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SetRoomReadyRequest:
+      type: object
+      required: [ready, expected_version]
+      additionalProperties: false
+      properties:
+        ready: {type: boolean}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    TransferRoomRequest:
+      type: object
+      required: [new_owner_user_id, expected_version]
+      additionalProperties: false
+      properties:
+        new_owner_user_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    MultiRoomSummary:
+      type: object
+      required: [id, name, script_id, owner_id, status, max_players, room_code, version, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 128}
+        script_id: {type: integer, format: int64, minimum: 1}
+        owner_id: {type: integer, format: int64, minimum: 1}
+        status: {$ref: '#/components/schemas/RoomStatus'}
+        max_players: {type: integer, minimum: 4, maximum: 6}
+        room_code: {type: string, minLength: 8, maxLength: 8}
+        version: {type: integer, format: int64, minimum: 1}
+        created_at: {type: string, format: date-time}
+
+    MultiRoomMember:
+      type: object
+      required: [user, is_ready, player_order, joined_at]
+      properties:
+        user: {$ref: '#/components/schemas/PublicUser'}
+        character_id: {type: integer, format: int64, nullable: true}
+        is_ready: {type: boolean}
+        player_order: {type: integer, minimum: 0}
+        joined_at: {type: string, format: date-time}
+
+    MultiRoomCharacter:
+      type: object
+      required: [id, name, description]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string}
+        description: {type: string}
+
+    MultiRoomSnapshot:
+      allOf:
+        - {$ref: '#/components/schemas/MultiRoomSummary'}
+        - type: object
+          required: [members, characters]
+          properties:
+            members:
+              type: array
+              items: {$ref: '#/components/schemas/MultiRoomMember'}
+            characters:
+              type: array
+              items: {$ref: '#/components/schemas/MultiRoomCharacter'}
+
+    RoomSnapshotResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/MultiRoomSnapshot'}
+
+    RoomListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/MultiRoomSummary'}
+
+    GroupRole:
+      type: string
+      enum: [owner, admin, member]
+
+    Group:
+      type: object
+      required: [id, name, avatar_url, owner_id, conversation_id, current_user_role, member_count, version, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        owner_id: {type: integer, format: int64, minimum: 1}
+        conversation_id: {type: integer, format: int64, minimum: 1}
+        current_user_role:
+          type: string
+          nullable: true
+          enum: [owner, admin, member]
+        member_count: {type: integer, minimum: 0, maximum: 50}
+        version: {type: integer, format: int64, minimum: 1}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    GroupConversationSummary:
+      type: object
+      required: [id, name, avatar_url, current_user_role, member_count, version]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        current_user_role: {$ref: '#/components/schemas/GroupRole'}
+        member_count: {type: integer, minimum: 1, maximum: 50}
+        version: {type: integer, format: int64, minimum: 1}
+
+    GroupResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/Group'}
+
+    GroupPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Group'}
+            next_cursor: {type: string, nullable: true}
+
+    GroupMember:
+      type: object
+      required: [id, user, role, joined_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        user: {$ref: '#/components/schemas/PublicUser'}
+        role: {$ref: '#/components/schemas/GroupRole'}
+        joined_at: {type: string, format: date-time}
+
+    GroupMemberPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/GroupMember'}
+            next_cursor: {type: string, nullable: true}
+
+    CreateGroupRequest:
+      type: object
+      required: [name]
+      additionalProperties: false
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048, default: ''}
+
+    UpdateGroupRequest:
+      type: object
+      required: [expected_version]
+      additionalProperties: false
+      minProperties: 2
+      properties:
+        name: {type: string, minLength: 1, maxLength: 80}
+        avatar_url: {type: string, maxLength: 2048}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    InviteGroupMembersRequest:
+      type: object
+      required: [user_ids, expected_version]
+      additionalProperties: false
+      properties:
+        user_ids:
+          type: array
+          minItems: 1
+          maxItems: 20
+          uniqueItems: true
+          items: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    SetGroupMemberRoleRequest:
+      type: object
+      required: [role, expected_version]
+      additionalProperties: false
+      properties:
+        role: {type: string, enum: [admin, member]}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    TransferGroupRequest:
+      type: object
+      required: [new_owner_user_id, expected_version]
+      additionalProperties: false
+      properties:
+        new_owner_user_id: {type: integer, format: int64, minimum: 1}
+        expected_version: {type: integer, format: int64, minimum: 1}
+
+    Message:
+      type: object
+      required: [id, conversation_id, seq, sender, client_message_id, message_type, content, metadata, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        conversation_id: {type: integer, format: int64, minimum: 1}
+        seq: {type: integer, format: int64, minimum: 1}
+        sender:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/PublicUser'}
+        client_message_id: {type: string, format: uuid}
+        message_type: {type: string, enum: [text, system]}
+        content: {type: string, maxLength: 4000}
+        metadata: {type: object, additionalProperties: true}
+        created_at: {type: string, format: date-time}
+
+    ConversationBase:
+      type: object
+      required: [id, can_send, last_seq, last_read_seq, unread_count, last_message, created_at, updated_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        can_send: {type: boolean}
+        last_seq: {type: integer, format: int64, minimum: 0}
+        last_read_seq: {type: integer, format: int64, minimum: 0}
+        unread_count: {type: integer, format: int64, minimum: 0}
+        last_message:
+          type: object
+          nullable: true
+          allOf:
+            - {$ref: '#/components/schemas/Message'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    DirectConversation:
+      allOf:
+        - {$ref: '#/components/schemas/ConversationBase'}
+        - type: object
+          required: [type, peer, group]
+          properties:
+            type: {type: string, enum: [direct]}
+            peer: {$ref: '#/components/schemas/PublicUser'}
+            group:
+              type: object
+              nullable: true
+
+    GroupConversation:
+      allOf:
+        - {$ref: '#/components/schemas/ConversationBase'}
+        - type: object
+          required: [type, peer, group]
+          properties:
+            type: {type: string, enum: [group]}
+            peer:
+              type: object
+              nullable: true
+            group: {$ref: '#/components/schemas/GroupConversationSummary'}
+
+    Conversation:
+      oneOf:
+        - {$ref: '#/components/schemas/DirectConversation'}
+        - {$ref: '#/components/schemas/GroupConversation'}
+      discriminator:
+        propertyName: type
+        mapping:
+          direct: '#/components/schemas/DirectConversation'
+          group: '#/components/schemas/GroupConversation'
+
+    ConversationResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/Conversation'}
+
+    ConversationPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_cursor]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Conversation'}
+            next_cursor: {type: string, nullable: true}
+
+    MessagePageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [items, next_before_seq, has_more]
+          properties:
+            items:
+              type: array
+              items: {$ref: '#/components/schemas/Message'}
+            next_before_seq: {type: integer, format: int64, minimum: 0}
+            has_more: {type: boolean}
+
+    MarkConversationReadRequest:
+      type: object
+      required: [last_read_seq]
+      additionalProperties: false
+      properties:
+        last_read_seq: {type: integer, format: int64, minimum: 0}
+
+    ReadResultResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data:
+          type: object
+          required: [conversation_id, last_read_seq, unread_count]
+          properties:
+            conversation_id: {type: integer, format: int64, minimum: 1}
+            last_read_seq: {type: integer, format: int64, minimum: 0}
+            unread_count: {type: integer, format: int64, minimum: 0}
+
+    RegisterRequest:
+      type: object
+      required: [username, email, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 50
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+          minLength: 6
+          maxLength: 100
+        nickname:
+          type: string
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+          format: password
+          writeOnly: true
+
+    RefreshTokenRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          minLength: 1
+
+    AuthData:
+      type: object
+      required: [user_id, username, access_token, refresh_token]
+      properties:
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+        username:
+          type: string
+        access_token:
+          type: string
+        refresh_token:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/AuthData'
+
+    UpdateProfileRequest:
+      type: object
+      properties:
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+
+    User:
+      type: object
+      required: [id, username, email, nickname, avatar_url, created_at, updated_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        username:
+          type: string
+        email:
+          type: string
+          format: email
+        nickname:
+          type: string
+        avatar_url:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    UserResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/User'
+
+    ScriptStatus:
+      type: string
+      enum: [uploading, parsing, ready, failed]
+
+    RoomStatus:
+      type: string
+      enum: [waiting, playing, paused, ended]
+
+    ScriptUpload:
+      type: object
+      required: [id, title, description, file_size, status, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        description:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [parsing]
+        created_at:
+          type: string
+          format: date-time
+
+    ScriptUploadResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: accepted
+        data:
+          $ref: '#/components/schemas/ScriptUpload'
+
+    ScriptSummary:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - cover_url
+        - file_size
+        - status
+        - chunk_count
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          type: string
+        description:
+          type: string
+        cover_url:
+          type: string
+        file_size:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          $ref: '#/components/schemas/ScriptStatus'
+        parse_error:
+          type: string
+        chunk_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ScriptListData:
+      type: object
+      required: [items, total, page, page_size]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ScriptSummary'
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+        page:
+          type: integer
+          minimum: 1
+        page_size:
+          type: integer
+          minimum: 1
+          maximum: 100
+
+    ScriptListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ScriptListData'
+
+    ScriptCharacter:
+      type: object
+      required: [id, name, description, attributes]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+        description:
+          type: string
+        attributes:
+          type: object
+          additionalProperties: true
+
+    ScriptDetail:
+      allOf:
+        - $ref: '#/components/schemas/ScriptSummary'
+        - type: object
+          required: [characters]
+          properties:
+            characters:
+              type: array
+              items:
+                $ref: '#/components/schemas/ScriptCharacter'
+
+    ScriptDetailResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ScriptDetail'
+
+    ScriptRetryData:
+      type: object
+      required: [id, status]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [parsing]
+
+    ScriptRetryResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: accepted
+        data:
+          $ref: '#/components/schemas/ScriptRetryData'
+
+    StartSoloGameRequest:
+      type: object
+      required: [script_id, character_id]
+      properties:
+        script_id:
+          type: integer
+          format: int64
+          minimum: 1
+        character_id:
+          type: integer
+          format: int64
+          minimum: 1
+
+    StartSoloGameData:
+      type: object
+      required: [room_id, game_status, opening_narrative]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        game_status:
+          type: string
+          enum: [playing]
+        opening_narrative:
+          type: string
+          minLength: 1
+
+    StartSoloGameResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/StartSoloGameData'
+
+    MultiplayerRuntimePlayer:
+      type: object
+      required: [user_id, character_id, player_state, items, buffs]
+      properties:
+        user_id: {type: integer, format: int64, minimum: 1}
+        character_id: {type: integer, format: int64, minimum: 1}
+        player_state:
+          type: object
+          additionalProperties: {type: string}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeItem'}
+        buffs:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeBuff'}
+
+    RuntimeItem:
+      type: object
+      required: [name, quantity, description]
+      properties:
+        name: {type: string}
+        quantity: {type: integer, minimum: 1}
+        description: {type: string}
+
+    RuntimeBuff:
+      type: object
+      required: [name, duration]
+      properties:
+        name: {type: string}
+        duration: {type: integer, minimum: 1}
+
+    RuntimeMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: {type: string, enum: [user, assistant, system]}
+        content: {type: string, minLength: 1}
+
+    MultiplayerGameStateData:
+      type: object
+      required: [seq, version, room_id, status, generation, current_turn, round_number, turn_order, current_actor_id, deadline_at, players, summary_memory, recent_messages]
+      properties:
+        seq: {type: integer, format: int64, minimum: 0}
+        version: {type: integer, enum: [2]}
+        room_id: {type: integer, format: int64, minimum: 1}
+        status: {type: string, enum: [playing, paused, ended]}
+        generation: {type: string, format: uuid}
+        current_turn: {type: integer, minimum: 0}
+        round_number: {type: integer, minimum: 0}
+        turn_order:
+          type: array
+          minItems: 2
+          items: {type: integer, format: int64, minimum: 1}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at:
+          type: string
+          format: date-time
+          nullable: true
+        players:
+          type: array
+          minItems: 2
+          items: {$ref: '#/components/schemas/MultiplayerRuntimePlayer'}
+        summary_memory: {type: string}
+        recent_messages:
+          type: array
+          items: {$ref: '#/components/schemas/RuntimeMessage'}
+        memory: {$ref: '#/components/schemas/GameArchiveRuntime'}
+
+    GameArchiveRuntime:
+      type: object
+      required: [timeline_id, head_position, durable_position, archive_state, revision]
+      properties:
+        timeline_id: {type: string, format: uuid}
+        head_position: {type: integer, format: int64, minimum: 0}
+        durable_position: {type: integer, format: int64, minimum: 0}
+        archive_state: {type: string, enum: [ready, pending, recovering, blocked]}
+        control_operation_id: {type: string, format: uuid}
+        revision: {type: integer, format: int64, minimum: 1}
+
+    GameMemoryStatusData:
+      type: object
+      required: [room_id, enabled, status]
+      properties:
+        room_id: {type: integer, format: int64, minimum: 1}
+        enabled: {type: boolean}
+        status: {type: string, enum: [disabled, ready, pending, recovering, blocked, ended]}
+        timeline_id: {type: string, format: uuid}
+        generation: {type: string, format: uuid}
+        head_position: {type: integer, format: int64, minimum: 0}
+        durable_position: {type: integer, format: int64, minimum: 0}
+        revision: {type: integer, format: int64, minimum: 0}
+
+    GameMemoryStatusResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/GameMemoryStatusData'}
+
+    GameKeyEvent:
+      type: object
+      required: [id, timeline_id, position, source_commit_id, event_index, event_type, importance, name, description, created_at]
+      properties:
+        id: {type: integer, format: int64, minimum: 1}
+        timeline_id: {type: string, format: uuid}
+        position: {type: integer, format: int64, minimum: 1}
+        source_commit_id: {type: string, format: uuid}
+        event_index: {type: integer, minimum: 0}
+        event_type: {type: string, enum: [trigger_event, character_death]}
+        importance: {type: string, enum: [major, critical]}
+        name: {type: string, maxLength: 200}
+        description: {type: string, maxLength: 2000}
+        created_at: {type: string, format: date-time}
+        source_action: {type: string, description: 已归档的玩家行动}
+        source_narrative: {type: string, description: 已归档的正式叙事}
+
+    GameKeyEventPage:
+      type: object
+      required: [timeline_id, items, has_more]
+      properties:
+        timeline_id: {type: string, format: uuid}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/GameKeyEvent'}
+        has_more: {type: boolean}
+        next_position: {type: integer, format: int64, minimum: 1}
+        next_index: {type: integer, minimum: 0}
+
+    GameKeyEventPageResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/GameKeyEventPage'}
+
+    MultiplayerGameStateResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/MultiplayerGameStateData'}
+
+    SubmitActionRequest:
+      type: object
+      required: [request_id, expected_turn, action_text]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: 幂等请求 ID；相同 ID 只能对应相同请求内容
+        expected_turn:
+          type: integer
+          minimum: 0
+        expected_timeline_id: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+        expected_generation: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+        action_text:
+          type: string
+          minLength: 1
+          maxLength: 2000
+
+    DiceRoll:
+      type: object
+      required:
+        - type
+        - result
+        - target
+        - success
+        - critical_hit
+        - critical_miss
+        - description
+        - reason
+      properties:
+        type:
+          type: string
+          enum: [D20, D100]
+        result:
+          type: integer
+          minimum: 1
+          maximum: 100
+        target:
+          type: integer
+          minimum: 1
+          maximum: 100
+        success:
+          type: boolean
+        critical_hit:
+          type: boolean
+        critical_miss:
+          type: boolean
+        description:
+          type: string
+          maxLength: 1000
+        reason:
+          type: string
+          maxLength: 500
+
+    ItemMutation:
+      type: object
+      required: [name, quantity_delta]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        quantity_delta:
+          type: integer
+          description: 正数增加，负数移除
+        description:
+          type: string
+          maxLength: 1000
+
+    BuffMutation:
+      type: object
+      required: [name, duration]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        duration:
+          type: integer
+          minimum: 1
+
+    KeyEventMutation:
+      type: object
+      required: [name, description]
+      properties:
+        name:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+
+    ActionEffects:
+      type: object
+      required: [player_state_changes, items, buffs, events]
+      properties:
+        player_state_changes:
+          type: object
+          additionalProperties:
+            type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ItemMutation'
+        buffs:
+          type: array
+          items:
+            $ref: '#/components/schemas/BuffMutation'
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/KeyEventMutation'
+
+    MultiplayerPlayerEffects:
+      type: object
+      required: [user_id, player_state_changes, items, buffs]
+      properties:
+        user_id: {type: integer, format: int64, minimum: 1}
+        player_state_changes:
+          type: object
+          additionalProperties: {type: string}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/ItemMutation'}
+        buffs:
+          type: array
+          items: {$ref: '#/components/schemas/BuffMutation'}
+
+    MultiplayerActionEffects:
+      type: object
+      required: [players, events]
+      properties:
+        players:
+          type: array
+          items: {$ref: '#/components/schemas/MultiplayerPlayerEffects'}
+        events:
+          type: array
+          items: {$ref: '#/components/schemas/KeyEventMutation'}
+
+    SubmitActionData:
+      type: object
+      required: [narrative, current_turn]
+      properties:
+        narrative:
+          type: string
+          minLength: 1
+        dice_roll:
+          $ref: '#/components/schemas/DiceRoll'
+        effects:
+          $ref: '#/components/schemas/ActionEffects'
+        multiplayer_effects:
+          $ref: '#/components/schemas/MultiplayerActionEffects'
+        generation: {type: string, format: uuid}
+        current_turn:
+          type: integer
+          minimum: 1
+        round_number: {type: integer, minimum: 0}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at: {type: string, format: date-time}
+        memory: {$ref: '#/components/schemas/GameArchiveRuntime'}
+
+    SubmitActionResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/SubmitActionData'
+
+    SkipTurnRequest:
+      type: object
+      required: [request_id, expected_turn]
+      properties:
+        request_id: {type: string, format: uuid}
+        expected_turn: {type: integer, minimum: 0}
+        expected_timeline_id: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+        expected_generation: {type: string, format: uuid, description: 新模式必填；旧房间省略}
+
+    SkipTurnData:
+      type: object
+      required: [generation, skipped_user_id, current_turn, round_number, current_actor_id, deadline_at, reason]
+      properties:
+        generation: {type: string, format: uuid}
+        skipped_user_id: {type: integer, format: int64, minimum: 1}
+        current_turn: {type: integer, minimum: 1}
+        round_number: {type: integer, minimum: 0}
+        current_actor_id: {type: integer, format: int64, minimum: 1}
+        deadline_at: {type: string, format: date-time}
+        reason: {type: string, enum: [manual, timeout]}
+
+    SkipTurnResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code: {type: integer, enum: [0]}
+        message: {type: string, example: ok}
+        data: {$ref: '#/components/schemas/SkipTurnData'}
+
+    ManualSaveRequest:
+      type: object
+      required: [save_name]
+      properties:
+        save_name:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: 去除首尾空白后不能为空，且不能包含控制字符
+
+    ManualSaveData:
+      type: object
+      required: [save_id]
+      properties:
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+
+    ManualSaveResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/ManualSaveData'
+
+    GameSaveSummary:
+      type: object
+      required: [id, save_name, round_number, is_auto, created_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        save_name:
+          type: string
+        round_number:
+          type: integer
+          minimum: 0
+        is_auto:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+
+    GameSaveListData:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/GameSaveSummary'
+        total:
+          type: integer
+          minimum: 0
+
+    GameSaveListResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/GameSaveListData'
+
+    LoadGameRequest:
+      type: object
+      required: [save_id]
+      properties:
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+        request_id: {type: string, format: uuid, description: 新模式必填；同一次读档重试必须复用}
+
+    LoadGameData:
+      type: object
+      required: [room_id, save_id, status, turn]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        save_id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum: [paused]
+        turn:
+          type: integer
+          minimum: 0
+
+    LoadGameResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/LoadGameData'
+
+    GameStatusData:
+      type: object
+      required: [room_id, status]
+      properties:
+        room_id:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          $ref: '#/components/schemas/RoomStatus'
+
+    GameStatusResponse:
+      type: object
+      required: [code, message, data]
+      properties:
+        code:
+          type: integer
+          enum: [0]
+        message:
+          type: string
+          example: ok
+        data:
+          $ref: '#/components/schemas/GameStatusData'

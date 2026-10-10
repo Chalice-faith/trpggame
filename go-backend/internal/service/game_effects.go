@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -37,6 +38,18 @@ type ActionEffects struct {
 	Items              []ItemMutation     `json:"items"`
 	Buffs              []BuffMutation     `json:"buffs"`
 	Events             []KeyEventMutation `json:"events"`
+}
+
+type MultiplayerPlayerEffects struct {
+	UserID             uint              `json:"user_id"`
+	PlayerStateChanges map[string]string `json:"player_state_changes"`
+	Items              []ItemMutation    `json:"items"`
+	Buffs              []BuffMutation    `json:"buffs"`
+}
+
+type MultiplayerActionEffects struct {
+	Players []MultiplayerPlayerEffects `json:"players"`
+	Events  []KeyEventMutation         `json:"events"`
 }
 
 type rawActionEffects struct {
@@ -117,6 +130,90 @@ func InterpretActionEffects(userID uint, statusChanges map[string]any) (*ActionE
 		}
 	}
 	return result, nil
+}
+
+// InterpretMultiplayerActionEffects permits effects only for the frozen roster and
+// preserves roster order in the normalized result.
+func InterpretMultiplayerActionEffects(participants []uint, statusChanges map[string]any) (*MultiplayerActionEffects, error) {
+	result := &MultiplayerActionEffects{
+		Players: make([]MultiplayerPlayerEffects, 0),
+		Events:  make([]KeyEventMutation, 0),
+	}
+	allowed := make(map[uint]struct{}, len(participants))
+	perPlayer := make(map[uint]*ActionEffects, len(participants))
+	for _, userID := range participants {
+		if userID == 0 {
+			return nil, ErrInvalidActionEffects
+		}
+		if _, duplicate := allowed[userID]; duplicate {
+			return nil, ErrInvalidActionEffects
+		}
+		allowed[userID] = struct{}{}
+	}
+	if len(allowed) < 2 {
+		return nil, ErrInvalidActionEffects
+	}
+	if statusChanges == nil {
+		return result, nil
+	}
+	var raw rawActionEffects
+	if err := decodeStrict(statusChanges, &raw); err != nil || len(raw.Calls) == 0 || len(raw.Calls) > maxActionEffectCalls {
+		return nil, fmt.Errorf("%w: malformed calls", ErrInvalidActionEffects)
+	}
+	for index, call := range raw.Calls {
+		if len(call.Arguments) == 0 || string(call.Arguments) == "null" {
+			return nil, fmt.Errorf("%w: call %d has no arguments", ErrInvalidActionEffects, index)
+		}
+		if call.Name == "trigger_event" {
+			temporary := emptyActionEffects()
+			if err := interpretActionEffectCall(participants[0], call, temporary); err != nil {
+				return nil, fmt.Errorf("%w: call %d: %v", ErrInvalidActionEffects, index, err)
+			}
+			result.Events = append(result.Events, temporary.Events...)
+			continue
+		}
+		targetID, err := multiplayerEffectTarget(call)
+		if err != nil {
+			return nil, fmt.Errorf("%w: call %d: %v", ErrInvalidActionEffects, index, err)
+		}
+		if _, exists := allowed[targetID]; !exists {
+			return nil, fmt.Errorf("%w: call %d targets non-member", ErrInvalidActionEffects, index)
+		}
+		effects := perPlayer[targetID]
+		if effects == nil {
+			effects = emptyActionEffects()
+			perPlayer[targetID] = effects
+		}
+		if err := interpretActionEffectCall(targetID, call, effects); err != nil {
+			return nil, fmt.Errorf("%w: call %d: %v", ErrInvalidActionEffects, index, err)
+		}
+	}
+	for _, userID := range participants {
+		if effects := perPlayer[userID]; effects != nil {
+			result.Players = append(result.Players, MultiplayerPlayerEffects{
+				UserID: userID, PlayerStateChanges: effects.PlayerStateChanges,
+				Items: effects.Items, Buffs: effects.Buffs,
+			})
+		}
+	}
+	return result, nil
+}
+
+func emptyActionEffects() *ActionEffects {
+	return &ActionEffects{
+		PlayerStateChanges: make(map[string]string), Items: make([]ItemMutation, 0),
+		Buffs: make([]BuffMutation, 0), Events: make([]KeyEventMutation, 0),
+	}
+}
+
+func multiplayerEffectTarget(call rawActionEffectCall) (uint, error) {
+	var target struct {
+		PlayerID uint `json:"player_id"`
+	}
+	if err := json.Unmarshal(call.Arguments, &target); err != nil || target.PlayerID == 0 {
+		return 0, errors.New("invalid effect target")
+	}
+	return target.PlayerID, nil
 }
 
 func interpretActionEffectCall(userID uint, call rawActionEffectCall, result *ActionEffects) error {

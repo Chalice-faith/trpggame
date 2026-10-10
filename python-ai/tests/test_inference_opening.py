@@ -83,6 +83,47 @@ class OpeningNarrativeServiceTests(unittest.IsolatedAsyncioTestCase):
             ("opening prompt", "system context"),
         )
 
+    async def test_includes_validated_multiplayer_roster_in_opening_context(self):
+        captured: dict[str, object] = {}
+
+        async def retriever(query: str, script_id: int) -> list[str]:
+            return ["古宅入口"]
+
+        def context_builder(action: str, **context) -> AssembledContext:
+            captured.update(context)
+            return AssembledContext("system", "opening", ())
+
+        async def generator(prompt: str, system_prompt: str) -> str:
+            return "两名调查员抵达古宅。"
+
+        request = StartGameRequest(
+            room_id=7,
+            script_id=11,
+            character_id=13,
+            user_id=17,
+            participants=[
+                {"user_id": 17, "character_id": 13},
+                {"user_id": 18, "character_id": 14},
+            ],
+        )
+        service = OpeningNarrativeService(
+            retriever=retriever,
+            context_builder=context_builder,
+            generator=generator,
+        )
+
+        self.assertEqual(await service.generate(request), "两名调查员抵达古宅。")
+        self.assertEqual(
+            captured["character_profile"],
+            {
+                "character_id": 13,
+                "participants": [
+                    {"user_id": 17, "character_id": 13},
+                    {"user_id": 18, "character_id": 14},
+                ],
+            },
+        )
+
     async def test_rejects_empty_retrieval_and_empty_narrative(self):
         async def empty_retriever(query: str, script_id: int) -> list[str]:
             return []
@@ -163,6 +204,22 @@ class OpeningInferenceEndpointTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 422)
 
+    def test_endpoint_rejects_invalid_multiplayer_roster(self):
+        body = self._request_body()
+        body["participants"] = [
+            {"user_id": 4, "character_id": 3},
+            {"user_id": 5, "character_id": 3},
+        ]
+        app = create_app()
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/ai/inference/start",
+                json=body,
+                headers=self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 422)
+
     def test_endpoint_maps_service_failure_to_503(self):
         service = RecordingOpeningService(error=OpeningNarrativeError("failed"))
         app = create_app()
@@ -182,7 +239,7 @@ class OpeningInferenceEndpointTests(unittest.TestCase):
         )
 
     @staticmethod
-    def _request_body() -> dict[str, int]:
+    def _request_body() -> dict[str, object]:
         return {
             "room_id": 1,
             "script_id": 2,

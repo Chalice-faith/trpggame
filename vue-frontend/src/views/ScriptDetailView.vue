@@ -8,7 +8,8 @@ import {
   Delete,
   Document,
   Files,
-  Refresh
+  Refresh,
+  VideoPlay
 } from '@element-plus/icons-vue'
 import {
   deleteScript,
@@ -235,6 +236,14 @@ onBeforeUnmount(() => {
         </div>
 
         <div class="hero-actions">
+          <el-button
+            v-if="script.status === 'ready' && script.characters?.length"
+            type="primary"
+            :icon="VideoPlay"
+            @click="router.push(`/game/solo/${script.id}`)"
+          >
+            开始单人冒险
+          </el-button>
           <el-button
             v-if="canRetry"
             type="primary"

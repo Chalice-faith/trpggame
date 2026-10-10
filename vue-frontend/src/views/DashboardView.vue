@@ -11,9 +11,12 @@ import {
   type UploadRawFile
 } from 'element-plus'
 import {
+  ChatDotRound,
+  Connection,
   Plus,
   Refresh,
   SwitchButton,
+  UserFilled,
   UploadFilled,
   View
 } from '@element-plus/icons-vue'
@@ -254,6 +257,10 @@ onBeforeUnmount(() => {
 
       <div class="account">
         <span class="account-name">{{ authStore.user?.nickname || authStore.user?.username }}</span>
+        <el-button text :icon="ChatDotRound" @click="router.push('/chat')">消息</el-button>
+        <el-button text :icon="UserFilled" @click="router.push('/friends')">好友</el-button>
+        <el-button text :icon="UserFilled" @click="router.push('/groups')">群组</el-button>
+        <el-button text :icon="Connection" @click="router.push('/rooms')">多人大厅</el-button>
         <el-button text :icon="SwitchButton" @click="handleLogout">退出</el-button>
       </div>
     </header>

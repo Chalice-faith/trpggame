@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import settings
@@ -15,6 +16,7 @@ BASE_SYSTEM_PROMPT = """你是专业的 TRPG 游戏主持人（Game Master），
 ## 游戏规则
 - 使用轻量通用规则；不确定的行动使用 D20 检定，难度基准为简单 5、普通 10、困难 15、极难 20。
 - 服务器负责骰子结果和角色状态。需要检定时调用 `roll_dice`，需要改变状态时调用对应 Function，禁止自行编造执行结果。
+- 工具参数 `player_id` 使用当前角色状态或队伍成员中明确提供的 `player_id`；`character_id` 是角色模板 ID，不能用作玩家 ID。
 - 仅依据提供的剧本、记忆和状态推进剧情，不泄露尚未发生或未检索到的隐藏内容。
 
 ## 叙事格式
@@ -40,6 +42,16 @@ class AssembledContext:
     system_prompt: str
     user_prompt: str
     recent_history: tuple[DialogueMessage, ...]
+    budget_report: dict[str, Any] = field(default_factory=dict)
+
+
+def estimated_tokens(text: str) -> int:
+    """Conservative UTF-8 byte upper estimate, not provider tokenizer usage."""
+    return len(text.encode("utf-8"))
+
+
+def _fit_text(text: str, budget: int) -> str:
+    return text.encode("utf-8")[:max(0, budget)].decode("utf-8", errors="ignore")
 
 
 def assemble_context(
@@ -52,6 +64,9 @@ def assemble_context(
     character_profile: Mapping[str, Any] | None = None,
     max_recent_messages: int | None = None,
     max_rag_chunks: int | None = None,
+    key_events: Sequence[str] = (),
+    memory_degraded: bool = False,
+    input_budget: int | None = None,
 ) -> AssembledContext:
     """组装系统提示词与本次用户提示词。"""
 
@@ -70,7 +85,8 @@ def assemble_context(
     if rag_limit <= 0:
         raise ContextAssemblyError("max_rag_chunks must be positive")
 
-    normalized_history = _normalize_history(recent_history)[-history_limit:]
+    all_history = _normalize_history(recent_history)
+    normalized_history = all_history[-history_limit:]
     normalized_chunks = _normalize_rag_chunks(rag_chunks)[:rag_limit]
     state_json = _serialize_mapping(player_state or {}, "player_state")
     profile_json = _serialize_mapping(
@@ -78,17 +94,58 @@ def assemble_context(
         "character_profile",
     )
 
-    system_prompt = _build_system_prompt(
-        rag_chunks=normalized_chunks,
-        summary_memory=summary_memory.strip(),
-        player_state_json=state_json,
-        character_profile_json=profile_json,
-    )
-    user_prompt = _build_user_prompt(normalized_action, normalized_history)
+    budget = settings.context_input_budget if input_budget is None else input_budget
+    budget = min(budget, settings.context_window_tokens - settings.llm_max_tokens - settings.context_safety_tokens)
+    if budget <= 0:
+        raise ContextAssemblyError("no input budget after output reservation")
+    summary = _fit_text(summary_memory.strip(), settings.context_summary_budget)
+    events: list[str] = []
+    for event in _normalize_rag_chunks(key_events):
+        if estimated_tokens("\n".join(events + [event])) <= settings.context_key_event_budget:
+            events.append(event)
+
+    def render(history, chunks, memory, facts):
+        system = _build_system_prompt(rag_chunks=chunks, summary_memory=memory,
+            player_state_json=state_json, character_profile_json=profile_json)
+        if facts:
+            system += "\n\n## 已发生的关键事件\n" + "\n".join(facts)
+        return system, _build_user_prompt(normalized_action, history)
+
+    # Preserve rules, current action and complete authoritative state, or fail.
+    mandatory = render([], [], "", [])
+    if sum(estimated_tokens(text) for text in mandatory) > budget:
+        raise ContextAssemblyError("current action and authoritative state exceed input budget")
+    original_counts = (len(normalized_history), len(normalized_chunks), len(events))
+    system_prompt, user_prompt = render(normalized_history, normalized_chunks, summary, events)
+    while estimated_tokens(system_prompt) + estimated_tokens(user_prompt) > budget:
+        if normalized_chunks:
+            normalized_chunks.pop()
+        elif normalized_history:
+            normalized_history.pop(0)
+        elif events:
+            events.pop()
+        elif summary:
+            available = budget - sum(estimated_tokens(text) for text in mandatory)
+            summary = _fit_text(summary, max(0, available - 32))
+        else:
+            raise ContextAssemblyError("context cannot fit input budget")
+        system_prompt, user_prompt = render(normalized_history, normalized_chunks, summary, events)
+    report = {"estimator": "utf8_bytes_upper_estimate", "input_estimate": estimated_tokens(system_prompt) + estimated_tokens(user_prompt),
+        "input_budget": budget, "output_reserved": settings.llm_max_tokens,
+        "history_dropped": len(all_history) - len(normalized_history), "rag_dropped": original_counts[1] - len(normalized_chunks),
+        "events_dropped": len(key_events) - len(events), "summary_trimmed": summary != summary_memory.strip(),
+        "memory_degraded": memory_degraded or len(all_history) > len(normalized_history) or summary != summary_memory.strip() or len(events) < len(key_events),
+        "component_estimates": {"rules": estimated_tokens(BASE_SYSTEM_PROMPT), "action": estimated_tokens(normalized_action),
+            "state": estimated_tokens(state_json), "profile": estimated_tokens(profile_json),
+            "summary": estimated_tokens(summary), "events": estimated_tokens("\n".join(events)),
+            "history": sum(estimated_tokens(message.content) for message in normalized_history),
+            "rag": sum(estimated_tokens(chunk) for chunk in normalized_chunks)}}
+    logging.getLogger(__name__).info("context_budget %s", json.dumps(report, sort_keys=True))
     return AssembledContext(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         recent_history=tuple(normalized_history),
+        budget_report=report,
     )
 
 

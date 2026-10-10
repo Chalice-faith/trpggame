@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"trpggame/internal/model"
+	"trpggame/internal/repo"
 	"trpggame/internal/service"
 )
 
@@ -22,6 +24,164 @@ type fakeGameStartService struct {
 	actionResult  *service.SubmitGameActionResult
 	actionErr     error
 	actionRequest *service.SubmitGameActionRequest
+	skipResult    *model.MultiplayerSkipResult
+	skipErr       error
+	skipRequest   *service.SkipMultiplayerTurnRequest
+	saveResult    *service.CreateManualSaveResult
+	saveErr       error
+	saveRequest   *service.CreateManualSaveRequest
+	listResult    *service.ListGameSavesResult
+	listErr       error
+	listRequest   *service.ListGameSavesRequest
+	pauseResult   *service.PauseGameResult
+	pauseErr      error
+	pauseRequest  *service.PauseGameRequest
+	resumeResult  *service.ResumeGameResult
+	resumeErr     error
+	resumeRequest *service.ResumeGameRequest
+	loadResult    *service.LoadGameResult
+	loadErr       error
+	loadRequest   *service.LoadGameRequest
+	endResult     *service.EndGameResult
+	endErr        error
+	endRequest    *service.EndGameRequest
+	memoryResult  *service.GameMemoryStatus
+	memoryErr     error
+	memoryUserID  uint
+	memoryRoomID  uint
+	eventPage     *service.GameKeyEventPage
+	eventErr      error
+	eventUserID   uint
+	eventRoomID   uint
+	eventTimeline string
+	eventAfter    uint64
+	eventLimit    int
+}
+
+func (s *fakeGameStartService) ListGameKeyEvents(_ context.Context, userID, roomID uint, timeline string, after uint64, _ uint16, limit int) (*service.GameKeyEventPage, error) {
+	s.eventUserID, s.eventRoomID, s.eventTimeline, s.eventAfter, s.eventLimit = userID, roomID, timeline, after, limit
+	return s.eventPage, s.eventErr
+}
+
+func TestGameHandlerKeyEventsAuthorizationAndPagination(t *testing.T) {
+	timeline := "550e8400-e29b-41d4-a716-446655440000"
+	fake := &fakeGameStartService{eventPage: &service.GameKeyEventPage{TimelineID: timeline, Items: []model.KeyEvent{}, HasMore: false}}
+	h := NewGameHandler(fake)
+	router := gin.New()
+	router.GET("/games/:roomId/key-events", func(c *gin.Context) {
+		if c.GetHeader("Authorization") == "Bearer valid" {
+			c.Set("user_id", uint(7))
+		}
+		h.ListKeyEvents(c)
+	})
+	url := "/games/41/key-events?timeline_id=" + timeline + "&after_position=12&limit=20"
+	request := httptest.NewRequest(http.MethodGet, url, nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || fake.eventRoomID != 0 {
+		t.Fatalf("unauthorized status=%d", recorder.Code)
+	}
+	request.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || fake.eventUserID != 7 || fake.eventRoomID != 41 || fake.eventTimeline != timeline || fake.eventAfter != 12 || fake.eventLimit != 20 {
+		t.Fatalf("authorized status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	fake.eventErr = service.ErrGameRoomNotFound
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusNotFound, 1311)
+	fake.eventErr = repo.ErrMemoryCursor
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusConflict, 1343)
+	invalid := httptest.NewRequest(http.MethodGet, "/games/41/key-events?timeline_id="+timeline+"&limit=101", nil)
+	invalid.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, invalid)
+	assertJSONError(t, recorder, http.StatusBadRequest, 1342)
+}
+
+func (s *fakeGameStartService) GetGameMemoryStatus(_ context.Context, userID, roomID uint) (*service.GameMemoryStatus, error) {
+	s.memoryUserID, s.memoryRoomID = userID, roomID
+	return s.memoryResult, s.memoryErr
+}
+
+func TestGameHandlerMemoryStatusAuthorizationAndContract(t *testing.T) {
+	fake := &fakeGameStartService{memoryResult: &service.GameMemoryStatus{RoomID: 41, Enabled: true, Status: "pending", TimelineID: "550e8400-e29b-41d4-a716-446655440000", Generation: "550e8400-e29b-41d4-a716-446655440001", HeadPosition: 2, DurablePosition: 1}}
+	h := NewGameHandler(fake)
+	router := gin.New()
+	router.GET("/games/:roomId/memory-status", func(c *gin.Context) {
+		if c.GetHeader("Authorization") == "Bearer valid" {
+			c.Set("user_id", uint(7))
+		}
+		h.MemoryStatus(c)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/games/41/memory-status", nil)
+	recorder := httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnauthorized || fake.memoryRoomID != 0 {
+		t.Fatalf("unauthorized status=%d service room=%d", recorder.Code, fake.memoryRoomID)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/games/41/memory-status", nil)
+	request.Header.Set("Authorization", "Bearer valid")
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || fake.memoryUserID != 7 || fake.memoryRoomID != 41 || !bytes.Contains(recorder.Body.Bytes(), []byte(`"status":"pending"`)) {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	fake.memoryErr = service.ErrGameRoomNotFound
+	recorder = httptest.NewRecorder()
+	router.ServeHTTP(recorder, request)
+	assertJSONError(t, recorder, http.StatusNotFound, 1311)
+}
+
+func (s *fakeGameStartService) EndGame(
+	_ context.Context,
+	req *service.EndGameRequest,
+) (*service.EndGameResult, error) {
+	s.endRequest = req
+	return s.endResult, s.endErr
+}
+
+func (s *fakeGameStartService) LoadGame(
+	_ context.Context,
+	req *service.LoadGameRequest,
+) (*service.LoadGameResult, error) {
+	s.loadRequest = req
+	return s.loadResult, s.loadErr
+}
+
+func (s *fakeGameStartService) ResumeGame(
+	_ context.Context,
+	req *service.ResumeGameRequest,
+) (*service.ResumeGameResult, error) {
+	s.resumeRequest = req
+	return s.resumeResult, s.resumeErr
+}
+
+func (s *fakeGameStartService) PauseGame(
+	_ context.Context,
+	req *service.PauseGameRequest,
+) (*service.PauseGameResult, error) {
+	s.pauseRequest = req
+	return s.pauseResult, s.pauseErr
+}
+
+func (s *fakeGameStartService) ListGameSaves(
+	_ context.Context,
+	req *service.ListGameSavesRequest,
+) (*service.ListGameSavesResult, error) {
+	s.listRequest = req
+	return s.listResult, s.listErr
+}
+
+func (s *fakeGameStartService) CreateManualSave(
+	_ context.Context,
+	req *service.CreateManualSaveRequest,
+) (*service.CreateManualSaveResult, error) {
+	s.saveRequest = req
+	return s.saveResult, s.saveErr
 }
 
 func (s *fakeGameStartService) SubmitAction(
@@ -30,6 +190,39 @@ func (s *fakeGameStartService) SubmitAction(
 ) (*service.SubmitGameActionResult, error) {
 	s.actionRequest = req
 	return s.actionResult, s.actionErr
+}
+
+func (s *fakeGameStartService) SkipMultiplayerTurn(_ context.Context, req *service.SkipMultiplayerTurnRequest) (*model.MultiplayerSkipResult, error) {
+	s.skipRequest = req
+	return s.skipResult, s.skipErr
+}
+
+func TestGameHandlerSkipMultiplayerTurn(t *testing.T) {
+	fake := &fakeGameStartService{skipResult: &model.MultiplayerSkipResult{
+		Generation: "550e8400-e29b-41d4-a716-446655440001", SkippedUserID: 7,
+		CurrentTurn: 1, CurrentActorID: 8, DeadlineAt: time.Now().UTC(), Reason: "manual",
+	}}
+	g := gin.New()
+	g.POST("/games/:roomId/skip", func(c *gin.Context) {
+		c.Set("user_id", uint(7))
+		NewGameHandler(fake).SkipTurn(c)
+	})
+	request := httptest.NewRequest(http.MethodPost, "/games/41/skip", bytes.NewBufferString(`{"request_id":"550e8400-e29b-41d4-a716-446655440000","expected_turn":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	g.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || fake.skipRequest == nil || fake.skipRequest.RoomID != 41 ||
+		fake.skipRequest.UserID != 7 || fake.skipRequest.ExpectedTurn != 0 {
+		t.Fatalf("skip response=%d request=%#v body=%s", response.Code, fake.skipRequest, response.Body.String())
+	}
+	fake.skipErr = service.ErrMultiplayerActionInProgress
+	response = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/games/41/skip", bytes.NewBufferString(`{"request_id":"550e8400-e29b-41d4-a716-446655440000","expected_turn":0}`))
+	request.Header.Set("Content-Type", "application/json")
+	g.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || !bytes.Contains(response.Body.Bytes(), []byte(`"code":1923`)) {
+		t.Fatalf("in-progress response=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func (s *fakeGameStartService) StartSoloGame(
@@ -411,6 +604,902 @@ func submitActionTestRouter(handler *GameHandler, identity any) *gin.Engine {
 			c.Set("user_id", identity)
 		}
 		handler.SubmitAction(c)
+	})
+	return router
+}
+
+func TestGameHandlerManualSave(t *testing.T) {
+	fakeService := &fakeGameStartService{saveResult: &service.CreateManualSaveResult{
+		Save: &model.GameSave{ID: 91, RoomID: 41, SaveName: "进入书房前"},
+	}}
+	router := manualSaveTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/games/41/save",
+		bytes.NewBufferString(`{"save_name":" 进入书房前 "}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusCreated, recorder.Body.String())
+	}
+	if fakeService.saveRequest == nil || fakeService.saveRequest.UserID != 7 ||
+		fakeService.saveRequest.RoomID != 41 || fakeService.saveRequest.SaveName != " 进入书房前 " {
+		t.Fatalf("service request = %#v", fakeService.saveRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			SaveID uint `json:"save_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.SaveID != 91 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerManualSaveRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := manualSaveTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(
+			http.MethodPost,
+			"/games/41/save",
+			bytes.NewBufferString(`{"save_name":"手动存档"}`),
+		)
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.saveRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerManualSaveRejectsInvalidContract(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"invalid room ID", "/games/not-a-number/save", `{"save_name":"存档"}`},
+		{"zero room ID", "/games/0/save", `{"save_name":"存档"}`},
+		{"malformed JSON", "/games/41/save", `not-json`},
+		{"missing save name", "/games/41/save", `{}`},
+		{"empty save name", "/games/41/save", `{"save_name":""}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{}
+			router := manualSaveTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusBadRequest, 1321)
+			if fakeService.saveRequest != nil {
+				t.Fatal("invalid contract reached service")
+			}
+		})
+	}
+}
+
+func TestGameHandlerManualSaveMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid save", service.ErrInvalidGameSave, http.StatusBadRequest, 1321},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{"room not savable", service.ErrGameRoomNotSavable, http.StatusConflict, 1322},
+		{
+			"runtime unavailable",
+			fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),
+			http.StatusServiceUnavailable,
+			1318,
+		},
+		{
+			"internal",
+			fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError,
+			1323,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{saveErr: test.err}
+			router := manualSaveTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/games/41/save",
+				bytes.NewBufferString(`{"save_name":"手动存档"}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerManualSaveRejectsInvalidServiceResult(t *testing.T) {
+	tests := []*service.CreateManualSaveResult{
+		nil,
+		{},
+		{Save: &model.GameSave{RoomID: 41}},
+		{Save: &model.GameSave{ID: 91, RoomID: 42}},
+		{Save: &model.GameSave{ID: 91, RoomID: 41, IsAuto: true}},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{saveResult: result}
+			router := manualSaveTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(
+				http.MethodPost,
+				"/games/41/save",
+				bytes.NewBufferString(`{"save_name":"手动存档"}`),
+			)
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1323)
+		})
+	}
+}
+
+func manualSaveTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/games/:roomId/save", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.ManualSave(c)
+	})
+	return router
+}
+
+func TestGameHandlerListSaves(t *testing.T) {
+	createdAt := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	fakeService := &fakeGameStartService{listResult: &service.ListGameSavesResult{
+		Items: []service.GameSaveSummary{
+			{ID: 92, SaveName: "自动存档-10", RoundNumber: 10, IsAuto: true, CreatedAt: createdAt},
+			{ID: 91, SaveName: "进入书房前", RoundNumber: 3, CreatedAt: createdAt.Add(-time.Hour)},
+		},
+		Total: 2,
+	}}
+	router := listSavesTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodGet, "/games/41/saves", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.listRequest == nil || fakeService.listRequest.UserID != 7 ||
+		fakeService.listRequest.RoomID != 41 {
+		t.Fatalf("service request = %#v", fakeService.listRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			Items []service.GameSaveSummary `json:"items"`
+			Total int                       `json:"total"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.Total != 2 || len(response.Data.Items) != 2 ||
+		response.Data.Items[0].ID != 92 || response.Data.Items[0].SaveName != "自动存档-10" ||
+		!response.Data.Items[0].IsAuto || !response.Data.Items[0].CreatedAt.Equal(createdAt) {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerListSavesReturnsStableEmptyList(t *testing.T) {
+	fakeService := &fakeGameStartService{listResult: &service.ListGameSavesResult{
+		Items: []service.GameSaveSummary{}, Total: 0,
+	}}
+	router := listSavesTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodGet, "/games/41/saves", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d; body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !bytes.Contains(recorder.Body.Bytes(), []byte(`"items":[]`)) ||
+		!bytes.Contains(recorder.Body.Bytes(), []byte(`"total":0`)) {
+		t.Fatalf("empty response is unstable: %s", recorder.Body.String())
+	}
+}
+
+func TestGameHandlerListSavesRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := listSavesTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(http.MethodGet, "/games/41/saves", nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.listRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerListSavesRejectsInvalidRoomID(t *testing.T) {
+	for _, path := range []string{"/games/not-a-number/saves", "/games/0/saves"} {
+		fakeService := &fakeGameStartService{}
+		router := listSavesTestRouter(NewGameHandler(fakeService), uint(7))
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusBadRequest, 1324)
+		if fakeService.listRequest != nil {
+			t.Fatal("invalid room ID reached service")
+		}
+	}
+}
+
+func TestGameHandlerListSavesMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid query", service.ErrInvalidGameSaveQuery, http.StatusBadRequest, 1324},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{
+			"internal",
+			fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError,
+			1325,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{listErr: test.err}
+			router := listSavesTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodGet, "/games/41/saves", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerListSavesRejectsInvalidServiceResult(t *testing.T) {
+	createdAt := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	tests := []*service.ListGameSavesResult{
+		nil,
+		{},
+		{Items: []service.GameSaveSummary{}, Total: 1},
+		{Items: []service.GameSaveSummary{{SaveName: "存档", CreatedAt: createdAt}}, Total: 1},
+		{Items: []service.GameSaveSummary{{ID: 91, SaveName: " ", CreatedAt: createdAt}}, Total: 1},
+		{Items: []service.GameSaveSummary{{ID: 91, SaveName: "存档", RoundNumber: -1, CreatedAt: createdAt}}, Total: 1},
+		{Items: []service.GameSaveSummary{{ID: 91, SaveName: "存档"}}, Total: 1},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{listResult: result}
+			router := listSavesTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodGet, "/games/41/saves", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1325)
+		})
+	}
+}
+
+func listSavesTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/games/:roomId/saves", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.ListSaves(c)
+	})
+	return router
+}
+
+func TestGameHandlerPauseGame(t *testing.T) {
+	fakeService := &fakeGameStartService{pauseResult: &service.PauseGameResult{
+		RoomID: 41, Status: model.RoomStatusPaused,
+	}}
+	router := pauseGameTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodPost, "/games/41/pause", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.pauseRequest == nil || fakeService.pauseRequest.UserID != 7 ||
+		fakeService.pauseRequest.RoomID != 41 {
+		t.Fatalf("service request = %#v", fakeService.pauseRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			RoomID uint             `json:"room_id"`
+			Status model.RoomStatus `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.RoomID != 41 || response.Data.Status != model.RoomStatusPaused {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerPauseGameRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := pauseGameTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(http.MethodPost, "/games/41/pause", nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.pauseRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerPauseGameRejectsInvalidRoomID(t *testing.T) {
+	for _, path := range []string{"/games/not-a-number/pause", "/games/0/pause"} {
+		fakeService := &fakeGameStartService{}
+		router := pauseGameTestRouter(NewGameHandler(fakeService), uint(7))
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusBadRequest, 1326)
+		if fakeService.pauseRequest != nil {
+			t.Fatal("invalid room ID reached service")
+		}
+	}
+}
+
+func TestGameHandlerPauseGameMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid pause", service.ErrInvalidGamePause, http.StatusBadRequest, 1326},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{"room not pausable", service.ErrGameRoomNotPausable, http.StatusConflict, 1327},
+		{
+			"runtime unavailable",
+			fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),
+			http.StatusServiceUnavailable,
+			1318,
+		},
+		{
+			"internal",
+			fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError,
+			1328,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{pauseErr: test.err}
+			router := pauseGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/pause", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerPauseGameRejectsInvalidServiceResult(t *testing.T) {
+	tests := []*service.PauseGameResult{
+		nil,
+		{},
+		{RoomID: 42, Status: model.RoomStatusPaused},
+		{RoomID: 41, Status: model.RoomStatusPlaying},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{pauseResult: result}
+			router := pauseGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/pause", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1328)
+		})
+	}
+}
+
+func pauseGameTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/games/:roomId/pause", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.PauseGame(c)
+	})
+	return router
+}
+
+func TestGameHandlerResumeGame(t *testing.T) {
+	fakeService := &fakeGameStartService{resumeResult: &service.ResumeGameResult{
+		RoomID: 41, Status: model.RoomStatusPlaying,
+	}}
+	router := resumeGameTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodPost, "/games/41/resume", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.resumeRequest == nil || fakeService.resumeRequest.UserID != 7 ||
+		fakeService.resumeRequest.RoomID != 41 {
+		t.Fatalf("service request = %#v", fakeService.resumeRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			RoomID uint             `json:"room_id"`
+			Status model.RoomStatus `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.RoomID != 41 || response.Data.Status != model.RoomStatusPlaying {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerResumeGameRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := resumeGameTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(http.MethodPost, "/games/41/resume", nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.resumeRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerResumeGameRejectsInvalidRoomID(t *testing.T) {
+	for _, path := range []string{"/games/not-a-number/resume", "/games/0/resume"} {
+		fakeService := &fakeGameStartService{}
+		router := resumeGameTestRouter(NewGameHandler(fakeService), uint(7))
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusBadRequest, 1329)
+		if fakeService.resumeRequest != nil {
+			t.Fatal("invalid room ID reached service")
+		}
+	}
+}
+
+func TestGameHandlerResumeGameMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid resume", service.ErrInvalidGameResume, http.StatusBadRequest, 1329},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{"room not resumable", service.ErrGameRoomNotResumable, http.StatusConflict, 1330},
+		{
+			"runtime unavailable",
+			fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),
+			http.StatusServiceUnavailable,
+			1318,
+		},
+		{
+			"internal",
+			fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError,
+			1331,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{resumeErr: test.err}
+			router := resumeGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/resume", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerResumeGameRejectsInvalidServiceResult(t *testing.T) {
+	tests := []*service.ResumeGameResult{
+		nil,
+		{},
+		{RoomID: 42, Status: model.RoomStatusPlaying},
+		{RoomID: 41, Status: model.RoomStatusPaused},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{resumeResult: result}
+			router := resumeGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/resume", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1331)
+		})
+	}
+}
+
+func resumeGameTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/games/:roomId/resume", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.ResumeGame(c)
+	})
+	return router
+}
+
+func TestGameHandlerLoadGame(t *testing.T) {
+	fakeService := &fakeGameStartService{loadResult: &service.LoadGameResult{
+		RoomID: 41, SaveID: 91, Status: model.RoomStatusPaused, Turn: 3,
+	}}
+	router := loadGameTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91,"request_id":"550e8400-e29b-41d4-a716-446655440000"}`))
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.loadRequest == nil || fakeService.loadRequest.UserID != 7 ||
+		fakeService.loadRequest.RoomID != 41 || fakeService.loadRequest.SaveID != 91 ||
+		fakeService.loadRequest.RequestID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("service request = %#v", fakeService.loadRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			RoomID uint             `json:"room_id"`
+			SaveID uint             `json:"save_id"`
+			Status model.RoomStatus `json:"status"`
+			Turn   int              `json:"turn"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.RoomID != 41 || response.Data.SaveID != 91 ||
+		response.Data.Status != model.RoomStatusPaused || response.Data.Turn != 3 {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerLoadGameRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := loadGameTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.loadRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerLoadGameRejectsInvalidRequest(t *testing.T) {
+	tests := []struct {
+		path string
+		body string
+	}{
+		{"/games/not-a-number/load", `{"save_id":91}`},
+		{"/games/0/load", `{"save_id":91}`},
+		{"/games/41/load", ``},
+		{"/games/41/load", `{`},
+		{"/games/41/load", `{}`},
+		{"/games/41/load", `{"save_id":0}`},
+	}
+	for _, test := range tests {
+		fakeService := &fakeGameStartService{}
+		router := loadGameTestRouter(NewGameHandler(fakeService), uint(7))
+		request := httptest.NewRequest(http.MethodPost, test.path, bytes.NewBufferString(test.body))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusBadRequest, 1332)
+		if fakeService.loadRequest != nil {
+			t.Fatal("invalid load request reached service")
+		}
+	}
+}
+
+func TestGameHandlerLoadGameMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid load", service.ErrInvalidGameLoad, http.StatusBadRequest, 1332},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{"save not found", service.ErrGameSaveNotFound, http.StatusNotFound, 1333},
+		{"corrupt save", service.ErrGameSaveCorrupt, http.StatusConflict, 1334},
+		{"incompatible multiplayer save", service.ErrMultiplayerSaveIncompatible, http.StatusConflict, 1925},
+		{"room not loadable", service.ErrGameRoomNotLoadable, http.StatusConflict, 1335},
+		{
+			"runtime unavailable", fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),
+			http.StatusServiceUnavailable, 1318,
+		},
+		{
+			"internal", fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError, 1336,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{loadErr: test.err}
+			router := loadGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerLoadGameRejectsInvalidServiceResult(t *testing.T) {
+	tests := []*service.LoadGameResult{
+		nil,
+		{},
+		{RoomID: 42, SaveID: 91, Status: model.RoomStatusPaused, Turn: 3},
+		{RoomID: 41, SaveID: 92, Status: model.RoomStatusPaused, Turn: 3},
+		{RoomID: 41, SaveID: 91, Status: model.RoomStatusPlaying, Turn: 3},
+		{RoomID: 41, SaveID: 91, Status: model.RoomStatusPaused, Turn: -1},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{loadResult: result}
+			router := loadGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/load", bytes.NewBufferString(`{"save_id":91}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1336)
+		})
+	}
+}
+
+func loadGameTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/games/:roomId/load", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.LoadGame(c)
+	})
+	return router
+}
+
+func TestGameHandlerEndGame(t *testing.T) {
+	fakeService := &fakeGameStartService{endResult: &service.EndGameResult{
+		RoomID: 41, Status: model.RoomStatusEnded,
+	}}
+	router := endGameTestRouter(NewGameHandler(fakeService), uint(7))
+	request := httptest.NewRequest(http.MethodPost, "/games/41/end", nil)
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	if fakeService.endRequest == nil || fakeService.endRequest.UserID != 7 ||
+		fakeService.endRequest.RoomID != 41 {
+		t.Fatalf("service request = %#v", fakeService.endRequest)
+	}
+	var response struct {
+		Code int `json:"code"`
+		Data struct {
+			RoomID uint             `json:"room_id"`
+			Status model.RoomStatus `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Code != 0 || response.Data.RoomID != 41 || response.Data.Status != model.RoomStatusEnded {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGameHandlerEndGameRequiresAuthenticationContext(t *testing.T) {
+	for _, identity := range []any{nil, "7", uint(0)} {
+		fakeService := &fakeGameStartService{}
+		router := endGameTestRouter(NewGameHandler(fakeService), identity)
+		request := httptest.NewRequest(http.MethodPost, "/games/41/end", nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusUnauthorized, 1002)
+		if fakeService.endRequest != nil {
+			t.Fatal("invalid authentication context reached service")
+		}
+	}
+}
+
+func TestGameHandlerEndGameRejectsInvalidRoomID(t *testing.T) {
+	for _, path := range []string{"/games/not-a-number/end", "/games/0/end"} {
+		fakeService := &fakeGameStartService{}
+		router := endGameTestRouter(NewGameHandler(fakeService), uint(7))
+		request := httptest.NewRequest(http.MethodPost, path, nil)
+		recorder := httptest.NewRecorder()
+
+		router.ServeHTTP(recorder, request)
+
+		assertJSONError(t, recorder, http.StatusBadRequest, 1337)
+		if fakeService.endRequest != nil {
+			t.Fatal("invalid room ID reached service")
+		}
+	}
+}
+
+func TestGameHandlerEndGameMapsSafeServiceErrors(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantCode   int
+	}{
+		{"invalid end", service.ErrInvalidGameEnd, http.StatusBadRequest, 1337},
+		{"room not found", service.ErrGameRoomNotFound, http.StatusNotFound, 1311},
+		{"room not endable", service.ErrGameRoomNotEndable, http.StatusConflict, 1338},
+		{
+			"runtime unavailable", fmt.Errorf("%w: sensitive Redis detail", service.ErrGameRuntimeUnavailable),
+			http.StatusServiceUnavailable, 1318,
+		},
+		{
+			"internal", fmt.Errorf("%w: sensitive MySQL detail", service.ErrInternal),
+			http.StatusInternalServerError, 1339,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fakeService := &fakeGameStartService{endErr: test.err}
+			router := endGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/end", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, test.wantStatus, test.wantCode)
+			if bytes.Contains(recorder.Body.Bytes(), []byte("sensitive")) {
+				t.Fatalf("response leaked wrapped error detail: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestGameHandlerEndGameRejectsInvalidServiceResult(t *testing.T) {
+	tests := []*service.EndGameResult{
+		nil,
+		{},
+		{RoomID: 42, Status: model.RoomStatusEnded},
+		{RoomID: 41, Status: model.RoomStatusPaused},
+	}
+	for index, result := range tests {
+		t.Run(fmt.Sprintf("case-%d", index), func(t *testing.T) {
+			fakeService := &fakeGameStartService{endResult: result}
+			router := endGameTestRouter(NewGameHandler(fakeService), uint(7))
+			request := httptest.NewRequest(http.MethodPost, "/games/41/end", nil)
+			recorder := httptest.NewRecorder()
+
+			router.ServeHTTP(recorder, request)
+
+			assertJSONError(t, recorder, http.StatusInternalServerError, 1339)
+		})
+	}
+}
+
+func endGameTestRouter(handler *GameHandler, identity any) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.POST("/games/:roomId/end", func(c *gin.Context) {
+		if identity != nil {
+			c.Set("user_id", identity)
+		}
+		handler.EndGame(c)
 	})
 	return router
 }

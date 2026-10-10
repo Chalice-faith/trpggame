@@ -29,6 +29,7 @@ data/
 .env
 .env.local
 .env.production
+key.txt
 
 # Go build output
 go-backend/server.exe
@@ -36,3 +37,6 @@ go-backend/server.exe
 # Vue env overrides
 vue-frontend/.env.local
 vue-frontend/.env.production
+
+#mcp server
+.mcp.json

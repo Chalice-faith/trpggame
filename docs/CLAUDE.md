@@ -4,6 +4,15 @@
 
 ---
 
+## Git 提交规范
+
+- 提交标题的描述部分和提交正文必须使用中文，不使用纯英文描述。
+- 保留 Conventional Commits 的类型与可选范围，例如 `feat(memory):`、`fix:`、`docs:`；技术名称、代码标识符和里程碑编号可保留英文，例如 Redis、V3、CI、M3.1-A。
+- 示例：`feat(memory): 实现可恢复的游戏生命周期与 V3 存档`。
+- 创建提交前检查提交信息是否符合以上要求；未经开发者明确指示，不改写已有提交历史。
+
+---
+
 ## 项目身份
 
 - **项目名称**：AI 驱动桌面角色扮演游戏（TRPG）主持人
@@ -22,7 +31,7 @@
 | UI 组件 | Element Plus / Naive UI | 开箱即用中文组件 |
 | 后端-业务 | Go 1.22+ (Gin + gorilla/websocket + GORM) | 用户/房间/剧本管理 + WebSocket Hub |
 | 后端-AI | Python 3.11+ (FastAPI) | PDF 解析、RAG 检索、LLM 推理、Function Calling |
-| AI 模型 | GLM-4-Long (1M 上下文窗口) | 叙事生成 + 规则裁定 |
+| AI 模型 | DeepSeek-V4-Flash (1M 上下文窗口) | 叙事生成 + 规则裁定 |
 | 关系数据库 | MySQL 8.4 | 持久化存储 |
 | 缓存/状态 | Redis 7 | 会话状态、角色实时状态、Function Calling 缓存 |
 | 向量数据库 | Milvus 2.4 | 剧本片段向量检索 |
@@ -45,7 +54,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
                                                       │
                                                       ├──► Milvus (向量检索)
                                                       ├──► Redis (状态读写)
-                                                      └──► GLM-4 API (推理)
+                                                      └──► DeepSeek API (推理)
 ```
 
 **关键设计原则**：
@@ -105,13 +114,13 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M1.4 AI 推理核心
 
-- [x] Python: `llm_client.py` — GLM-4-Long 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
+- [x] Python: `llm_client.py` — DeepSeek-V4-Flash 调用封装（完整响应 + SSE 流式响应 + Function Tool Call 解析）
 - [x] Python: `retriever.py` — RAG 检索 + MMR 重排序（Top-20 → MMR → Top-5）
 - [x] Python: `function_calling.py` — 7 个函数定义、严格参数校验与可注入执行器
 - [x] Python: `summarizer.py` — 每 5 轮触发、旧摘要合并与 200-500 字结果校验
 - [x] Python: `dice.py` — D20/D100 服务端真随机、目标边界与大成功/大失败判定
 - [x] Python: `inference.py` router — AI 推理 API
-  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → GLM 完整响应
+  - [x] 开场叙事：内部鉴权 → RAG → 上下文组装 → DeepSeek 完整响应
   - [x] 玩家行动：Redis 只读上下文 → RAG → Function Calling → 服务端骰子 → 最终叙事
   - [x] 状态变更边界：严格校验并返回结构化 `status_changes`；实际 Redis 写入由 M1.5 游戏状态层统一处理
 - [x] 系统提示词模板（含角色设定、规则裁定、Markdown 格式指令和动态数据边界）
@@ -121,19 +130,20 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 - [x] MySQL 迁移脚本：`game_rooms` 表 + `room_players` 表 + `game_saves` 表
 - [x] Go: `game_repo.go` — 房间、玩家与存档 CRUD
-- [ ] Go: `game_service.go` — 单人游戏核心逻辑
+- [x] Go: `game_service.go` — 单人游戏核心逻辑
   - [x] 快速开始（创建房间 → 调 AI 生成开场叙事 → 初始化 Redis）
   - [x] 处理行动（权限校验 → Python AI → 状态解释 → Redis CAS 原子提交）
   - [x] 手动存档 Service（Redis 一致性快照 → MySQL 持久化）
-  - [ ] 存档列表与读档恢复
-  - [ ] 自动存档（每 10 轮）
-- [ ] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
+  - [x] 存档列表与读档恢复
+  - [x] 自动存档（每 10 轮）
+  - [x] 暂停、恢复、结束及 MySQL/Redis 补偿一致性
+- [x] Go: `game_handler.go` — `/api/v1/games/*` REST 端点
   - [x] `POST /games/solo/start` 快速开始
   - [x] `POST /games/:roomId/action` 同步行动提交
-  - [ ] 手动存档、存档列表、读档、暂停、恢复与结束
-- [ ] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理
-- [ ] Go: `ws_handler.go` — WS 鉴权 + 消息路由
-- [ ] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`
+  - [x] 手动存档、存档列表、读档、暂停、恢复与结束
+- [x] Go: `ws/hub.go` + `ws/client.go` — WebSocket 连接管理（按房间 seq 单调、recent 补推缓冲、HandleInbound 分发、register/unregister 竞态加固）
+- [x] Go: `ws_handler.go` — WS 鉴权 + 消息路由（JWT + RoomAuthorizer 房间订阅校验；`subscribed` 确认、`sync`/`sync_batch` 断线补推；行动流式分发已接入）
+- [x] WebSocket 消息流：`game_action` → AI → `narrative_chunk`×N → `narrative_complete`（代码链路完成，真实服务联调待执行）
 - [ ] Redis 数据结构落地：
   - [x] 玩家状态 HASH (`room:{id}:player:{uid}`)
   - [x] 道具 SET、BUFF HASH
@@ -141,26 +151,20 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
   - [x] 最近 10 条消息 LIST (`LPUSH + LTRIM`)
   - [x] 行动 UUID/指纹幂等缓存与预期回合 CAS
   - [x] 带版本快照的原子读取与恢复（恢复时清空行动缓存）
-- [ ] Vue: `stores/game.ts` — 游戏运行态管理
-- [ ] Vue: `stores/websocket.ts` — WebSocket 连接 + 心跳 + 重连
-- [ ] Vue: `GameSoloView.vue` + `CharacterSelectPanel.vue`
-- [ ] Vue: `GamePlayView.vue`
-  - [ ] `NarrativePanel.vue` — Markdown 渲染 + `ChatBubble.vue`
-  - [ ] `ActionInput.vue` — 行动输入 + 发送
-  - [ ] `PlayerStatusSidebar.vue` — HP/MP/SAN/道具
-  - [ ] `GameToolbar.vue` — 存档/读档/骰子
-  - [ ] `DiceAnimation.vue` — 骰子动画
-- [ ] Vue: 前端路由 (`/login`, `/register`, `/dashboard`, `/game/solo/:id`, `/game/play/:id`)
+  - [x] 运行态世代隔离（暂停/读档后拒绝旧 AI 结果）
+  - [x] 自动存档待持久化队列及失败重试补偿
+- [x] Vue: `stores/game.ts` — 游戏运行态管理、角色状态/道具/Buff 更新
+- [x] Vue: `stores/websocket.ts` — WebSocket 连接、重连、补推和行动事件消费
+- [x] Vue: `GameSoloView.vue` — 角色选择与游戏启动
+- [x] Vue: `GamePlayView.vue` — 叙事、行动输入、角色状态、存档工具栏和骰子反馈
+- [x] Vue: 前端路由 (`/login`, `/register`, `/dashboard`, `/game/solo/:id`, `/game/play/:id`)
 
 #### M1.6 联调与验收
 
-- [ ] Docker Compose 一键启动全栈
-- [ ] 注册 → 登录 → 上传 PDF → 等待解析完成 → 快速开始 → AI 生成开场 → 多轮交互 全流程走通
-- [ ] AI 流式输出在前端逐字渲染
-- [ ] 骰子检定动画正常
-- [ ] 角色状态实时更新
-- [ ] 存档/读档正常恢复
-- [ ] WebSocket 断线重连测试
+- [ ] Docker Compose 一键启动全栈并完成真实接口测试
+- [ ] 注册 → 登录 → 上传 PDF → 等待解析完成 → 快速开始 → AI 生成开场 → 多轮交互全流程验收
+- [ ] AI 流式输出、骰子反馈、角色状态、存档/读档在真实服务中验收
+- [ ] WebSocket 断线重连和补推测试
 - [ ] 性能指标验收（AI 首 Token < 3s、WS 延迟 < 200ms）
 
 ---
@@ -171,67 +175,92 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 
 #### M2.1 好友系统
 
-- [ ] MySQL 迁移：`friendships` 表
-- [ ] Go: `friend_repo.go` + `friend_service.go` + `friend_handler.go`
-- [ ] REST 端点：好友申请/接受/拒绝/列表/删除
-- [ ] Vue: `FriendListView.vue`
-- [ ] WebSocket 在线状态推送（`presence` 消息类型）
+- [x] M2.1-A：状态机、REST/WS、Redis presence 与前端边界设计冻结
+- [x] MySQL 迁移：`friendships` 表
+- [x] Go: `friend_repo.go` + `friend_service.go` + `friend_handler.go`
+- [x] REST 端点：用户搜索、好友申请/接受/拒绝/列表/删除
+- [x] Redis connection ID 租约与 IM `PresenceObserver`
+- [x] Vue: `FriendsView.vue` + 全局 IM Store
+- [x] WebSocket 在线状态与关系变化推送（`presence`、`friendship_updated`）
 
 #### M2.2 IM 聊天系统
 
-- [ ] Go: `chat_service.go` — 私聊/群聊/消息持久化
-- [ ] Go: `chat_handler.go` — 消息 REST 端点（历史消息拉取）
-- [ ] WebSocket `chat_message` 类型双向通信
-- [ ] 离线消息 Redis 队列 + 重连补推
-- [ ] Vue: `stores/chat.ts` — 聊天状态管理
-- [ ] Vue: `ChatPanel.vue` + `GroupChatView.vue`
+- [x] M2.2-A：私聊、发送幂等、会话 seq、已读水位与断线恢复设计冻结
+- [x] MySQL 迁移：`conversations` + `conversation_members` + `messages`
+- [x] Go: `chat_repo.go` + `chat_service.go` — 私聊会话、连续 seq 与发送幂等
+- [x] Go: `chat_handler.go` — 会话创建/列表、历史消息和已读水位 REST
+- [x] WebSocket `chat_message`/`chat_ack` 双向可靠投递与 `conversation_updated` 推送
+- [x] MySQL 会话 seq + `im_sync`/`im_sync_batch` 断线补推
+- [x] Vue: `stores/chat.ts` — 乐观发送、ack、失败重试、seq 去重、未读与重连同步
+- [x] Vue: `ChatView.vue` — 会话列表、历史分页、私聊面板与只读边界
 
 #### M2.3 群组系统
 
-- [ ] MySQL 迁移：`groups` 表 + `group_members` 表
-- [ ] Go: Group CRUD + 成员管理 Service/Handler
-- [ ] Vue: 群聊列表 + 群管理界面
-- [ ] AI 拉群功能（AI 主持人账号加入群聊）
+- [x] M2.3-A：群规模、邀请/离群、角色权限、历史可见性、版本、系统消息和 IM 限流设计冻结
+- [x] MySQL 迁移：`groups` 表 + `group_members` 表
+- [x] Go: Group CRUD + 成员管理 Service/Handler + REST/OpenAPI + 群会话摘要联合
+- [x] WebSocket：群成员批量扇出、群变化/系统消息事件与每连接加权 IM 限流
+- [x] Vue: 群聊列表 + 群管理界面；M2.3 完整验收见 `M2.3验收记录.md`
+- [ ] AI 拉群功能（独立可选块，不阻塞真人群聊验收）
 
 #### M2.4 多人游戏房间
 
-- [ ] Go: `room_service.go` — 多人房间核心逻辑
-  - [ ] 创建房间 + 加入/离开
-  - [ ] 角色选择 + 准备状态
-  - [ ] 回合队列（按 `turn_order` 轮转）
-  - [ ] 回合计时器（可配置，默认 120s，超时 skip）
-  - [ ] AI 叙事广播给全房间
-- [ ] Go: `room_handler.go` — `/api/v1/rooms/*` REST 端点
-- [ ] Redis Pub/Sub 跨实例广播（多机部署场景）
-- [ ] WebSocket 新增消息类型：`turn_start`、`turn_skip`
-- [ ] Vue: `RoomLobbyView.vue` — 等待大厅（角色选择 + 准备）
-- [ ] Vue: `TurnQueueIndicator.vue` — 回合顺序指示器
-- [ ] Vue: 多人游戏界面（复用 `GamePlayView.vue` 并扩展）
+- [x] Go: `room_service.go` — 多人房间核心逻辑
+  - [x] 创建房间 + 加入/离开
+  - [x] 角色选择 + 准备状态
+  - [x] 回合队列（按 `turn_order` 轮转）
+  - [x] 回合计时器（可配置，默认 120s，超时 skip）
+  - [x] AI 叙事广播给全房间
+- [x] Go: `room_handler.go` — `/api/v1/rooms/*` REST 端点
+- [x] Redis Pub/Sub 跨实例广播（多机部署场景）
+- [x] WebSocket 新增消息类型：`turn_start`、`turn_skip`
+- [x] Vue: `RoomLobbyView.vue` — 等待大厅（角色选择 + 准备）
+- [x] Vue: `GameMultiplayerView.vue` — 回合队列、倒计时、流式叙事、房主控制和结束态回看
+- [x] M2.4 提交 `8cb1ded` 的 CI #48 与三账号大厅验收通过
+
+#### M2.5 多人回合与验收
+
+- [x] Redis RealtimeBus、房间全局 seq/有界回放、跨实例广播与 4001 接管
+- [x] 多人 V2 运行态、流式行动、主动/超时跳过与跨实例 deadline worker
+- [x] 暂停/恢复/结束、V2 存读档、每 5 个完整轮次自动存档和 `gaming` presence
+- [x] 提交 `500b8ab` 的 CI #54 七个作业、Linux targeted race 与本地三账号浏览器验收通过
+- [ ] 真实 DeepSeek、Milvus、域名/Nginx/TLS 和目标部署环境验收
 
 ---
 
 ### Phase 3 — 体验增强
 
-**目标**：记忆增强 + 社交增强 + 体验优化。
+**目标**：长局记忆 + 自定义角色 + 剧情投票 + Web 体验与验收收口。
+
+**状态**：2026-10-09，M3.1-A/A1—A6 已交付并通过历史 CI #73；M3.1-B 正在收尾，本机实现和验证已落地，整体仍等待真实模型、长局与目标部署验收，C 未开始。分支 `dev/phase3`，证据见 [A 记录](./M3.1-A验收记录.md) 与 [B 记录](./M3.1-B验收记录.md)。新模式默认关闭；旧阶段真实验收仍暂缓，发布门禁保留。
+
+#### M3.0 准备
+
+- [ ] 记录真实验收暂缓边界、核对需求差异、确认当前分块决策和建立可执行基线；目标环境反馈后补
 
 #### M3.1 记忆增强
 
-- [ ] MySQL 迁移：`key_events` 表
-- [ ] Python: 关键事件自动标记（角色死亡、重大抉择、剧情分支点）
-- [ ] Python: 语义记忆检索（基于语义相似度检索更早期的历史记忆）
+- [ ] M3.1-A：时间线、已提交行动档案、幂等持久化与旧存档兼容
+- [ ] M3.1-B：B1—B3 本机实现与验证已落地，旧档案事件补录和摘要缓存恢复已补齐；真实模型、50 轮以上长局、目标部署及本次 CI 仍待验收，见 [实施方案](./M3.1-B实施方案.md) 和 [B 验收记录](./M3.1-B验收记录.md)
+- [ ] M3.1-C：历史向量索引、房间/分支隔离、重建与降级
+- [ ] M3.1-D：长局、读档分叉、故障与真实 AI/Milvus 验收
 
 #### M3.2 体验优化
 
-- [ ] Vue: 回合计时器 UI + 倒计时动画
-- [ ] Vue: 自定义角色功能（C-05）
-- [ ] Vue: 投票决策功能（MP-03）
-- [ ] 移动端适配（响应式布局 / 触摸优化）
+- [ ] M3.2-A：自定义角色规则、版本、审批、不可变快照与 Vue 界面（C-05）
+- [ ] M3.2-B：剧情投票权限、持久化、并发结算、控制协调与 Vue 界面（MP-03）
+- [ ] M3.2-C：响应式 Web、状态反馈与可访问性；计时器复用 M2.5，不重新开发
+- [ ] M3.2-D：按实测处理依赖、构建、资源警告、格式和 race 覆盖
+
+#### M3.3 阶段验收
+
+- [ ] 真实端到端、性能、存量升级、故障恢复与发布验收
 
 ---
 
 ## 数据库索引规划
 
-迁移脚本位于 `go-backend/migrations/`，命名格式 `NNN_description.sql`：
+迁移脚本位于 `database/migrations/`，命名格式 `NNN_description.sql`：
 
 ```
 001_create_users.sql
@@ -241,12 +270,22 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 005_create_game_rooms.sql         # 已实现
 006_create_room_players.sql       # 已实现
 007_create_game_saves.sql         # 已实现
-008_create_messages.sql           # 规划
-009_create_friendships.sql        # Phase 2
-010_create_groups.sql              # Phase 2
-011_create_group_members.sql       # Phase 2
-012_create_key_events.sql          # Phase 3
+008_add_auto_save_uniqueness.sql # 已实现
+009_remove_foreign_keys.sql      # 已实现
+010_create_friendships.sql         # M2.1，已实现
+011_create_conversations.sql       # M2.2，已实现
+012_create_conversation_members.sql # M2.2，已实现
+013_create_messages.sql            # M2.2，已实现
+014_create_groups.sql              # M2.3，已实现
+015_create_group_members.sql       # M2.3，已实现
+016_extend_game_rooms.sql          # M2.4，已实现
+017_extend_room_players.sql        # M2.4，已实现
+018_create_game_memory_timelines.sql # M3.1-A/A1，已实现
+019_create_game_action_records.sql   # M3.1-A/A1，已实现
+020_extend_game_saves_memory.sql     # M3.1-A/A1，已实现
 ```
+
+Phase 3 已追加 018—020（时间线/记忆状态、档案/操作、新存档元数据及唯一键）；下一编号为 021。不得占用旧编号或修改已执行迁移。
 
 ---
 
@@ -296,6 +335,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | type | 用途 | Phase |
 |------|------|-------|
 | `pong` | 心跳响应 | 1 |
+| `subscribed` | 订阅房间成功确认（含房间当前水位 seq） | 1 |
 | `narrative_chunk` | AI 流式输出片段 | 1 |
 | `narrative_complete` | AI 输出完毕 | 1 |
 | `dice_roll` | 骰子检定结果 | 1 |
@@ -305,6 +345,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | `error` | 错误消息 | 1 |
 | `sync_batch` | 离线消息补推 | 1 |
 | `presence` | 在线状态 | 2 |
+| `friendship_updated` | 好友申请或关系变化 | 2 |
 | `chat_message` | 聊天消息 | 2 |
 | `turn_start` | 回合开始 | 2 |
 | `turn_skip` | 回合跳过 | 2 |
@@ -320,8 +361,11 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | 1200-1299 | 剧本模块 |
 | 1300-1399 | 游戏模块 |
 | 1400-1499 | AI 服务 |
-| 1500-1599 | WebSocket |
-| 1600-1699 | 好友/IM（Phase 2） |
+| 1500-1599 | WebSocket（1500 缺失 token、1501 token 校验失败、1502 非法 room_id、1503 无房间访问权、1504 非法 sync 请求、1505 不支持的消息类型） |
+| 1600-1699 | 好友与 presence（Phase 2） |
+| 1700-1799 | 私聊与 IM 可靠投递（Phase 2） |
+| 1800-1899 | 群组与群聊（Phase 2） |
+| 1900-1999 | 多人房间与回合（Phase 2） |
 
 统一响应格式：`{"code": 0, "message": "ok", "data": {...}}`
 
@@ -341,7 +385,7 @@ Vue SPA (Web) ──WSS──► Nginx ──► Go Backend (Gin + WebSocket Hub
 | 8 | 市场定位 | 面向海外市场，无需国内合规 | 2026-06-29 |
 | 9 | 对象存储 | MinIO 自部署 | 2026-06-29 |
 | 10 | Go↔Python 通信 | HTTP 同步调用（非消息队列） | 2026-06-29 |
-| 11 | AI 模型 | GLM-4-Long（1M 上下文，成本低） | 2026-06-29 |
+| 11 | AI 模型 | DeepSeek-V4-Flash（1M 上下文，成本低） | 2026-06-29 |
 | 12 | 流式输出 | Python → SSE/NDJSON → Go → WebSocket → 前端 | 2026-06-29 |
 | 13 | 记忆系统 | 摘要记忆（每5轮）+ 最近10轮保留 | 2026-06-29 |
 | 14 | 认证方案 | JWT Access(15min) + Refresh(7d)，bcrypt cost=12 | 2026-06-29 |
@@ -367,7 +411,7 @@ cd python-ai && uvicorn app.main:app --reload --port 8000
 cd vue-frontend && npm run dev
 
 # 数据库迁移
-cd go-backend && go run cmd/migrate/main.go up
+npm run db:migrate
 
 # 查看日志
 docker compose logs -f go-backend python-ai
@@ -377,9 +421,9 @@ docker compose logs -f go-backend python-ai
 
 ## 当前项目状态
 
-- **当前阶段**：Phase 1 / M1.5 单人游戏系统开发中，于 2026-08-04 暂停
-- **文档状态**：技术设计、M1.5 进度、已知问题及暂停交接已同步到当前代码
-- **代码状态**：M1.5 已完成 MySQL 数据层、Redis 运行态/快照、快速开始、同步行动接口和手动存档 Service；手动存档 HTTP 入口及读档闭环尚未完成
-- **验证状态**：当前 Go 全量测试、`go vet ./...` 与 `git diff --check` 通过；专项并发/幂等/快照测试通过；真实 MySQL、Redis、Python 与 Docker 端到端联调未执行
-- **暂停状态**：已提交当前完成代码，恢复顺序见 [开发暂停交接.md](./开发暂停交接.md)
-- **下一步**：先实现手动存档 HTTP Handler，再依次实现存档列表、读档恢复、自动存档与房间生命周期接口
+- **当前阶段**：Phase 3 / M3.1-B 收尾；B1—B3 本机实现与验证、历史事件补录和摘要缓存恢复已落地，真实模型、长局与目标部署仍待验收，C 未开始
+- **文档状态**：Phase 3 规划、M3.1-A 实施方案、分块验收记录和未完成事项持续同步；多模型兼容需求排在 M3.1-A 整体验收之后
+- **代码状态**：时间线、行动档案、归档恢复、V3 存读档及 A5 REST/WS/客户端最小恢复界面已实现；新房间开关默认关闭
+- **验证状态**：A1—A6 的 CI 已通过；A5 的 Go/前端/OpenAPI/迁移与隔离 MySQL+Redis 集成回归、A6 双实例及单人/多人双进程接管通过，提交 `cf20f4af` 的 CI #73 八个作业全部通过
+- **当前分支**：`dev/phase3`
+- **下一步**：B2/B3 已实现，真实 MinIO/BGE/Milvus 上传删除和 MySQL/Redis 摘要恢复已本机验证。DeepSeek 无密钥，真实模型、长局与目标 HTTPS/WSS 发布仍待验收；多模型兼容层另行排期

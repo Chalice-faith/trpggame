@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 
 	"trpggame/internal/model"
 )
@@ -112,6 +113,128 @@ func (r *GameRepo) TransitionRoomStatus(
 	return result.RowsAffected == 1, result.Error
 }
 
+// AdvanceRoomProgress 单调推进房间回合字段，迟到请求不会覆盖更大的进度。
+func (r *GameRepo) AdvanceRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 {
+		return false, errors.New("invalid room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND status IN ?", roomID, ownerID, []model.RoomStatus{
+			model.RoomStatusPlaying, model.RoomStatusPaused,
+		}).
+		Where("NOT EXISTS (SELECT 1 FROM game_memory_states WHERE room_id = game_rooms.id)").
+		Updates(map[string]any{
+			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
+			"round_number": gorm.Expr("GREATEST(round_number, ?)", turn),
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+// AdvanceMultiplayerRoomProgress monotonically persists the V2 action-slot and completed-round watermarks.
+func (r *GameRepo) AdvanceMultiplayerRoomProgress(ctx context.Context, roomID uint, turn, round int) (bool, error) {
+	if roomID == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid multiplayer room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND is_solo = ? AND status IN ?", roomID, false, []model.RoomStatus{
+			model.RoomStatusPlaying, model.RoomStatusPaused,
+		}).
+		Where("NOT EXISTS (SELECT 1 FROM game_memory_states WHERE room_id = game_rooms.id)").
+		Updates(map[string]any{
+			"current_turn": gorm.Expr("GREATEST(current_turn, ?)", turn),
+			"round_number": gorm.Expr("GREATEST(round_number, ?)", round),
+		})
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *GameRepo) ReplacePausedMultiplayerRoomProgress(ctx context.Context, roomID, ownerID uint, turn, round int) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid paused multiplayer progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND is_solo = ? AND status = ?", roomID, ownerID, false, model.RoomStatusPaused).
+		Updates(map[string]any{"current_turn": turn, "round_number": round})
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var room model.GameRoom
+	err := r.db.WithContext(ctx).Select("id").Where(
+		"id = ? AND owner_id = ? AND is_solo = ? AND status = ? AND current_turn = ? AND round_number = ?",
+		roomID, ownerID, false, model.RoomStatusPaused, turn, round,
+	).First(&room).Error
+	return err == nil, err
+}
+
+// EndMultiplayerRoom atomically records the final V2 watermark with the terminal room status.
+func (r *GameRepo) EndMultiplayerRoom(ctx context.Context, roomID, ownerID uint, from []model.RoomStatus, turn, round int) (bool, error) {
+	if roomID == 0 || ownerID == 0 || len(from) == 0 || turn < 0 || round < 0 {
+		return false, errors.New("invalid multiplayer room end")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND is_solo = ? AND status IN ?", roomID, ownerID, false, from).
+		Updates(map[string]any{
+			"status": model.RoomStatusEnded, "ended_at": time.Now().UTC(),
+			"current_turn": turn, "round_number": round,
+		})
+	if result.Error != nil || result.RowsAffected == 1 {
+		return result.RowsAffected == 1, result.Error
+	}
+	var room model.GameRoom
+	err := r.db.WithContext(ctx).Select("id").Where(
+		"id = ? AND owner_id = ? AND is_solo = ? AND status = ? AND current_turn = ? AND round_number = ?",
+		roomID, ownerID, false, model.RoomStatusEnded, turn, round,
+	).First(&room).Error
+	return err == nil, err
+}
+
+func (r *GameRepo) ListPlayingMultiplayerUsers(ctx context.Context, userIDs []uint) (map[uint]bool, error) {
+	result := make(map[uint]bool, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
+	var ids []uint
+	err := r.db.WithContext(ctx).
+		Table("room_players AS rp").
+		Distinct("rp.user_id").
+		Joins("JOIN game_rooms AS gr ON gr.id = rp.room_id").
+		Where("rp.user_id IN ? AND rp.status = ? AND gr.is_solo = ? AND gr.status = ?", userIDs,
+			model.RoomPlayerStatusActive, false, model.RoomStatusPlaying).
+		Pluck("rp.user_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		result[id] = true
+	}
+	return result, nil
+}
+
+// ReplacePausedRoomProgress 在读档隔离状态下用存档回合替换持久化进度。
+func (r *GameRepo) ReplacePausedRoomProgress(
+	ctx context.Context,
+	roomID uint,
+	ownerID uint,
+	turn int,
+) (bool, error) {
+	if roomID == 0 || ownerID == 0 || turn < 0 {
+		return false, errors.New("invalid paused room progress")
+	}
+	result := r.db.WithContext(ctx).
+		Model(&model.GameRoom{}).
+		Where("id = ? AND owner_id = ? AND status = ?", roomID, ownerID, model.RoomStatusPaused).
+		Updates(map[string]any{"current_turn": turn, "round_number": turn})
+	return result.RowsAffected == 1, result.Error
+}
+
 // AddPlayer 添加玩家到已有房间。
 func (r *GameRepo) AddPlayer(
 	ctx context.Context,
@@ -166,7 +289,36 @@ func (r *GameRepo) CreateSave(
 	ctx context.Context,
 	save *model.GameSave,
 ) error {
+	memory, err := validateMemorySave(save)
+	if err != nil {
+		return err
+	}
+	if memory {
+		_, err := r.createMemorySave(ctx, save)
+		return err
+	}
 	return r.db.WithContext(ctx).Create(save).Error
+}
+
+// CreateAutoSave 幂等创建指定房间和回合的自动存档；唯一约束冲突时返回 false。
+func (r *GameRepo) CreateAutoSave(
+	ctx context.Context,
+	save *model.GameSave,
+) (bool, error) {
+	if save == nil || !save.IsAuto || save.RoomID == 0 || save.RoundNumber <= 0 {
+		return false, errors.New("invalid automatic game save")
+	}
+	memory, err := validateMemorySave(save)
+	if err != nil {
+		return false, err
+	}
+	if memory {
+		return r.createMemorySave(ctx, save)
+	}
+	result := r.db.WithContext(ctx).
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(save)
+	return result.RowsAffected == 1, result.Error
 }
 
 // ListSaves 列出房间存档，创建时间相同时按 ID 逆序稳定排序。

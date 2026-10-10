@@ -5,9 +5,15 @@ import { useAuthStore } from '@/stores/auth'
 const LoginView = () => import('@/views/LoginView.vue')
 const RegisterView = () => import('@/views/RegisterView.vue')
 const DashboardView = () => import('@/views/DashboardView.vue')
+const FriendsView = () => import('@/views/FriendsView.vue')
+const ChatView = () => import('@/views/ChatView.vue')
+const GroupsView = () => import('@/views/GroupsView.vue')
 const ScriptDetailView = () => import('@/views/ScriptDetailView.vue')
 const GameSoloView = () => import('@/views/GameSoloView.vue')
 const GamePlayView = () => import('@/views/GamePlayView.vue')
+const GameMultiplayerView = () => import('@/views/GameMultiplayerView.vue')
+const RoomsView = () => import('@/views/RoomsView.vue')
+const RoomLobbyView = () => import('@/views/RoomLobbyView.vue')
 
 const routes: RouteRecordRaw[] = [
   {
@@ -33,9 +39,39 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/friends',
+    name: 'Friends',
+    component: FriendsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/chat/:conversationId?',
+    name: 'Chat',
+    component: ChatView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/groups/:groupId?',
+    name: 'Groups',
+    component: GroupsView,
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/scripts/:id',
     name: 'ScriptDetail',
     component: ScriptDetailView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/rooms',
+    name: 'Rooms',
+    component: RoomsView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/lobby/:roomId',
+    name: 'RoomLobby',
+    component: RoomLobbyView,
     meta: { requiresAuth: true }
   },
   {
@@ -48,6 +84,12 @@ const routes: RouteRecordRaw[] = [
     path: '/game/play/:id',
     name: 'GamePlay',
     component: GamePlayView,
+    meta: { requiresAuth: true }
+  },
+  {
+    path: '/game/multiplayer/:id',
+    name: 'GameMultiplayer',
+    component: GameMultiplayerView,
     meta: { requiresAuth: true }
   }
 ]

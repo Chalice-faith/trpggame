@@ -54,11 +54,12 @@ func TestGameServiceSubmitActionCommitsAuthoritativeEffects(t *testing.T) {
 		aiClient.actionRequest.CharacterID != 13 || aiClient.actionRequest.Action != "我检查书房" {
 		t.Fatalf("AI request = %#v", aiClient.actionRequest)
 	}
-	if runtimeRepository.findCalls != 1 || runtimeRepository.committed == nil {
-		t.Fatalf("runtime calls = find:%d commit:%#v", runtimeRepository.findCalls, runtimeRepository.committed)
+	if runtimeRepository.findCalls != 1 || runtimeRepository.beginCalls != 1 || runtimeRepository.committed == nil {
+		t.Fatalf("runtime calls = find:%d begin:%d commit:%#v", runtimeRepository.findCalls, runtimeRepository.beginCalls, runtimeRepository.committed)
 	}
 	mutation := runtimeRepository.committed
-	if mutation.RoomID != 41 || mutation.UserID != 7 || mutation.ExpectedTurn != 0 ||
+	if mutation.RoomID != 41 || mutation.UserID != 7 ||
+		mutation.Generation != "11111111-1111-4111-8111-111111111111" || mutation.ExpectedTurn != 0 ||
 		mutation.PlayerStateChanges["hp"] != "8" || len(mutation.ItemMutations) != 1 ||
 		mutation.ItemMutations[0].Name != "钥匙" || len(mutation.BuffMutations) != 1 ||
 		len(mutation.RequestFingerprint) != 64 || len(mutation.Messages) != 2 {
@@ -69,6 +70,59 @@ func TestGameServiceSubmitActionCommitsAuthoritativeEffects(t *testing.T) {
 	}
 	if gameRepository.room.ID != 41 {
 		t.Fatalf("room = %#v", gameRepository.room)
+	}
+	if len(gameRepository.progressCalls) != 2 || gameRepository.progressCalls[0].turn != 0 ||
+		gameRepository.progressCalls[1].turn != 1 {
+		t.Fatalf("progress calls = %#v, want turns [0 1]", gameRepository.progressCalls)
+	}
+}
+
+func TestGameServiceSubmitActionDoesNotTouchSoloRuntimeForMultiplayer(t *testing.T) {
+	gameService, gameRepository, _, runtimeRepository := actionServiceFixture()
+	gameRepository.room.IsSolo = false
+	if _, err := gameService.SubmitAction(context.Background(), validSubmitGameActionRequest()); !errors.Is(err, ErrGameRuntimeUnavailable) {
+		t.Fatalf("multiplayer action = %v, want unavailable without multiplayer dependencies", err)
+	}
+	if runtimeRepository.findCalls != 0 || runtimeRepository.beginCalls != 0 {
+		t.Fatalf("multiplayer action touched solo runtime: %#v", runtimeRepository)
+	}
+}
+
+func TestGameServiceSubmitActionStreamEmitsChunksAndCommittedMetadata(t *testing.T) {
+	service, _, aiClient, _ := actionServiceFixture()
+	aiClient.streamEvents = []ai_client.ActionStreamEvent{
+		{Type: "narrative_chunk", Content: "你发现"},
+		{Type: "narrative_chunk", Content: "一把钥匙。"},
+		{Type: "complete", Narrative: "你发现一把钥匙。"},
+	}
+	aiClient.streamResponse = &ai_client.GameActionResponse{
+		Narrative: "你发现一把钥匙。",
+		StatusChanges: effectChanges(effectCall("update_player_status", map[string]any{
+			"player_id": 7, "field": "san", "value": 48, "reason": "紧张",
+		})),
+	}
+
+	var events []GameActionStreamEvent
+	result, err := service.SubmitActionStream(
+		context.Background(),
+		validSubmitGameActionRequest(),
+		func(event GameActionStreamEvent) { events = append(events, event) },
+	)
+
+	if err != nil {
+		t.Fatalf("SubmitActionStream() error = %v", err)
+	}
+	if result == nil || result.CurrentTurn != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(events) != 4 || events[0].Type != "narrative_chunk" ||
+		events[1].Type != "narrative_chunk" || events[2].Type != "status_update" ||
+		events[3].Type != "narrative_complete" {
+		t.Fatalf("events = %#v", events)
+	}
+	if events[0].Content != "你发现" || events[3].Result == nil ||
+		events[3].Result.Narrative != "你发现一把钥匙。" {
+		t.Fatalf("event payloads = %#v", events)
 	}
 }
 
@@ -102,6 +156,56 @@ func TestGameServiceSubmitActionReplaysCachedResultBeforeStatusCheckAndAI(t *tes
 	}
 	if aiClient.actionRequest != nil || runtimeRepository.committed != nil {
 		t.Fatal("cached request reached AI or commit")
+	}
+	if len(gameRepository.progressCalls) != 1 || gameRepository.progressCalls[0].turn != 1 {
+		t.Fatalf("cached progress calls = %#v, want turn 1", gameRepository.progressCalls)
+	}
+}
+
+func TestGameServiceSubmitActionCachedRetryRepairsFailedMySQLProgressWithoutAI(t *testing.T) {
+	service, gameRepository, aiClient, runtimeRepository := actionServiceFixture()
+	aiClient.actionResponse = &ai_client.GameActionResponse{Narrative: "first inference"}
+	cached := &SubmitGameActionResult{
+		Narrative: "first inference",
+		Effects: &ActionEffects{
+			PlayerStateChanges: map[string]string{},
+			Items:              []ItemMutation{}, Buffs: []BuffMutation{}, Events: []KeyEventMutation{},
+		},
+		CurrentTurn: 1,
+	}
+	encoded, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatalf("marshal cached action: %v", err)
+	}
+	runtimeRepository.commitResult = &model.ActionCommitResult{CurrentTurn: 1, ResponseJSON: encoded}
+	gameRepository.progressResults = []gameTransitionResult{
+		{updated: true},
+		{err: errors.New("mysql unavailable")},
+	}
+
+	request := validSubmitGameActionRequest()
+	if _, err := service.SubmitAction(context.Background(), request); !errors.Is(err, ErrInternal) {
+		t.Fatalf("first SubmitAction() error = %v, want internal retryable error", err)
+	}
+	if runtimeRepository.committed == nil {
+		t.Fatal("action was not committed before MySQL progress failure")
+	}
+
+	runtimeRepository.findFound = true
+	runtimeRepository.findResult = &model.ActionCommitResult{
+		Duplicate: true, CurrentTurn: 1, ResponseJSON: encoded,
+	}
+	aiClient.actionRequest = nil
+	runtimeRepository.committed = nil
+	result, err := service.SubmitAction(context.Background(), request)
+	if err != nil || result == nil || !result.Duplicate || result.CurrentTurn != 1 {
+		t.Fatalf("retry SubmitAction() = (%#v, %v)", result, err)
+	}
+	if aiClient.actionRequest != nil || runtimeRepository.committed != nil {
+		t.Fatal("cached progress repair repeated AI or Redis commit")
+	}
+	if len(gameRepository.progressCalls) != 3 || gameRepository.progressCalls[2].turn != 1 {
+		t.Fatalf("progress calls = %#v, want preflight, failed commit sync, retry sync", gameRepository.progressCalls)
 	}
 }
 
@@ -219,6 +323,7 @@ func TestGameServiceSubmitActionMapsRuntimeFailures(t *testing.T) {
 		want error
 	}{
 		{"turn conflict", repo.ErrGameRuntimeConflict, ErrGameActionConflict},
+		{"generation invalidated", repo.ErrGameRuntimeGenerationConflict, ErrGameActionConflict},
 		{"runtime paused", repo.ErrGameRuntimeNotPlaying, ErrGameRoomNotPlaying},
 		{"request conflict", repo.ErrActionIdempotencyConflict, ErrActionRequestConflict},
 		{"insufficient items", repo.ErrInsufficientItemQuantity, ErrInsufficientItems},
@@ -232,6 +337,31 @@ func TestGameServiceSubmitActionMapsRuntimeFailures(t *testing.T) {
 			_, err := service.SubmitAction(context.Background(), validSubmitGameActionRequest())
 			if !errors.Is(err, test.want) {
 				t.Fatalf("SubmitAction() error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestGameServiceSubmitActionRejectsPreflightGenerationBoundary(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want error
+	}{
+		{"turn conflict", repo.ErrGameRuntimeConflict, ErrGameActionConflict},
+		{"runtime paused", repo.ErrGameRuntimeNotPlaying, ErrGameRoomNotPlaying},
+		{"runtime unavailable", repo.ErrGameRuntimeUnavailable, ErrGameRuntimeUnavailable},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, _, aiClient, runtimeRepository := actionServiceFixture()
+			runtimeRepository.beginErr = test.err
+			_, err := service.SubmitAction(context.Background(), validSubmitGameActionRequest())
+			if !errors.Is(err, test.want) {
+				t.Fatalf("SubmitAction() error = %v, want %v", err, test.want)
+			}
+			if aiClient.actionRequest != nil || runtimeRepository.committed != nil {
+				t.Fatal("failed action preflight reached AI or Redis commit")
 			}
 		})
 	}
@@ -309,6 +439,124 @@ func TestGameServiceSubmitActionUsesWinnerResponseOnConcurrentDuplicate(t *testi
 	}
 }
 
+func TestGameServiceSubmitActionPersistsAutomaticSaveSnapshot(t *testing.T) {
+	service, gameRepository, aiClient, runtimeRepository := actionServiceFixture()
+	gameRepository.autoSaveCreated = true
+	aiClient.actionResponse = &ai_client.GameActionResponse{Narrative: "第十回合结果"}
+	winner := &SubmitGameActionResult{
+		Narrative: "第十回合结果",
+		Effects: &ActionEffects{
+			PlayerStateChanges: map[string]string{},
+			Items:              []ItemMutation{}, Buffs: []BuffMutation{}, Events: []KeyEventMutation{},
+		},
+		CurrentTurn: 10,
+	}
+	encoded, err := json.Marshal(winner)
+	if err != nil {
+		t.Fatalf("marshal action result: %v", err)
+	}
+	runtimeRepository.commitResult = &model.ActionCommitResult{
+		CurrentTurn: 10, ResponseJSON: encoded, AutoSaveSnapshot: automaticSaveSnapshot(),
+	}
+	request := validSubmitGameActionRequest()
+	request.ExpectedTurn = 9
+
+	result, err := service.SubmitAction(context.Background(), request)
+
+	if err != nil || result == nil || result.CurrentTurn != 10 {
+		t.Fatalf("SubmitAction() = (%#v, %v)", result, err)
+	}
+	if gameRepository.createdAutoSave == nil || gameRepository.createdAutoSave.RoundNumber != 10 {
+		t.Fatalf("automatic save = %#v", gameRepository.createdAutoSave)
+	}
+}
+
+func TestGameServiceSubmitActionCachedReplayRetriesPendingAutomaticSave(t *testing.T) {
+	service, gameRepository, aiClient, runtimeRepository := actionServiceFixture()
+	gameRepository.autoSaveCreated = true
+	cached := &SubmitGameActionResult{
+		Narrative: "第十回合结果",
+		Effects: &ActionEffects{
+			PlayerStateChanges: map[string]string{},
+			Items:              []ItemMutation{}, Buffs: []BuffMutation{}, Events: []KeyEventMutation{},
+		},
+		CurrentTurn: 10,
+	}
+	encoded, err := json.Marshal(cached)
+	if err != nil {
+		t.Fatalf("marshal cached action: %v", err)
+	}
+	runtimeRepository.findFound = true
+	runtimeRepository.findResult = &model.ActionCommitResult{
+		Duplicate: true, CurrentTurn: 10, ResponseJSON: encoded,
+	}
+	runtimeRepository.pendingAutoSaves = []model.PendingAutoSave{{
+		Generation: "11111111-1111-4111-8111-111111111111",
+		Snapshot:   automaticSaveSnapshot(),
+	}}
+
+	result, err := service.SubmitAction(context.Background(), validSubmitGameActionRequest())
+
+	if err != nil || result == nil || !result.Duplicate || result.CurrentTurn != 10 {
+		t.Fatalf("SubmitAction() = (%#v, %v)", result, err)
+	}
+	if gameRepository.createdAutoSave == nil || len(runtimeRepository.pendingAutoSaves) != 0 ||
+		len(runtimeRepository.acknowledgedAutoSaves) != 1 {
+		t.Fatalf("automatic save retry state = repo:%#v runtime:%#v", gameRepository, runtimeRepository)
+	}
+	if aiClient.actionRequest != nil || runtimeRepository.committed != nil {
+		t.Fatal("cached replay reached AI or action commit")
+	}
+}
+
+func TestGameServiceSubmitActionKeepsCommittedResultRetryableUntilAutoSaveSucceeds(t *testing.T) {
+	service, gameRepository, aiClient, runtimeRepository := actionServiceFixture()
+	gameRepository.createAutoSaveErr = errors.New("mysql unavailable")
+	aiClient.actionResponse = &ai_client.GameActionResponse{Narrative: "第十回合结果"}
+	winner := &SubmitGameActionResult{
+		Narrative: "第十回合结果",
+		Effects: &ActionEffects{
+			PlayerStateChanges: map[string]string{},
+			Items:              []ItemMutation{}, Buffs: []BuffMutation{}, Events: []KeyEventMutation{},
+		},
+		CurrentTurn: 10,
+	}
+	encoded, err := json.Marshal(winner)
+	if err != nil {
+		t.Fatalf("marshal action result: %v", err)
+	}
+	runtimeRepository.commitResult = &model.ActionCommitResult{
+		CurrentTurn: 10, ResponseJSON: encoded, AutoSaveSnapshot: automaticSaveSnapshot(),
+	}
+	request := validSubmitGameActionRequest()
+	request.ExpectedTurn = 9
+
+	if _, err := service.SubmitAction(context.Background(), request); !errors.Is(err, ErrInternal) {
+		t.Fatalf("first SubmitAction() error = %v", err)
+	}
+	if runtimeRepository.committed == nil || len(runtimeRepository.pendingAutoSaves) != 1 ||
+		len(runtimeRepository.acknowledgedAutoSaves) != 0 {
+		t.Fatalf("failed automatic save state = %#v", runtimeRepository)
+	}
+
+	gameRepository.createAutoSaveErr = nil
+	gameRepository.autoSaveCreated = true
+	runtimeRepository.findFound = true
+	runtimeRepository.findResult = &model.ActionCommitResult{
+		Duplicate: true, CurrentTurn: 10, ResponseJSON: encoded,
+	}
+	aiClient.actionRequest = nil
+	runtimeRepository.committed = nil
+	result, err := service.SubmitAction(context.Background(), request)
+	if err != nil || result == nil || !result.Duplicate || result.CurrentTurn != 10 {
+		t.Fatalf("retry SubmitAction() = (%#v, %v)", result, err)
+	}
+	if len(runtimeRepository.pendingAutoSaves) != 0 || len(runtimeRepository.acknowledgedAutoSaves) != 1 ||
+		aiClient.actionRequest != nil || runtimeRepository.committed != nil {
+		t.Fatalf("retry state = runtime:%#v AI:%#v", runtimeRepository, aiClient.actionRequest)
+	}
+}
+
 func actionServiceFixture() (
 	*GameService,
 	*fakeGameRepository,
@@ -318,7 +566,7 @@ func actionServiceFixture() (
 	characterID := uint(13)
 	gameRepository := &fakeGameRepository{
 		room: &model.GameRoom{
-			ID: 41, OwnerID: 7, ScriptID: 11, Status: model.RoomStatusPlaying,
+			ID: 41, OwnerID: 7, ScriptID: 11, Status: model.RoomStatusPlaying, IsSolo: true,
 		},
 		player: &model.RoomPlayer{
 			ID: 51, RoomID: 41, UserID: 7, CharacterID: &characterID,

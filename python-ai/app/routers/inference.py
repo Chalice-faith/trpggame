@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field, field_validator
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.dependencies import require_internal_secret
-from app.services.context_builder import AssembledContext, assemble_context
+from app.services.context_builder import AssembledContext, assemble_context, estimated_tokens
 from app.services.function_calling import (
     FUNCTIONS,
     FunctionCallError,
@@ -28,6 +29,7 @@ from app.services.llm_client import (
     ChatCompletion,
     LLMClientError,
     chat,
+    chat_stream,
     complete,
 )
 from app.services.retriever import RetrievalError, retrieve
@@ -43,11 +45,51 @@ OPENING_ACTION_PROMPT = (
 )
 
 
+class GameParticipant(BaseModel):
+    user_id: int = Field(gt=0)
+    character_id: int = Field(gt=0)
+
+
+def _validate_multiplayer_participants(
+    user_id: int,
+    character_id: int,
+    participants: Sequence[GameParticipant],
+) -> None:
+    if not participants:
+        return
+    if len(participants) < 2:
+        raise ValueError("multiplayer participants must contain at least two players")
+    seen_users: set[int] = set()
+    seen_characters: set[int] = set()
+    current_matches = False
+    for participant in participants:
+        if participant.user_id in seen_users:
+            raise ValueError("participant user IDs must be unique")
+        if participant.character_id in seen_characters:
+            raise ValueError("participant character IDs must be unique")
+        seen_users.add(participant.user_id)
+        seen_characters.add(participant.character_id)
+        if participant.user_id == user_id:
+            current_matches = participant.character_id == character_id
+    if not current_matches:
+        raise ValueError("current player must match one participant")
+
+
 class StartGameRequest(BaseModel):
     room_id: int = Field(gt=0)
     script_id: int = Field(gt=0)
     character_id: int = Field(gt=0)
     user_id: int = Field(gt=0)
+    participants: list[GameParticipant] = Field(default_factory=list, max_length=6)
+
+    @model_validator(mode="after")
+    def validate_participants(self) -> "StartGameRequest":
+        _validate_multiplayer_participants(
+            self.user_id,
+            self.character_id,
+            self.participants,
+        )
+        return self
 
 
 class NarrativeResponse(BaseModel):
@@ -87,10 +129,18 @@ class OpeningNarrativeService:
                 raise OpeningNarrativeError(
                     "script has no retrievable opening context"
                 )
+            character_profile: dict[str, Any] = {
+                "character_id": request.character_id,
+            }
+            if request.participants:
+                character_profile["participants"] = [
+                    participant.model_dump()
+                    for participant in request.participants
+                ]
             context = self._context_builder(
                 OPENING_ACTION_PROMPT,
                 rag_chunks=rag_chunks,
-                character_profile={"character_id": request.character_id},
+                character_profile=character_profile,
                 player_state={
                     "room_id": request.room_id,
                     "user_id": request.user_id,
@@ -145,12 +195,36 @@ async def start_game(
     return NarrativeResponse(narrative=narrative)
 
 
+class MemoryMessage(BaseModel):
+    role: str
+    content: str
+
+
+class InferenceMemory(BaseModel):
+    timeline_id: str
+    through_position: int = Field(ge=0)
+    summary_through_position: int = Field(ge=0)
+    summary_version: int = Field(ge=0)
+    summary: str = ""
+    messages: list[MemoryMessage] = Field(default_factory=list, max_length=512)
+    key_events: list[str] = Field(default_factory=list, max_length=20)
+    degraded: bool = False
+
+    @model_validator(mode="after")
+    def validate_watermark(self):
+        if self.summary_through_position > self.through_position:
+            raise ValueError("summary watermark exceeds source watermark")
+        return self
+
+
 class GameActionRequest(BaseModel):
     room_id: int = Field(gt=0)
     user_id: int = Field(gt=0)
     action: str = Field(min_length=1, max_length=2_000)
     script_id: int = Field(gt=0)
     character_id: int = Field(gt=0)
+    participants: list[GameParticipant] = Field(default_factory=list, max_length=6)
+    memory_context: "InferenceMemory | None" = None
 
     @field_validator("action")
     @classmethod
@@ -159,6 +233,15 @@ class GameActionRequest(BaseModel):
         if not value:
             raise ValueError("action must not be empty")
         return value
+
+    @model_validator(mode="after")
+    def validate_participants(self) -> "GameActionRequest":
+        _validate_multiplayer_participants(
+            self.user_id,
+            self.character_id,
+            self.participants,
+        )
+        return self
 
 
 class DiceRollData(BaseModel):
@@ -188,6 +271,7 @@ class GameContextProvider(Protocol):
         room_id: int,
         user_id: int,
         character_id: int,
+        participants: list[tuple[int, int]] | None = None,
     ) -> GameRuntimeContext: ...
 
 
@@ -205,6 +289,9 @@ class ActionInferenceResult:
     status_changes: dict[str, Any] | None = None
 
 
+NarrativeStreamGenerator = Callable[[str, str], AsyncIterator[str]]
+
+
 class ActionEffectCollector:
     """Collect validated state changes for the later authoritative state layer."""
 
@@ -217,8 +304,9 @@ class ActionEffectCollector:
         "trigger_event",
     )
 
-    def __init__(self, user_id: int) -> None:
+    def __init__(self, user_id: int, allowed_user_ids: set[int] | None = None) -> None:
         self._user_id = user_id
+        self._allowed_user_ids = allowed_user_ids or {user_id}
         self.calls: list[dict[str, Any]] = []
 
     def handlers(self) -> dict[str, FunctionHandler]:
@@ -230,7 +318,7 @@ class ActionEffectCollector:
     def _make_handler(self, name: str) -> FunctionHandler:
         def collect(arguments: dict[str, Any]) -> dict[str, bool]:
             player_id = arguments.get("player_id")
-            if player_id is not None and player_id != self._user_id:
+            if player_id is not None and player_id not in self._allowed_user_ids:
                 raise ValueError("function call targets another player")
             self.calls.append({"name": name, "arguments": dict(arguments)})
             return {"accepted": True}
@@ -249,6 +337,15 @@ class ActionInferenceService:
 
     MAX_TOOL_CALLS = 8
 
+    @staticmethod
+    def _action_prompt_budget() -> int:
+        from app.config import settings
+        tools = [{"type": "function", "function": definition} for definition in FUNCTIONS]
+        schema_cost = estimated_tokens(json.dumps(tools, ensure_ascii=False))
+        total = min(settings.context_input_budget, settings.context_window_tokens - settings.llm_max_tokens - settings.context_safety_tokens)
+        # Leave space for request framing and the subsequent tool-result prompt.
+        return total - schema_cost - 4096 - 256
+
     def __init__(
         self,
         *,
@@ -257,6 +354,7 @@ class ActionInferenceService:
         context_builder: ContextBuilder = assemble_context,
         completion_generator: CompletionGenerator = complete,
         narrative_generator: NarrativeGenerator = chat,
+        stream_narrative_generator: NarrativeStreamGenerator = chat_stream,
         executor_factory: ExecutorFactory = _create_executor,
     ) -> None:
         self._retriever = retriever
@@ -264,24 +362,62 @@ class ActionInferenceService:
         self._context_builder = context_builder
         self._completion_generator = completion_generator
         self._narrative_generator = narrative_generator
+        self._stream_narrative_generator = stream_narrative_generator
         self._executor_factory = executor_factory
+
+    async def _load_runtime(
+        self,
+        request: GameActionRequest,
+    ) -> GameRuntimeContext:
+        if not request.participants:
+            return await self._context_provider.load(
+                request.room_id,
+                request.user_id,
+                request.character_id,
+            )
+        return await self._context_provider.load(
+            request.room_id,
+            request.user_id,
+            request.character_id,
+            [
+                (participant.user_id, participant.character_id)
+                for participant in request.participants
+            ],
+        )
+
+    @staticmethod
+    def _context_player_state(request: GameActionRequest, runtime: GameRuntimeContext) -> Mapping[str, Any]:
+        current_player = {**runtime.player_state, "player_id": request.user_id, "character_id": request.character_id}
+        if not runtime.participants:
+            return current_player
+        return {
+            "current_player": current_player,
+            "participants": [{**participant, "player_id": participant["user_id"]} for participant in runtime.participants],
+        }
+
+    @staticmethod
+    def _memory_options(request: GameActionRequest, runtime: GameRuntimeContext) -> dict[str, Any]:
+        memory = request.memory_context
+        if memory is None:
+            return {"summary_memory": runtime.summary_memory, "recent_history": runtime.recent_history,
+                    "input_budget": ActionInferenceService._action_prompt_budget()}
+        # Include the complete bounded gap after the summary, not only ten
+        # messages. The context builder applies the total budget explicitly.
+        return {"summary_memory": memory.summary, "recent_history": [message.model_dump() for message in memory.messages],
+                "max_recent_messages": max(10, len(memory.messages)), "key_events": memory.key_events, "memory_degraded": memory.degraded,
+                "input_budget": ActionInferenceService._action_prompt_budget()}
 
     async def infer(self, request: GameActionRequest) -> ActionInferenceResult:
         try:
             rag_chunks = await self._retriever(request.action, request.script_id)
             if not rag_chunks:
                 raise ActionInferenceError("script has no retrievable action context")
-            runtime = await self._context_provider.load(
-                request.room_id,
-                request.user_id,
-                request.character_id,
-            )
+            runtime = await self._load_runtime(request)
             context = self._context_builder(
                 request.action,
                 rag_chunks=rag_chunks,
-                summary_memory=runtime.summary_memory,
-                recent_history=runtime.recent_history,
-                player_state=runtime.player_state,
+                **self._memory_options(request, runtime),
+                player_state=self._context_player_state(request, runtime),
                 character_profile=runtime.character_profile,
             )
             completion_result = await self._completion_generator(
@@ -294,6 +430,116 @@ class ActionInferenceService:
                 context,
                 completion_result,
             )
+        except ActionInferenceError:
+            raise
+        except RetrievalError as exc:
+            raise ActionInferenceError("script retrieval failed") from exc
+        except GameContextError as exc:
+            raise ActionInferenceError("game context unavailable") from exc
+        except LLMClientError as exc:
+            raise ActionInferenceError("LLM generation failed") from exc
+        except FunctionCallError as exc:
+            raise ActionInferenceError("function call execution failed") from exc
+        except Exception as exc:
+            raise ActionInferenceError("player action inference failed") from exc
+
+    async def infer_stream(
+        self,
+        request: GameActionRequest,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Run action inference and expose the final narration as NDJSON events.
+
+        Tool calls are resolved before any authoritative metadata is emitted. The
+        narrative itself may stream while the runtime state is still being
+        prepared; the final ``complete`` event is emitted only after all tool
+        results have been validated.
+        """
+
+        try:
+            rag_chunks = await self._retriever(request.action, request.script_id)
+            if not rag_chunks:
+                raise ActionInferenceError(
+                    "script has no retrievable action context"
+                )
+            runtime = await self._load_runtime(request)
+            context = self._context_builder(
+                request.action,
+                rag_chunks=rag_chunks,
+                **self._memory_options(request, runtime),
+                player_state=self._context_player_state(request, runtime),
+                character_profile=runtime.character_profile,
+            )
+            completion_result = await self._completion_generator(
+                context.user_prompt,
+                context.system_prompt,
+                FUNCTIONS,
+            )
+            tool_calls = completion_result.tool_calls
+            if len(tool_calls) > self.MAX_TOOL_CALLS:
+                raise ActionInferenceError("LLM requested too many function calls")
+
+            if not tool_calls:
+                narrative = completion_result.content.strip()
+                if not narrative:
+                    raise ActionInferenceError("LLM returned an empty narrative")
+                yield {"type": "narrative_chunk", "content": narrative}
+                yield {
+                    "type": "complete",
+                    "narrative": narrative,
+                    "dice_roll": None,
+                    "status_changes": None,
+                }
+                return
+
+            collector = ActionEffectCollector(
+                request.user_id,
+                {participant.user_id for participant in request.participants}
+                or {request.user_id},
+            )
+            executor = self._executor_factory(collector.handlers())
+            tool_results: list[dict[str, Any]] = []
+            dice_roll: dict[str, Any] | None = None
+            for tool_call in tool_calls:
+                execution = await executor.execute(
+                    tool_call.name,
+                    tool_call.arguments,
+                )
+                tool_results.append({"id": tool_call.id, **execution})
+                if tool_call.name == "roll_dice":
+                    if dice_roll is not None:
+                        raise ActionInferenceError(
+                            "multiple dice rolls are not supported"
+                        )
+                    dice_roll = dict(execution["result"])
+
+            narrative_prompt = self._build_result_prompt(
+                context.user_prompt,
+                tool_results,
+            )
+            self._validate_final_budget(context, narrative_prompt)
+            chunks: list[str] = []
+            async for chunk in self._stream_narrative_generator(
+                narrative_prompt,
+                context.system_prompt,
+            ):
+                if not isinstance(chunk, str):
+                    raise ActionInferenceError(
+                        "LLM stream returned a non-text chunk"
+                    )
+                if chunk:
+                    chunks.append(chunk)
+                    yield {"type": "narrative_chunk", "content": chunk}
+
+            narrative = "".join(chunks).strip()
+            if not narrative:
+                raise ActionInferenceError("LLM returned an empty final narrative")
+            status_changes = {"calls": collector.calls} if collector.calls else None
+            yield {
+                "type": "complete",
+                "narrative": narrative,
+                "dice_roll": dice_roll,
+                "status_changes": status_changes,
+            }
         except ActionInferenceError:
             raise
         except RetrievalError as exc:
@@ -322,7 +568,11 @@ class ActionInferenceService:
                 raise ActionInferenceError("LLM returned an empty narrative")
             return ActionInferenceResult(narrative=narrative)
 
-        collector = ActionEffectCollector(request.user_id)
+        collector = ActionEffectCollector(
+            request.user_id,
+            {participant.user_id for participant in request.participants}
+            or {request.user_id},
+        )
         executor = self._executor_factory(collector.handlers())
         tool_results: list[dict[str, Any]] = []
         dice_roll: dict[str, Any] | None = None
@@ -338,6 +588,7 @@ class ActionInferenceService:
             context.user_prompt,
             tool_results,
         )
+        self._validate_final_budget(context, narrative_prompt)
         narrative = (
             await self._narrative_generator(
                 narrative_prompt,
@@ -352,6 +603,13 @@ class ActionInferenceService:
             dice_roll=dice_roll,
             status_changes=status_changes,
         )
+
+    @staticmethod
+    def _validate_final_budget(context: AssembledContext, prompt: str) -> None:
+        from app.config import settings
+        budget = min(settings.context_input_budget, settings.context_window_tokens - settings.llm_max_tokens - settings.context_safety_tokens) - 256
+        if estimated_tokens(context.system_prompt + prompt) > budget:
+            raise ActionInferenceError("tool results exceed reserved context budget")
 
     @staticmethod
     def _build_result_prompt(
@@ -403,4 +661,47 @@ async def process_action(
         narrative=result.narrative,
         dice_roll=result.dice_roll,
         status_changes=result.status_changes,
+    )
+
+
+@router.post(
+    "/inference/action/stream",
+    dependencies=[Depends(require_internal_secret)],
+)
+async def process_action_stream(
+    request: GameActionRequest,
+    service: ActionInferenceService = Depends(get_action_inference_service),
+) -> StreamingResponse:
+    """Stream action narration and finish with one authoritative metadata event.
+
+    Each line is a standalone JSON object. The successful event sequence is
+    ``narrative_chunk`` (one or more) followed by ``complete``. Failures are
+    represented as an ``error`` line because the HTTP status is already sent
+    when a streaming body begins.
+    """
+
+    async def event_stream() -> AsyncIterator[str]:
+        try:
+            async for event in service.infer_stream(request):
+                yield json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
+        except ActionInferenceError:
+            logger.exception(
+                "streaming action inference failed for room=%s user=%s script=%s",
+                request.room_id,
+                request.user_id,
+                request.script_id,
+            )
+            yield json.dumps(
+                {
+                    "type": "error",
+                    "message": "player action inference unavailable",
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ) + "\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
